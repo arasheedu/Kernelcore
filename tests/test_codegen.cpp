@@ -182,7 +182,7 @@ TEST_CASE(llm_kernels_identical_on_all_paths) {
             }, true);
     }
     // 8-bit activations and the integer dot-product matvec (AVX-VNNI on the simd path).
-    for (auto [rows, k] : {std::pair{8, 32}, std::pair{1000, 256}}) {
+    for (auto [rows, k] : {std::pair{8, 32}, std::pair{1000, 256}, std::pair{1008, 96}}) {
         const auto x = floats(size_t(k), 11, -2, 2);
         const auto w = bytes(size_t(rows) * k * 5 / 8, 12);  // any bit pattern is a valid stream
         std::vector<int> qw(w.size() / 4);
@@ -207,6 +207,13 @@ TEST_CASE(llm_kernels_identical_on_all_paths) {
         sameOnAllPaths(("matvec_q4x8_q8 " + std::to_string(rows)).c_str(), dy, size_t(rows) * 4, [&](bool ch) {
             return ch ? pcudaLaunchKernelChunked("matvec_q4x8_q8", &a, 4, 8) : pcudaLaunchKernel("matvec_q4x8_q8", &a);
         }, true);
+        if (rows % 16 == 0) {
+            const auto one_row = host(dy, size_t(rows));  // the last path's matvec_q4x8_q8 result
+            sameOnAllPaths(("matvec_q4x8_q8x2 " + std::to_string(rows)).c_str(), dy, size_t(rows) * 4, [&](bool ch) {
+                return ch ? pcudaLaunchKernelChunked("matvec_q4x8_q8x2", &a, 4, 8) : pcudaLaunchKernel("matvec_q4x8_q8x2", &a);
+            }, true);
+            CHECK(host(dy, size_t(rows)) == one_row);
+        }
     }
 
     {  // parallel residual add + RMS norm + quantize across paths (chunked too)

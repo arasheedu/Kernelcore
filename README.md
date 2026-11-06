@@ -273,6 +273,11 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
   launch. That helps pcuda little, since graphs already made those steps cheap. It helps CUDA a lot:
   its one-thread norm had cost 13 ms per token, so CUDA went from 33 to 20 ms. Against Ollama:
   30.7 vs 28.3 tok/s.
+- Two rows per thread (`matvec_q4x8_q8x2`, `--rows-per-thread 2`): each thread works on two
+  8-row groups at once, with two weight streams and four dot-product chains. Results are
+  bit-identical, but it was no faster: about 0.5 ms slower on the CPU and the same on CUDA. With 12
+  threads plus hardware and software prefetch, memory is already kept busy, so it stays off by
+  default.
 - Each token now runs as one pcuda graph: about 450 launches recorded, then run as one pool job,
   instead of a stream hand-off and pool wake-up per launch. That saves about 4 ms per token
   (37.5 → 33.6 ms in alternating runs, `--graphs on|off`). In two runs against Ollama, pcuda was

@@ -11,6 +11,7 @@
 #include "kernels/llm/matvec_q4x8.cu"
 #include "kernels/llm/quantize_q8x4.cu"
 #include "kernels/llm/matvec_q4x8_q8.cu"
+#include "kernels/llm/matvec_q4x8_q8x2.cu"
 #include "kernels/llm/add_rms_norm.cu"
 #include "kernels/llm/silu_mul_q8x4.cu"
 #include "kernels/llm/add_sumsq.cu"
@@ -54,6 +55,13 @@ cudaError_t matvecQ4x8(const uint8_t* qs, const float* scales, const float* x, f
 cudaError_t quantizeQ8x4(const float* x, int* xq, float* xd, int count, cudaStream_t s) {
     if (count <= 0) return cudaSuccess;
     quantize_q8x4<<<blocksFor(count), kBlockSize, 0, s>>>(x, xq, xd, count);
+    return cudaGetLastError();
+}
+
+cudaError_t matvecQ4x8Q8x2(const int* qw, const int* xq, const float* xd, float* y, const int* dims, int rows,
+                           cudaStream_t s) {
+    if (rows <= 0) return cudaSuccess;
+    matvec_q4x8_q8x2<<<blocksFor(rows / 2), kBlockSize, 0, s>>>(qw, xq, xd, y, dims);
     return cudaGetLastError();
 }
 

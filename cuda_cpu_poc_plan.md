@@ -1026,3 +1026,26 @@ Stability: 150 repeated runs of the pool and stream tests, plus AddressSanitizer
 | Off | 32.7 ms | 31.7 ms |
 
 Large pages and the software prefetch remove the same cost: page walks and stalls at 4 KB boundaries. The gains don't stack, so large pages stay opt-in and off by default.
+
+## 29. Two 8-row groups per thread (2026-11-06): no gain, kept off by default
+
+**Kernel.** `matvec_q4x8_q8x2` is `matvec_q4x8_q8` with two rows per thread. Thread `t` is lane `t % 8` of group pair `t / 8`, and computes one row in each of groups `2p` and `2p + 1`.
+- **Same weight stream:** each row's arithmetic is unchanged, so results are bit-identical (tested on every path, chunked, and in the decode loop).
+- **More in flight:** each thread keeps two weight streams and four `vpdpbusd` chains going, and the activation broadcasts are shared between the two groups.
+- **Helper guard:** `pcuda_dp4a` is now inside an `#ifndef` guard (BOOTH_PIN F20), because nvcc sees both kernels in one translation unit.
+
+**Measured** (3B decode, alternating runs, ms per token):
+
+| | 1 row per thread | 2 rows per thread |
+|---|---|---|
+| pcuda simd | 31.5 / 31.8 / 32.3 | 32.1 / 32.6 / 32.9 |
+| CUDA | 20.8 / 20.8 / 21.0 | 20.8 / 21.1 / 21.3 |
+
+**Why no gain.** The generated loop is fully unrolled, with both streams interleaved and no vector spills. The limit is memory parallelism, which 12 threads, the hardware prefetcher and the 2 KB software prefetch already saturate. More streams per thread only add scalar address arithmetic.
+
+**Decision.** The kernel stays as a tested opt-in (`pcuda_llm_bench --rows-per-thread 2`, `makePcudaBackend(..., two_rows)`). The default remains one row per thread.
+
+**Remaining headroom:**
+- matvec runs at about 62 GB/s overall, against the 84 GB/s machine limit;
+- lm_head alone, a single large launch, reaches about 75–80 GB/s;
+- the gap is mostly the smaller per-layer matvecs, where step barriers and the last chunks finishing late matter.

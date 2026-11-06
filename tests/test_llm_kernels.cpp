@@ -148,7 +148,7 @@ TEST_CASE(matvec_q4x8_matches_reference_and_q4) {
 TEST_CASE(matvec_q4x8_q8_matches_reference) {
     LlmFixture fx;
     REQUIRE(fx.ok);
-    for (auto [rows, k] : {std::pair{8, 32}, std::pair{96, 64}, std::pair{1000, 512}}) {
+    for (auto [rows, k] : {std::pair{8, 32}, std::pair{96, 64}, std::pair{1000, 512}, std::pair{1008, 256}}) {
         std::mt19937 rng(unsigned(rows * 7 + k));
         std::vector<uint8_t> q(size_t(rows) * k / 2);
         for (auto& v : q) v = static_cast<uint8_t>(rng());
@@ -183,6 +183,16 @@ TEST_CASE(matvec_q4x8_q8_matches_reference) {
         CHECK_OK(pcudaMemset(dy, 0xFF, size_t(rows) * 4));
         CHECK_OK(pcudaLaunchKernelChunked("matvec_q4x8_q8", &a, workers(), 8));
         CHECK(bitEqual(hostCopy(dy, size_t(rows)), want));
+        if (rows % 16 == 0) {  // two rows per thread: the same bits
+            CHECK_OK(pcudaMemset(dy, 0xFF, size_t(rows) * 4));
+            CHECK_OK(pcudaLaunchKernel("matvec_q4x8_q8x2", &a));
+            CHECK(bitEqual(hostCopy(dy, size_t(rows)), want));
+            CHECK_OK(pcudaMemset(dy, 0xFF, size_t(rows) * 4));
+            CHECK_OK(pcudaLaunchKernelChunked("matvec_q4x8_q8x2", &a, workers(), 8));
+            CHECK(bitEqual(hostCopy(dy, size_t(rows)), want));
+        } else {
+            CHECK_ERR(pcudaLaunchKernel("matvec_q4x8_q8x2", &a), Error::InvalidValue);
+        }
     }
 }
 
@@ -431,6 +441,7 @@ TEST_CASE(tiny_decode_token_pcuda_vs_cpp) {
         auto serial = llm::makePcudaBackend(m, 0, false);
         auto chunked = llm::makePcudaBackend(m, workers(), false);
         auto graph = llm::makePcudaBackend(m, workers(), true);  // each token as one pcuda graph
+        auto two_rows = llm::makePcudaBackend(m, workers(), true, true);  // matvec_q4x8_q8x2 where rows % 16 == 0
         auto cpp = llm::makeCppBackend(m);
 
         // Same position each time: every run appends its K/V at slot 17, then attends over 0..17.
@@ -440,11 +451,14 @@ TEST_CASE(tiny_decode_token_pcuda_vs_cpp) {
         const auto lc = hostCopy(ap.logits, size_t(cfg.vocab));
         llm::decodeToken(*graph, m, ap, 17);
         const auto lg = hostCopy(ap.logits, size_t(cfg.vocab));
+        llm::decodeToken(*two_rows, m, ap, 17);
+        const auto l2 = hostCopy(ap.logits, size_t(cfg.vocab));
         llm::decodeToken(*cpp, m, ah, 17);
         const std::vector<float> lr(ah.logits, ah.logits + cfg.vocab);
 
         CHECK(bitEqual(ls, lc));
         CHECK(bitEqual(ls, lg));
+        CHECK(bitEqual(ls, l2));
         const double d = relDiff(ls, lr);  // only rope's sin/cos lowering differs
         if (!(d < 1e-4)) th::fail(__FILE__, __LINE__, "logits differ from C++ reference: " + std::to_string(d));
         CHECK(std::max_element(ls.begin(), ls.end()) - ls.begin() ==

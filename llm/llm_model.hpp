@@ -182,7 +182,9 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
 // workers == 0: one launch per kernel; workers > 0: matvec, attention, softmax and silu are
 // chunked (pcudaLaunchKernelChunked with that many workers).
 // graphs: run each token as one pcuda graph (pcudaStreamBeginCapture / pcudaGraphLaunch).
-std::unique_ptr<Backend> makePcudaBackend(const Model& m, unsigned workers, bool graphs = true);
+// two_rows: Q4X8Q8 matvecs with rows % 16 == 0 use matvec_q4x8_q8x2 (two rows per thread). Off by
+// default: measured no faster on the CPU (memory is already saturated) or on CUDA.
+std::unique_ptr<Backend> makePcudaBackend(const Model& m, unsigned workers, bool graphs = true, bool two_rows = false);
 
 // Plain C++ on host memory (single thread), reading the weights of a pcuda Model directly
 // (pcuda device memory is host memory).

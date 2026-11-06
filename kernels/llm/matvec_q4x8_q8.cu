@@ -6,6 +6,8 @@
 // 160 bytes per 256 weights: the same 5 bits per weight as Q4. rows % 8 == 0. dims = {rows, k}.
 // Per block: dot = sum(nibble * xq) over 32 weights, then (dot - 8 * sum(xq)) * d_w * d_x.
 
+#ifndef PCUDA_DP4A_DEFINED
+#define PCUDA_DP4A_DEFINED
 // u8 x s8 dot product of 4 packed bytes, plus c. The bytes of `a` must be 0..127 so that the
 // GPU's signed __dp4a gives the same result. pcuda_mslgen maps this helper to AVX-VNNI.
 __device__ int pcuda_dp4a(int a, int b, int c)
@@ -20,6 +22,7 @@ __device__ int pcuda_dp4a(int a, int b, int c)
     return c;
 #endif
 }
+#endif
 
 extern "C" __global__ void matvec_q4x8_q8(const int* qw, const int* xq, const float* xd, float* y,
                                           const int* dims)

@@ -341,8 +341,8 @@ namespace {
 
 class PcudaBackend final : public Backend {
 public:
-    PcudaBackend(const Model& m, unsigned workers, bool graphs)
-        : m_(m), workers_(workers), graphs_(graphs), ctx_(m.cfg.max_ctx) {}
+    PcudaBackend(const Model& m, unsigned workers, bool graphs, bool two_rows)
+        : m_(m), workers_(workers), graphs_(graphs), two_rows_(two_rows), ctx_(m.cfg.max_ctx) {}
     ~PcudaBackend() override { abandonCapture(); }
     void abandonCapture() noexcept {
         if (!capturing_) return;
@@ -385,7 +385,8 @@ public:
     }
     void matvecQuantized(const Mat& w, float* y) override {
         const MatvecQ4Q8Args a{static_cast<const int*>(w.q), xq_, scratchScales(xq_, w.k / 32), y, w.dims, w.rows, w.k};
-        launch("matvec_q4x8_q8", &a, 16);
+        if (two_rows_ && w.rows % 16 == 0) launch("matvec_q4x8_q8x2", &a, 8);  // min_chunk in threads (rows / 2)
+        else launch("matvec_q4x8_q8", &a, 16);
     }
     void addRmsNormQuant(float* x, const float* t, const float* w) override {
         const int nb = m_.cfg.hidden / 32;
@@ -461,6 +462,7 @@ private:
     const Model& m_;
     unsigned     workers_;
     bool         graphs_;
+    bool         two_rows_;
     bool         capturing_ = false;
     int          ctx_;
     int*         xq_ = nullptr;
@@ -523,8 +525,8 @@ private:
 
 } // namespace
 
-std::unique_ptr<Backend> makePcudaBackend(const Model& m, unsigned workers, bool graphs) {
-    return std::make_unique<PcudaBackend>(m, workers, graphs);
+std::unique_ptr<Backend> makePcudaBackend(const Model& m, unsigned workers, bool graphs, bool two_rows) {
+    return std::make_unique<PcudaBackend>(m, workers, graphs, two_rows);
 }
 
 std::unique_ptr<Backend> makeCppBackend(const Model& m) { return std::make_unique<CppBackend>(m); }

@@ -13,6 +13,7 @@ PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8);
 PCUDA_DECLARE_KERNEL_IMAGE(quantize_q8x4);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8_q8);
+PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8_q8x2);
 PCUDA_DECLARE_KERNEL_IMAGE(add_rms_norm);
 PCUDA_DECLARE_KERNEL_IMAGE(silu_mul_q8x4);
 PCUDA_DECLARE_KERNEL_IMAGE(add_sumsq);
@@ -201,6 +202,32 @@ Error q4q8Chunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) n
     if (!chunkOk(a.rows, begin, length) || begin % 8 != 0) return Error::InvalidValue;
     ArgPacker pk(*out);
     pk.ptr(a.qw + begin / 8 * (a.k / 32) * 40).ptr(a.xq).ptr(a.xd).ptr(a.y + begin).ptr(a.dims);
+    return pk.finish(length);
+}
+
+// ---- matvec_q4x8_q8x2: the same arguments, two rows per thread (rows % 16 == 0) ----
+
+Error q4q8x2Marshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const MatvecQ4Q8Args*>(p);
+    if (a.rows % 16 != 0) return Error::InvalidValue;
+    LaunchArgs checked;
+    LLM_TRY(q4q8Marshal(p, ctx, &checked));  // same buffers and sizes
+    ArgPacker pk(*out);
+    pk.ptr(a.qw).ptr(a.xq).ptr(a.xd).ptr(a.y).ptr(a.dims);
+    return pk.finish(a.rows / 2);
+}
+
+Error q4q8x2Extent(const void* p, int64_t* total) noexcept {
+    *total = static_cast<const MatvecQ4Q8Args*>(p)->rows / 2;
+    return *total >= 0 ? Error::Success : Error::InvalidValue;
+}
+
+// Thread t covers groups 2(t/8) and 2(t/8)+1: chunks start on a group pair (8 threads).
+Error q4q8x2Chunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const MatvecQ4Q8Args*>(p);
+    if (!chunkOk(a.rows / 2, begin, length) || begin % 8 != 0) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.qw + begin / 8 * 2 * (a.k / 32) * 40).ptr(a.xq).ptr(a.xd).ptr(a.y + begin * 2).ptr(a.dims);
     return pk.finish(length);
 }
 
@@ -470,6 +497,7 @@ const pcuda::KernelEntry kEntries[] = {
     {"matvec_q4x8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8), &matvecQ4x8Marshal, &matvecQ4Extent, &matvecQ4x8Chunk},
     {"quantize_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(quantize_q8x4), &quantMarshal, &quantExtent, &quantChunk},
     {"matvec_q4x8_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8_q8), &q4q8Marshal, &q4q8Extent, &q4q8Chunk},
+    {"matvec_q4x8_q8x2", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8_q8x2), &q4q8x2Marshal, &q4q8x2Extent, &q4q8x2Chunk},
     {"add_rms_norm", PCUDA_KERNEL_IMAGE_FIELDS(add_rms_norm), &addRmsMarshal},
     {"silu_mul_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(silu_mul_q8x4), &siluQMarshal, &siluQExtent, &siluQChunk},
     {"add_sumsq", PCUDA_KERNEL_IMAGE_FIELDS(add_sumsq), &sumsqMarshal, &sumsqExtent, &sumsqChunk},

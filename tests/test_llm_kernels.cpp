@@ -186,6 +186,47 @@ TEST_CASE(matvec_q4x8_q8_matches_reference) {
     }
 }
 
+// Fused kernels give exactly the results of the sequences they replace.
+TEST_CASE(fused_kernels_equal_unfused_sequences) {
+    LlmFixture fx;
+    REQUIRE(fx.ok);
+    const int n = 3072;
+    const auto x = randomFloats(size_t(n), 41, -2, 2), t = randomFloats(size_t(n), 42, -2, 2);
+    const auto w = randomFloats(size_t(n), 43, 0.9f, 1.1f);
+    std::vector<float> rx = x, ry(static_cast<size_t>(n));
+    llm::ref::add(rx.data(), t.data(), n);
+    llm::ref::rmsNorm(rx.data(), w.data(), ry.data(), n, 1, 1e-5f);
+    auto* dx = devCopy(x);
+    auto* dt = devCopy(t);
+    auto* dw = devCopy(w);
+    auto* dy = devCopy(std::vector<float>(size_t(n), 0.0f));
+    REQUIRE(dx && dt && dw && dy);
+    const llm::AddRmsNormArgs ar{dx, dt, dw, dy, n, 1e-5f};
+    CHECK_OK(pcudaLaunchKernel("add_rms_norm", &ar));
+    CHECK(bitEqual(hostCopy(dx, size_t(n)), rx));
+    CHECK(bitEqual(hostCopy(dy, size_t(n)), ry));
+
+    const int count = 256;  // 8192 values, the 3B FFN width
+    const auto g = randomFloats(size_t(count) * 32, 44, -6, 6), u = randomFloats(size_t(count) * 32, 45, -2, 2);
+    std::vector<float> h(g.size());
+    llm::ref::siluMul(g.data(), u.data(), h.data(), int(h.size()));
+    std::vector<int> xq(size_t(count) * 8);
+    std::vector<float> xd(size_t(count) * 2);
+    llm::ref::quantizeQ8x4(h.data(), xq.data(), xd.data(), count);
+    auto* dg = devCopy(g);
+    auto* du = devCopy(u);
+    auto* dxq = devCopy(std::vector<int>(xq.size(), 0));
+    auto* dxd = devCopy(std::vector<float>(xd.size(), 0.0f));
+    REQUIRE(dg && du && dxq && dxd);
+    const llm::SiluMulQ8Args sq{dg, du, dxq, dxd, count};
+    CHECK_OK(pcudaLaunchKernel("silu_mul_q8x4", &sq));
+    CHECK(hostCopy(dxq, xq.size()) == xq);
+    CHECK(bitEqual(hostCopy(dxd, xd.size()), xd));
+    CHECK_OK(pcudaMemset(dxq, 0, xq.size() * 4));
+    CHECK_OK(pcudaLaunchKernelChunked("silu_mul_q8x4", &sq, workers(), 8));
+    CHECK(hostCopy(dxq, xq.size()) == xq);
+}
+
 TEST_CASE(attention_kernels_match_reference_and_chunk) {
     LlmFixture fx;
     REQUIRE(fx.ok);

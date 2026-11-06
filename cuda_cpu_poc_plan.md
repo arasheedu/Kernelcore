@@ -836,3 +836,40 @@ Pool changes alone (`pcuda_bench`, vector_add):
   - fuse q/k/v and gate/up into single launches and quantize once per input;
   - run rms_norm as row-parallel chunks;
   - record a token as one pool job with barriers instead of about 470 separate launches.
+
+## 24. Step 3: fewer launches per token (2026-11-06)
+
+**Change.**
+- **Fused projections:** q/k/v and gate/up are stored as one matrix each, with their rows concatenated. Each is one launch with one activation quantization, writing into contiguous `q|k|v` and `g|u` buffers.
+- **Fused kernels:**
+  - `add_rms_norm` performs the residual add and the following RMS norm, including across the layer boundary into the next layer's attention norm or the final norm.
+  - `silu_mul_q8x4` performs SwiGLU and 8-bit quantization, so `h` is never stored.
+  Both perform the same float operations in the same order as the sequences they replace, so they are bit-identical to them (tested).
+- **Launch counts:** about 15 per layer instead of 24, plus the two KV-append copies.
+- **Small launches:** a launch with fewer than 8 threads takes the native path instead of SIMD. Most lanes would be idle while still paying for masked loads. The results are bit-identical.
+- **Bit-exact C++ reference:** its `rope` now reproduces Booth's sin/cos lowering (F11), so it matches every pcuda path bit for bit. Before, an 8-bit activation rounding could flip and move the logits by 1e-4.
+- **`compare_llm.ps1` fairness:** it now waits for Ollama to unload the model and then pauses 15 s before the bench. Running straight after Ollama cost the bench about 15%.
+
+**Results** (3B shapes, prompt 43, 128 tokens):
+
+| | ms/token | tok/s |
+|---|---|---|
+| simd, step 2 | 51–56 | 18–19.5 |
+| simd, step 3 (standalone) | 45.6 | 21.9 |
+| simd, step 3 (compare_llm.ps1, after cooldown) | 49.4 | 20.2 |
+| Ollama llama.cpp, CPU only (same run) | 35.4 | 28.25 |
+| CUDA, same kernels | 33.4 | 29.9 |
+
+Per-token profile at the first position:
+
+| Component | Time |
+|---|---|
+| Matrix-vector | about 33 ms (about 61 GB/s within matvec) |
+| Attention | 3 ms at position 43, 7.7 ms at position 167 |
+| rope, KV append, silu, add+norm | about 3 ms |
+| Overhead between launches | about 2.5 ms |
+
+**Remaining gap to Ollama CPU (about 1.3–1.4×).** Next candidates:
+1. **Attention data layout:** store K and V per head with positions contiguous, so the 8 SIMD lanes read adjacent floats. Today `attn_scores` gathers rows that are 1024 floats apart. Saves about 2–4 ms at longer contexts.
+2. **Lane-uniform analysis in `pcuda_mslgen`:** prove at translation time that values like `row / 8` are the same in every lane and `row % 8` equals the lane number. Loads such as `qw[base + w*8 + l]` then become plain contiguous loads with no runtime contiguity check. This is the "warp-uniform" analysis GPU compilers do. Estimated 10–20% on matvec.
+3. **Run a token as one pool job** with barriers between kernels, removing the remaining launch overhead.

@@ -52,6 +52,15 @@ $cpu = Invoke-Ollama 0
 $promptTokens = [int]$gpu.prompt_eval_count
 Write-Host ("Ollama: prompt {0} tokens; GPU {1:N1} tok/s, CPU {2:N1} tok/s" -f $promptTokens,
     ($gpu.eval_count / ($gpu.eval_duration / 1e9)), ($cpu.eval_count / ($cpu.eval_duration / 1e9)))
+# Same conditions for both: wait until Ollama has unloaded the model (its runner exits), then
+# let the CPU cool for a moment, so the bench does not start while the runner is shutting down.
+$deadline = (Get-Date).AddSeconds(90)
+while ((Get-Date) -lt $deadline) {
+    $ps = Invoke-RestMethod "$Server/api/ps" -TimeoutSec 5
+    if (-not $ps.models -or $ps.models.Count -eq 0) { break }
+    Start-Sleep -Seconds 2
+}
+Start-Sleep -Seconds 15
 Write-Host ""
 Write-Host "Running pcuda_llm_bench --model 3b --weights q4x8q8 --prompt $promptTokens --tokens $Tokens ..."
 $out = & $Bench --model 3b --weights q4x8q8 --prompt $promptTokens --tokens $Tokens --budget $Budget

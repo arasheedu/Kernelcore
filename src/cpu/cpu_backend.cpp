@@ -157,7 +157,10 @@ Codegen CpuBackend::resolve(const KernelEntry& entry) const noexcept {
 Error CpuBackend::launch(const KernelEntry& entry, const LaunchArgs& args) noexcept {
     try {
         if (args.nthreads == 0) return Error::Success;
-        const Codegen path = resolve(entry);
+        Codegen path = resolve(entry);
+        // Fewer threads than one 8-lane group would leave most lanes idle while still paying for
+        // masked memory access: the scalar native code is faster there, and bit-identical.
+        if (path == Codegen::Simd && args.nthreads < 8) path = Codegen::Native;
         InvokeResult r;
         if (path == Codegen::Booth) {
             const BoothImage* img = nullptr;

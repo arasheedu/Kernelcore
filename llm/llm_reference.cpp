@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 namespace llm::ref {
 
@@ -166,8 +167,11 @@ void rope(float* x, int pairs_per_head, int pos, int count, float log2_base) {
         const float theta =
             static_cast<float>(pos) *
             std::exp2(-static_cast<float>(i) / static_cast<float>(pairs_per_head) * log2_base);
-        const float c = std::cos(theta);
-        const float s = std::sin(theta);
+        // Booth lowers sinf/cosf(theta) to sinf/cosf((theta * 1/(2pi)) * 2pi) in float
+        // (BOOTH_PIN F11); reproduce it so the reference is bit-exact with every pcuda path.
+        const float turns = theta * 0.159154943f;
+        const float c = std::cos(turns * 6.28318548f);
+        const float s = std::sin(turns * 6.28318548f);
         const float x0 = x[2 * idx];
         const float x1 = x[2 * idx + 1];
         x[2 * idx] = x0 * c - x1 * s;
@@ -220,6 +224,21 @@ void siluMul(const float* g, const float* u, float* out, int count) {
 
 void add(float* x, const float* t, int n) {
     for (int i = 0; i < n; ++i) x[i] = x[i] + t[i];
+}
+
+} // namespace llm::ref
+
+namespace llm::ref {
+
+void addRmsNorm(float* x, const float* t, const float* w, float* y, int n, float eps) {
+    add(x, t, n);
+    rmsNorm(x, w, y, n, 1, eps);
+}
+
+void siluMulQ8x4(const float* g, const float* u, int* xq, float* xd, int count) {
+    std::vector<float> h(size_t(count) * 32);
+    siluMul(g, u, h.data(), count * 32);
+    quantizeQ8x4(h.data(), xq, xd, count);
 }
 
 } // namespace llm::ref

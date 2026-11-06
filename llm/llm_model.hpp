@@ -94,8 +94,13 @@ struct Mat {
     const int*   dims = nullptr;  // device int[2] {rows, k}
 };
 
+// q/k/v and gate/up projections are stored as one matrix each (rows concatenated), as many
+// inference engines do: one launch (and one activation quantization) instead of three or two.
 struct Layer {
-    Mat          wq, wk, wv, wo, wg, wu, wd;
+    Mat          wqkv;  // [heads*head_dim + 2*kv_stride][hidden]: q rows, then k, then v
+    Mat          wo;
+    Mat          wgu;   // [2*inter][hidden]: gate rows, then up
+    Mat          wd;
     const float* attn_norm = nullptr;
     const float* ffn_norm = nullptr;
     float*       k_cache = nullptr;  // [max_ctx][kv_stride]
@@ -113,8 +118,10 @@ struct Model {
 struct Acts {
     float* x0 = nullptr;  // fixed start vector, copied into x at the start of each token
     float* x = nullptr;   // residual stream
-    float *xn = nullptr, *q = nullptr, *k = nullptr, *v = nullptr, *scores = nullptr, *attn = nullptr;
-    float *t = nullptr, *g = nullptr, *u = nullptr, *h = nullptr, *logits = nullptr;
+    float *xn = nullptr, *scores = nullptr, *attn = nullptr;
+    float *q = nullptr, *k = nullptr, *v = nullptr;  // one buffer: k = q + heads*head_dim, v = k + kv_stride
+    float *t = nullptr, *h = nullptr, *logits = nullptr;
+    float *g = nullptr, *u = nullptr;  // one buffer: u = g + inter
     int*   xq = nullptr;  // 8-bit activations for Q4X8Q8: [max k / 32][8] packed words
     float* xd = nullptr;  // [max k / 32][2] {scale, sum}
 };
@@ -144,6 +151,10 @@ public:
     virtual void setContext(int ctx) = 0;
     virtual void matvec(const Mat& w, const float* x, float* y) = 0;
     virtual void rmsNorm(const float* x, const float* w, float* y) = 0;  // one row of hidden
+    virtual void addRmsNorm(float* x, const float* t, const float* w, float* y) = 0;  // x += t; y = norm(x)
+    // Q4X8Q8 only: SwiGLU straight into the activation scratch, then a matvec that uses it.
+    virtual void siluMulQuant(const float* g, const float* u, int n) = 0;
+    virtual void matvecQuantized(const Mat& w, float* y) = 0;
     virtual void rope(float* x, int heads, int pos) = 0;
     virtual void attnScores(const float* q, const float* k, float* scores) = 0;
     virtual void softmax(float* scores) = 0;

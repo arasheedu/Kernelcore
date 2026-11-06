@@ -70,11 +70,11 @@ const char* opName(Op op) {
     case Op::MatvecAttn: return "matvec attention (q,k,v,o)";
     case Op::MatvecFfn: return "matvec FFN (gate,up,down)";
     case Op::MatvecLmHead: return "matvec lm_head";
-    case Op::RmsNorm: return "rms_norm";
+    case Op::RmsNorm: return "rms_norm (first layer)";
     case Op::Rope: return "rope + KV append";
     case Op::Attention: return "attention (scores,softmax,values)";
-    case Op::SiluMul: return "silu_mul";
-    case Op::Add: return "residual add";
+    case Op::SiluMul: return "silu_mul (+ quantize)";
+    case Op::Add: return "residual add + rms_norm";
     case Op::Count: break;
     }
     return "?";
@@ -224,12 +224,9 @@ void buildModels(const Config& c, uint64_t seed, const std::vector<Allocator*>& 
     const int qd = c.heads * c.head_dim;
     const Weights f = c.weights;
     for (int l = 0; l < c.layers; ++l) {
-        auto wq = makeMat(rng, allocs, qd, c.hidden, f);
-        auto wk = makeMat(rng, allocs, c.kvStride(), c.hidden, f);
-        auto wv = makeMat(rng, allocs, c.kvStride(), c.hidden, f);
+        auto wqkv = makeMat(rng, allocs, qd + 2 * c.kvStride(), c.hidden, f);
         auto wo = makeMat(rng, allocs, c.hidden, qd, f);
-        auto wg = makeMat(rng, allocs, c.inter, c.hidden, f);
-        auto wu = makeMat(rng, allocs, c.inter, c.hidden, f);
+        auto wgu = makeMat(rng, allocs, 2 * c.inter, c.hidden, f);
         auto wd = makeMat(rng, allocs, c.hidden, c.inter, f);
         const auto an = uploadAll(allocs, uniformVector(rng, size_t(c.hidden), 1.0f, 0.1f));
         const auto fn = uploadAll(allocs, uniformVector(rng, size_t(c.hidden), 1.0f, 0.1f));
@@ -238,7 +235,7 @@ void buildModels(const Config& c, uint64_t seed, const std::vector<Allocator*>& 
         const auto vc = uploadAll(allocs, uniformVector(rng, cache, 0.0f, 1.0f));
         for (size_t i = 0; i < na; ++i) {
             Layer& L = out[i].layers[size_t(l)];
-            L = Layer{wq[i], wk[i], wv[i], wo[i], wg[i], wu[i], wd[i], an[i], fn[i], kc[i], vc[i]};
+            L = Layer{wqkv[i], wo[i], wgu[i], wd[i], an[i], fn[i], kc[i], vc[i]};
         }
     }
     const auto on = uploadAll(allocs, uniformVector(rng, size_t(c.hidden), 1.0f, 0.1f));
@@ -266,14 +263,14 @@ Acts allocActs(const Config& c, Allocator& alloc, uint64_t seed) {
     alloc.upload(a.x0, x0.data(), x0.size() * sizeof(float));
     a.x = buf(c.hidden);
     a.xn = buf(c.hidden);
-    a.q = buf(c.heads * c.head_dim);
-    a.k = buf(c.kvStride());
-    a.v = buf(c.kvStride());
+    a.q = buf(c.heads * c.head_dim + 2 * c.kvStride());
+    a.k = a.q + c.heads * c.head_dim;
+    a.v = a.k + c.kvStride();
     a.scores = buf(c.heads * c.max_ctx);
     a.attn = buf(c.heads * c.head_dim);
     a.t = buf(c.hidden);
-    a.g = buf(c.inter);
-    a.u = buf(c.inter);
+    a.g = buf(2 * c.inter);
+    a.u = a.g + c.inter;
     a.h = buf(c.inter);
     a.logits = buf(c.vocab);
     const int maxk = std::max({c.hidden, c.inter, c.heads * c.head_dim});
@@ -296,13 +293,11 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
     b.setScratch(a.xq, a.xd);
     b.setContext(pos + 1);
     b.copy(a.x, a.x0, c.hidden);
-    for (const Layer& L : m.layers) {
-        op(Op::RmsNorm, [&] { b.rmsNorm(a.x, L.attn_norm, a.xn); });
-        op(Op::MatvecAttn, [&] {
-            b.matvec(L.wq, a.xn, a.q);
-            b.matvec(L.wk, a.xn, a.k);
-            b.matvec(L.wv, a.xn, a.v);
-        });
+    const bool q8 = c.weights == Weights::Q4X8Q8;
+    op(Op::RmsNorm, [&] { b.rmsNorm(a.x, m.layers[0].attn_norm, a.xn); });
+    for (size_t l = 0; l < m.layers.size(); ++l) {
+        const Layer& L = m.layers[l];
+        op(Op::MatvecAttn, [&] { b.matvec(L.wqkv, a.xn, a.q); });  // q, k and v in one launch
         op(Op::Rope, [&] {
             b.rope(a.q, c.heads, pos);
             b.rope(a.k, c.kv_heads, pos);
@@ -315,17 +310,18 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
             b.attnValues(a.scores, L.v_cache, a.attn);
         });
         op(Op::MatvecAttn, [&] { b.matvec(L.wo, a.attn, a.t); });
-        op(Op::Add, [&] { b.add(a.x, a.t, c.hidden); });
-        op(Op::RmsNorm, [&] { b.rmsNorm(a.x, L.ffn_norm, a.xn); });
-        op(Op::MatvecFfn, [&] {
-            b.matvec(L.wg, a.xn, a.g);
-            b.matvec(L.wu, a.xn, a.u);
-        });
-        op(Op::SiluMul, [&] { b.siluMul(a.g, a.u, a.h, c.inter); });
-        op(Op::MatvecFfn, [&] { b.matvec(L.wd, a.h, a.t); });
-        op(Op::Add, [&] { b.add(a.x, a.t, c.hidden); });
+        op(Op::Add, [&] { b.addRmsNorm(a.x, a.t, L.ffn_norm, a.xn); });
+        op(Op::MatvecFfn, [&] { b.matvec(L.wgu, a.xn, a.g); });  // gate and up in one launch
+        if (q8) {
+            op(Op::SiluMul, [&] { b.siluMulQuant(a.g, a.u, c.inter); });
+            op(Op::MatvecFfn, [&] { b.matvecQuantized(L.wd, a.t); });
+        } else {
+            op(Op::SiluMul, [&] { b.siluMul(a.g, a.u, a.h, c.inter); });
+            op(Op::MatvecFfn, [&] { b.matvec(L.wd, a.h, a.t); });
+        }
+        const float* next_norm = l + 1 < m.layers.size() ? m.layers[l + 1].attn_norm : m.out_norm;
+        op(Op::Add, [&] { b.addRmsNorm(a.x, a.t, next_norm, a.xn); });
     }
-    op(Op::RmsNorm, [&] { b.rmsNorm(a.x, m.out_norm, a.xn); });
     op(Op::MatvecLmHead, [&] { b.matvec(m.lm_head, a.xn, a.logits); });
 }
 
@@ -364,6 +360,18 @@ public:
     void rmsNorm(const float* x, const float* w, float* y) override {
         const RmsNormArgs a{x, w, y, m_.cfg.hidden, 1, m_.cfg.eps};
         launch("rms_norm", &a, 0);
+    }
+    void addRmsNorm(float* x, const float* t, const float* w, float* y) override {
+        const AddRmsNormArgs a{x, t, w, y, m_.cfg.hidden, m_.cfg.eps};
+        launch("add_rms_norm", &a, 0);
+    }
+    void siluMulQuant(const float* g, const float* u, int n) override {
+        const SiluMulQ8Args a{g, u, xq_, xd_, n / 32};
+        launch("silu_mul_q8x4", &a, 16);
+    }
+    void matvecQuantized(const Mat& w, float* y) override {
+        const MatvecQ4Q8Args a{static_cast<const int*>(w.q), xq_, xd_, y, w.dims, w.rows, w.k};
+        launch("matvec_q4x8_q8", &a, 16);
     }
     void rope(float* x, int heads, int pos) override {
         const int pairs = m_.cfg.head_dim / 2;
@@ -430,6 +438,13 @@ public:
     }
     void rmsNorm(const float* x, const float* w, float* y) override {
         ref::rmsNorm(x, w, y, m_.cfg.hidden, 1, m_.cfg.eps);
+    }
+    void addRmsNorm(float* x, const float* t, const float* w, float* y) override {
+        ref::addRmsNorm(x, t, w, y, m_.cfg.hidden, m_.cfg.eps);
+    }
+    void siluMulQuant(const float* g, const float* u, int n) override { ref::siluMulQ8x4(g, u, xq_, xd_, n / 32); }
+    void matvecQuantized(const Mat& w, float* y) override {
+        ref::matvecQ4x8Q8(static_cast<const int*>(w.q), xq_, xd_, y, w.rows, w.k);
     }
     void rope(float* x, int heads, int pos) override {
         const int pairs = m_.cfg.head_dim / 2;

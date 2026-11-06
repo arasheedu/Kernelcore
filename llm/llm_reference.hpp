@@ -21,6 +21,9 @@ void matvecQ4x8Q8(const int* qw, const int* xq, const float* xd, float* y, int r
 // Row-major Q4 bytes/scales -> the matvec_q4x8_q8 weight stream (rows * k * 5 / 8 bytes).
 void repackQ4x8Q8(const uint8_t* qs, const float* scales, int* qw, int rows, int k);
 void rmsNorm(const float* x, const float* w, float* y, int n, int rows, float eps);
+// Fused kernels: the same results as the unfused sequences.
+void addRmsNorm(float* x, const float* t, const float* w, float* y, int n, float eps);  // add, then rmsNorm
+void siluMulQ8x4(const float* g, const float* u, int* xq, float* xd, int count);          // siluMul, then quantizeQ8x4
 void rope(float* x, int pairs_per_head, int pos, int count, float log2_base);
 void attnScores(const float* q, const float* k, float* scores, const AttnDims& d, float scale);
 void softmax(float* x, int n, int rows);

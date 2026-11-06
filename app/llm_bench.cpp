@@ -102,6 +102,15 @@ public:
     void rmsNorm(const float* x, const float* w, float* y) override {
         ck(gpu::llm::rmsNorm(x, w, y, m_.cfg.hidden, 1, m_.cfg.eps, s_), "rms_norm");
     }
+    void addRmsNorm(float* x, const float* t, const float* w, float* y) override {
+        ck(gpu::llm::addRmsNorm(x, t, w, y, m_.cfg.hidden, m_.cfg.eps, s_), "add_rms_norm");
+    }
+    void siluMulQuant(const float* g, const float* u, int n) override {
+        ck(gpu::llm::siluMulQ8x4(g, u, xq_, xd_, n / 32, s_), "silu_mul_q8x4");
+    }
+    void matvecQuantized(const llm::Mat& w, float* y) override {
+        ck(gpu::llm::matvecQ4x8Q8(static_cast<const int*>(w.q), xq_, xd_, y, w.dims, w.rows, s_), "matvec_q4x8_q8");
+    }
     void rope(float* x, int heads, int pos) override {
         const int pairs = m_.cfg.head_dim / 2;
         ck(gpu::llm::rope(x, pairs, pos, heads * pairs, std::log2(m_.cfg.rope_base), s_), "rope");

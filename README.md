@@ -189,7 +189,8 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
 | pcuda, `native` path, 16 threads | 216 | 4.6 | 9.3 |
 | pcuda, `simd` path, 16 threads | 156 | 6.4 | 12.9 |
 | pcuda, `simd` path, 8-row interleaved Q4 (`q4x8`) | 111 | 9.0 | 18.0 |
-| pcuda, `simd` path, `q4x8` + **8-bit activations, AVX-VNNI** (`q4x8q8`, default) | **51–56** | **18–19.5** | **36–39** |
+| pcuda, `simd` path, `q4x8` + 8-bit activations, AVX-VNNI (`q4x8q8`) | 51–56 | 18–19.5 | 36–39 |
+| pcuda, `simd` path, `q4x8q8` + **fused launches** (default) | **46–49** | **20–22** | **41–44** |
 | CUDA, same kernels (nvcc) | 65 | 15.4 | 30.9 |
 | CUDA, same kernels, `q4x8` (coalesced) | 39 | 25.7 | 51.5 |
 | CUDA, same kernels, `q4x8q8` (`__dp4a`) | 33 | 30.1 | 60.4 |
@@ -216,6 +217,10 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
   - Booth and native compute the same bytes the slow way.
   Integer math is exact, so all CPU paths stay bit-identical. Logits move by the activation
   rounding only (same top-5 tokens).
+- Fused launches: q/k/v and gate/up are single matrices (one launch, one activation
+  quantization), SwiGLU is fused with quantization, and each residual add with the next RMS norm.
+  That's about 15 launches per layer instead of 24, with bit-identical results. Launches with fewer
+  than 8 threads use the native path.
 - This machine reads memory at up to 84 GB/s (DDR5-6000, 16 threads), a limit of about 41.6 tok/s for
   2.02 GB per token. Ollama reaches 58 GB/s, and more threads don't change that
   (6/10/16 threads: 26.4/29.5/28.6 tok/s).

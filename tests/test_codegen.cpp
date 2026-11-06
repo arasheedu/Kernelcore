@@ -209,6 +209,19 @@ TEST_CASE(llm_kernels_identical_on_all_paths) {
         }, true);
     }
 
+    {  // fused SwiGLU + quantize across paths (chunked too)
+        const int count = 77;
+        const auto g = floats(size_t(count) * 32, 13, -6, 6), u = floats(size_t(count) * 32, 14, -2, 2);
+        float *dg = dev(g), *du = dev(u);
+        int* dxq = dev(std::vector<int>(size_t(count) * 8));
+        float* dxd = dev(std::vector<float>(size_t(count) * 2));
+        REQUIRE(dg && du && dxq && dxd);
+        const llm::SiluMulQ8Args sq{dg, du, dxq, dxd, count};
+        sameOnAllPaths("silu_mul_q8x4", dxq, size_t(count) * 8 * 4, [&](bool ch) {
+            return ch ? pcudaLaunchKernelChunked("silu_mul_q8x4", &sq, 4, 8) : pcudaLaunchKernel("silu_mul_q8x4", &sq);
+        }, true);
+    }
+
     // Attention, softmax (fmax, varying loops), rms_norm (sqrt), rope (sin/cos).
     const llm::AttnDims d{6, 77, 64, 128, 3};
     const auto q = floats(size_t(d.n_heads) * d.head_dim, 6, -1, 1);

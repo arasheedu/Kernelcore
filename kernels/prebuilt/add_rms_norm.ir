@@ -1,0 +1,73 @@
+; Booth IR
+
+func @add_rms_norm(ptr<global, f32> %0, ptr<global, f32> %1, ptr<global, f32> %2, ptr<global, f32> %3, i32 %4, f32 %5) __global__ {
+entry:
+    %6 = block_id.x  ; line 6
+    %7 = block_dim.x  ; line 6
+    %8 = mul i32 %6, %7  ; line 6
+    %9 = thread_id.x  ; line 6
+    %10 = add i32 %8, %9  ; line 6
+    %11 = icmp slt i32 %10, 1  ; line 7
+    br_cond %11, if.then, if.end merge if.end  ; line 7
+
+if.then:
+    br for.cond  ; line 9
+
+if.end:
+    ret void  ; line 15
+
+for.cond:
+    %15 = phi f32 [if.then: 0], [for.inc: %27]
+    %16 = phi i32 [if.then: 0], [for.inc: %29]
+    %17 = icmp slt i32 %16, %4  ; line 9
+    br_cond %17, for.body, for.end merge for.end  ; line 9
+
+for.body:
+    %19 = gep ptr<global, f32>, %0, %16  ; line 10
+    %20 = load f32, %19  ; line 10
+    %21 = gep ptr<global, f32>, %1, %16  ; line 10
+    %22 = load f32, %21  ; line 10
+    %23 = fadd f32 %20, %22  ; line 10
+    %24 = gep ptr<global, f32>, %0, %16  ; line 11
+    store f32 %23, %24  ; line 11
+    %26 = fmul f32 %23, %23  ; line 12
+    %27 = fadd f32 %15, %26  ; line 12
+    br for.inc  ; line 12
+
+for.inc:
+    %29 = add i32 %16, 1  ; line 9
+    br for.cond  ; line 9
+
+for.end:
+    %31 = sitofp i32 %4 to f32  ; line 14
+    %32 = fdiv f32 %15, %31  ; line 14
+    %33 = fadd f32 %32, %5  ; line 14
+    %34 = sqrt %33  ; line 14
+    %35 = fdiv f32 1, %34  ; line 14
+    br for.cond  ; line 15
+
+for.cond:
+    %37 = phi i32 [for.end: 0], [for.inc: %49]
+    %38 = icmp slt i32 %37, %4  ; line 15
+    br_cond %38, for.body, for.end merge for.end  ; line 15
+
+for.body:
+    %40 = gep ptr<global, f32>, %3, %37  ; line 15
+    %41 = gep ptr<global, f32>, %0, %37  ; line 15
+    %42 = load f32, %41  ; line 15
+    %43 = fmul f32 %42, %35  ; line 15
+    %44 = gep ptr<global, f32>, %2, %37  ; line 15
+    %45 = load f32, %44  ; line 15
+    %46 = fmul f32 %43, %45  ; line 15
+    store f32 %46, %40  ; line 15
+    br for.inc  ; line 15
+
+for.inc:
+    %49 = add i32 %37, 1  ; line 15
+    br for.cond  ; line 15
+
+for.end:
+    br if.end  ; line 15
+}
+
+; 1 functions, 0 globals, 52 instructions

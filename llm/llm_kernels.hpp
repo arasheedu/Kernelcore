@@ -65,6 +65,25 @@ struct MatvecQ4Q8Args {
     int          k;
 };
 
+// Fused residual add + RMS norm of one row (kernels/llm/add_rms_norm.cu): x += t; y = norm(x) * w.
+struct AddRmsNormArgs {
+    float*       x;
+    const float* t;
+    const float* w;
+    float*       y;
+    int          n;
+    float        eps;
+};
+
+// Fused SwiGLU + 8-bit quantization (kernels/llm/silu_mul_q8x4.cu): count blocks of 32.
+struct SiluMulQ8Args {
+    const float* g;
+    const float* u;
+    int*         xq;
+    float*       xd;
+    int          count;
+};
+
 struct RmsNormArgs {  // one row of n per thread
     const float* x;
     const float* w;
@@ -112,7 +131,7 @@ struct SiluMulArgs {
     int          count;
 };
 
-// Registers matvec_q8, matvec_q4, matvec_q4x8, quantize_q8x4, matvec_q4x8_q8, rms_norm, rope, attn_scores, softmax, attn_values and silu_mul.
+// Registers matvec_q8, matvec_q4, matvec_q4x8, quantize_q8x4, matvec_q4x8_q8, add_rms_norm, silu_mul_q8x4, rms_norm, rope, attn_scores, softmax, attn_values and silu_mul.
 // All but rope opt into chunked launches.
 pcuda::Error registerKernels() noexcept;
 

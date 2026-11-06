@@ -13,6 +13,8 @@ PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8);
 PCUDA_DECLARE_KERNEL_IMAGE(quantize_q8x4);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8_q8);
+PCUDA_DECLARE_KERNEL_IMAGE(add_rms_norm);
+PCUDA_DECLARE_KERNEL_IMAGE(silu_mul_q8x4);
 PCUDA_DECLARE_KERNEL_IMAGE(rms_norm);
 PCUDA_DECLARE_KERNEL_IMAGE(rope);
 PCUDA_DECLARE_KERNEL_IMAGE(attn_scores);
@@ -196,6 +198,50 @@ Error q4q8Chunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) n
     return pk.finish(length);
 }
 
+// ---- add_rms_norm(x, t, w, y, n, eps): one row, one thread ------------------------
+
+Error addRmsMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const AddRmsNormArgs*>(p);
+    if (a.n <= 0) return Error::InvalidValue;
+    const size_t bytes = f32Bytes(a.n);
+    LLM_TRY(check(ctx, a.x, bytes, "x"));
+    LLM_TRY(check(ctx, a.t, bytes, "t"));
+    LLM_TRY(check(ctx, a.w, bytes, "w"));
+    LLM_TRY(check(ctx, a.y, bytes, "y"));
+    ArgPacker pk(*out);
+    pk.ptr(a.x).ptr(a.t).ptr(a.w).ptr(a.y).i32(a.n).f32(a.eps);
+    return pk.finish(1);
+}
+
+// ---- silu_mul_q8x4(g, u, xq, xd, count) ------------------------------------------
+
+Error siluQMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const SiluMulQ8Args*>(p);
+    if (a.count < 0 || !fitsIndex(a.count, 32)) return Error::InvalidValue;
+    const size_t bytes = f32Bytes(int64_t(a.count) * 32);
+    LLM_TRY(check(ctx, a.g, bytes, "g"));
+    LLM_TRY(check(ctx, a.u, bytes, "u"));
+    LLM_TRY(check(ctx, a.xq, size_t(a.count) * 8 * sizeof(int), "xq"));
+    LLM_TRY(check(ctx, a.xd, f32Bytes(int64_t(a.count) * 2), "xd"));
+    ArgPacker pk(*out);
+    pk.ptr(a.g).ptr(a.u).ptr(a.xq).ptr(a.xd).i32(a.count);
+    return pk.finish(a.count);
+}
+
+Error siluQExtent(const void* p, int64_t* total) noexcept {
+    *total = static_cast<const SiluMulQ8Args*>(p)->count;
+    return *total >= 0 ? Error::Success : Error::InvalidValue;
+}
+
+Error siluQChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const SiluMulQ8Args*>(p);
+    if (!chunkOk(a.count, begin, length)) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.g + begin * 32).ptr(a.u + begin * 32).ptr(a.xq + begin * 8).ptr(a.xd + begin * 2)
+        .i32(static_cast<int32_t>(length));
+    return pk.finish(length);
+}
+
 // ---- rms_norm(x, w, y, n, rows, eps) ------------------------------------------
 
 Error rmsMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
@@ -353,6 +399,8 @@ const pcuda::KernelEntry kEntries[] = {
     {"matvec_q4x8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8), &matvecQ4x8Marshal, &matvecQ4Extent, &matvecQ4x8Chunk},
     {"quantize_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(quantize_q8x4), &quantMarshal, &quantExtent, &quantChunk},
     {"matvec_q4x8_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8_q8), &q4q8Marshal, &q4q8Extent, &q4q8Chunk},
+    {"add_rms_norm", PCUDA_KERNEL_IMAGE_FIELDS(add_rms_norm), &addRmsMarshal},
+    {"silu_mul_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(silu_mul_q8x4), &siluQMarshal, &siluQExtent, &siluQChunk},
     {"rms_norm", PCUDA_KERNEL_IMAGE_FIELDS(rms_norm), &rmsMarshal, &rmsExtent, &rmsChunk},
     {"rope", PCUDA_KERNEL_IMAGE_FIELDS(rope), &ropeMarshal},
     {"attn_scores", PCUDA_KERNEL_IMAGE_FIELDS(attn_scores), &scoresMarshal, &scoresExtent, &scoresChunk},

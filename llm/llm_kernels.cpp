@@ -11,6 +11,8 @@
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q8);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8);
+PCUDA_DECLARE_KERNEL_IMAGE(quantize_q8x4);
+PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8_q8);
 PCUDA_DECLARE_KERNEL_IMAGE(rms_norm);
 PCUDA_DECLARE_KERNEL_IMAGE(rope);
 PCUDA_DECLARE_KERNEL_IMAGE(attn_scores);
@@ -135,6 +137,63 @@ Error matvecQ4x8Marshal(const void* p, const LaunchContext& ctx, LaunchArgs* out
 Error matvecQ4x8Chunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
     if (begin % 8 != 0) return Error::InvalidValue;
     return matvecQ4Chunk(p, begin, length, out);
+}
+
+// ---- quantize_q8x4(x, xq, xd, count) --------------------------------------------
+
+Error quantMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const QuantizeArgs*>(p);
+    if (a.count < 0 || !fitsIndex(a.count, 32)) return Error::InvalidValue;
+    LLM_TRY(check(ctx, a.x, f32Bytes(int64_t(a.count) * 32), "x"));
+    LLM_TRY(check(ctx, a.xq, size_t(a.count) * 8 * sizeof(int), "xq"));
+    LLM_TRY(check(ctx, a.xd, f32Bytes(int64_t(a.count) * 2), "xd"));
+    ArgPacker pk(*out);
+    pk.ptr(a.x).ptr(a.xq).ptr(a.xd).i32(a.count);
+    return pk.finish(a.count);
+}
+
+Error quantExtent(const void* p, int64_t* total) noexcept {
+    *total = static_cast<const QuantizeArgs*>(p)->count;
+    return *total >= 0 ? Error::Success : Error::InvalidValue;
+}
+
+Error quantChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const QuantizeArgs*>(p);
+    if (!chunkOk(a.count, begin, length)) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.x + begin * 32).ptr(a.xq + begin * 8).ptr(a.xd + begin * 2).i32(static_cast<int32_t>(length));
+    return pk.finish(length);
+}
+
+// ---- matvec_q4x8_q8(qw, xq, xd, y, dims) -----------------------------------------
+
+Error q4q8Marshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const MatvecQ4Q8Args*>(p);
+    if (a.rows < 0 || a.rows % 8 != 0 || a.k <= 0 || a.k % 32 != 0 || !fitsIndex(a.rows, a.k)) return Error::InvalidValue;
+    const int64_t nb = a.k / 32;
+    LLM_TRY(check(ctx, a.qw, size_t(int64_t(a.rows) / 8 * nb * 40 * 4), "qw"));
+    LLM_TRY(check(ctx, a.xq, size_t(nb * 8 * 4), "xq"));
+    LLM_TRY(check(ctx, a.xd, f32Bytes(nb * 2), "xd"));
+    LLM_TRY(check(ctx, a.y, f32Bytes(a.rows), "y"));
+    LLM_TRY(check(ctx, a.dims, 2 * sizeof(int), "dims"));
+    if (a.dims[0] != a.rows || a.dims[1] != a.k) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.qw).ptr(a.xq).ptr(a.xd).ptr(a.y).ptr(a.dims);
+    return pk.finish(a.rows);
+}
+
+Error q4q8Extent(const void* p, int64_t* total) noexcept {
+    *total = static_cast<const MatvecQ4Q8Args*>(p)->rows;
+    return *total >= 0 ? Error::Success : Error::InvalidValue;
+}
+
+// Chunks start on an 8-row group; the weight stream advances 40 ints per group and block.
+Error q4q8Chunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const MatvecQ4Q8Args*>(p);
+    if (!chunkOk(a.rows, begin, length) || begin % 8 != 0) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.qw + begin / 8 * (a.k / 32) * 40).ptr(a.xq).ptr(a.xd).ptr(a.y + begin).ptr(a.dims);
+    return pk.finish(length);
 }
 
 // ---- rms_norm(x, w, y, n, rows, eps) ------------------------------------------
@@ -292,6 +351,8 @@ const pcuda::KernelEntry kEntries[] = {
     {"matvec_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q8), &matvecMarshal, &matvecExtent, &matvecChunk},
     {"matvec_q4", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4), &matvecQ4Marshal, &matvecQ4Extent, &matvecQ4Chunk},
     {"matvec_q4x8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8), &matvecQ4x8Marshal, &matvecQ4Extent, &matvecQ4x8Chunk},
+    {"quantize_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(quantize_q8x4), &quantMarshal, &quantExtent, &quantChunk},
+    {"matvec_q4x8_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8_q8), &q4q8Marshal, &q4q8Extent, &q4q8Chunk},
     {"rms_norm", PCUDA_KERNEL_IMAGE_FIELDS(rms_norm), &rmsMarshal, &rmsExtent, &rmsChunk},
     {"rope", PCUDA_KERNEL_IMAGE_FIELDS(rope), &ropeMarshal},
     {"attn_scores", PCUDA_KERNEL_IMAGE_FIELDS(attn_scores), &scoresMarshal, &scoresExtent, &scoresChunk},

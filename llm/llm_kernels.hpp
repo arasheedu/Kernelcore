@@ -45,6 +45,26 @@ struct MatvecQ4Args {
 // matvec_q4x8 takes MatvecQ4Args with qs/scales in the 8-row interleaved layout (see
 // kernels/llm/matvec_q4x8.cu and repackQ4x8). rows % 8 == 0.
 
+// 8-bit activations for matvec_q4x8_q8 (kernels/llm/quantize_q8x4.cu): count blocks of 32.
+struct QuantizeArgs {
+    const float* x;   // [count * 32]
+    int*         xq;  // [count][8] packed int8 words
+    float*       xd;  // [count][2] {scale, sum of q}
+    int          count;
+};
+
+// y = W x with 4-bit weights (8-row interleaved, scales inside the stream) and 8-bit activations.
+// qw: rows * k * 5 / 8 bytes (see kernels/llm/matvec_q4x8_q8.cu and ref::repackQ4x8Q8).
+struct MatvecQ4Q8Args {
+    const int*   qw;
+    const int*   xq;
+    const float* xd;
+    float*       y;
+    const int*   dims;
+    int          rows;
+    int          k;
+};
+
 struct RmsNormArgs {  // one row of n per thread
     const float* x;
     const float* w;
@@ -92,7 +112,7 @@ struct SiluMulArgs {
     int          count;
 };
 
-// Registers matvec_q8, matvec_q4, matvec_q4x8, rms_norm, rope, attn_scores, softmax, attn_values and silu_mul.
+// Registers matvec_q8, matvec_q4, matvec_q4x8, quantize_q8x4, matvec_q4x8_q8, rms_norm, rope, attn_scores, softmax, attn_values and silu_mul.
 // All but rope opt into chunked launches.
 pcuda::Error registerKernels() noexcept;
 

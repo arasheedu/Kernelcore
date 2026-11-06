@@ -32,4 +32,10 @@ inline float sqrt(float x) { return ::sqrtf(x); }
 inline float fmax(float a, float b) { return a > b ? a : b; }
 inline float fmin(float a, float b) { return a < b ? a : b; }
 
+// Metal's as_type<T>(v): Booth prints pointer bitcasts this way (same-size reinterpretation).
+template <class T, class U>
+inline T as_type(U v) {
+    return reinterpret_cast<T>(v);
+}
+
 } // namespace metal

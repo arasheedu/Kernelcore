@@ -188,9 +188,11 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
 | pcuda, `booth` path (Booth's x86 code), 16 threads | 1,766 | 0.57 | 1.1 |
 | pcuda, `native` path, 16 threads | 216 | 4.6 | 9.3 |
 | pcuda, `simd` path, 16 threads | 156 | 6.4 | 12.9 |
-| pcuda, `simd` path, **8-row interleaved Q4** (`q4x8`, default) | **111** | **9.0** | **18.0** |
+| pcuda, `simd` path, 8-row interleaved Q4 (`q4x8`) | 111 | 9.0 | 18.0 |
+| pcuda, `simd` path, `q4x8` + **8-bit activations, AVX-VNNI** (`q4x8q8`, default) | **51–56** | **18–19.5** | **36–39** |
 | CUDA, same kernels (nvcc) | 65 | 15.4 | 30.9 |
 | CUDA, same kernels, `q4x8` (coalesced) | 39 | 25.7 | 51.5 |
+| CUDA, same kernels, `q4x8q8` (`__dp4a`) | 33 | 30.1 | 60.4 |
 | plain C++ `/O2`, 1 thread | 1,195 | 0.84 | 1.7 |
 | Ollama llama.cpp, CPU only | 35 | 28.7 | 58 |
 | Ollama llama.cpp, GPU | 9.3 | 107 | 216 |
@@ -206,6 +208,14 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
   each block in 4 independent partial sums, so a core isn't stalled on one chain of dependent
   additions. It is still one-thread-per-row CUDA C that Booth accepts, and all paths stay
   bit-identical. Its results differ from `q4` only by summation order.
+- `q4x8q8` quantizes each matrix-vector input to 8 bits per block of 32, as llama.cpp does
+  (`quantize_q8x4`). The weights are multiplied with integer dot products through a small
+  `pcuda_dp4a` helper:
+  - the simd path uses AVX-VNNI `vpdpbusd`;
+  - CUDA uses `__dp4a`;
+  - Booth and native compute the same bytes the slow way.
+  Integer math is exact, so all CPU paths stay bit-identical. Logits move by the activation
+  rounding only (same top-5 tokens).
 - This machine reads memory at up to 84 GB/s (DDR5-6000, 16 threads), a limit of about 41.6 tok/s for
   2.02 GB per token. Ollama reaches 58 GB/s, and more threads don't change that
   (6/10/16 threads: 26.4/29.5/28.6 tok/s).
@@ -221,7 +231,7 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
 | `PCUDA_CODEGEN` | `auto` | Kernel code path: `auto`, `booth`, `native` or `simd` (see Code paths) |
 | `PCUDA_POOL_THREADS` | logical CPUs | Threads in the chunked-launch pool (1–1024) |
 | `PCUDA_CHUNKS_PER_WORKER` | `4` | A chunked launch with `workers = N` is split into up to N × this many chunks, so fast cores pick up the slow (efficiency) cores' share |
-| `PCUDA_POOL_SPIN_US` | `50` | Pool threads and the waiting caller spin this long before sleeping, so back-to-back launches skip the thread wake-up |
+| `PCUDA_POOL_SPIN_US` | `50` | Pool and stream threads, and a waiting caller, spin this long before sleeping, so back-to-back launches skip the thread wake-up |
 | `PCUDA_ALLOW_EMULATION` | unset | `1` lets the runtime start under x64 emulation on ARM64 (unsupported) |
 
 ## Limits and known issues

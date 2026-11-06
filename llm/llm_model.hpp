@@ -23,7 +23,9 @@ namespace llm {
 
 // Q4X8: the Q4 bytes repacked with 8 rows interleaved (kernels/llm/matvec_q4x8.cu), so SIMD
 // lanes and neighbouring GPU threads read adjacent bytes. Same size and results as Q4.
-enum class Weights { Q8, Q4, Q4X8 };
+// Q4X8Q8: the same 4-bit weights with scales inside an 8-row interleaved stream, multiplied
+// by 8-bit activations with integer dot products (AVX-VNNI on the simd path, __dp4a on CUDA).
+enum class Weights { Q8, Q4, Q4X8, Q4X8Q8 };
 
 struct Config {
     std::string name;
@@ -113,6 +115,8 @@ struct Acts {
     float* x = nullptr;   // residual stream
     float *xn = nullptr, *q = nullptr, *k = nullptr, *v = nullptr, *scores = nullptr, *attn = nullptr;
     float *t = nullptr, *g = nullptr, *u = nullptr, *h = nullptr, *logits = nullptr;
+    int*   xq = nullptr;  // 8-bit activations for Q4X8Q8: [max k / 32][8] packed words
+    float* xd = nullptr;  // [max k / 32][2] {scale, sum}
 };
 
 // Builds the same deterministic model (same seed -> same bytes) into each allocator.
@@ -134,6 +138,8 @@ public:
 class Backend {
 public:
     virtual ~Backend() = default;
+    // Scratch for 8-bit activations (Q4X8Q8 weights): set once per token by decodeToken.
+    virtual void setScratch(int* xq, float* xd) = 0;
     // Attention for the next launches covers positions [0, ctx): rewrites the device dims.
     virtual void setContext(int ctx) = 0;
     virtual void matvec(const Mat& w, const float* x, float* y) = 0;

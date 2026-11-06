@@ -10,7 +10,7 @@
 //   Q4_K_M file: 2.02 GB), same prompt length (KV cache already filled), same number of
 //   generated tokens, each attending over every position so far, logits back on the host.
 //
-//   pcuda_llm_bench [--model 3b|1b] [--weights q4x8|q4|q8] [--prompt P] [--tokens T] [--budget S]
+//   pcuda_llm_bench [--model 3b|1b] [--weights q4x8q8|q4x8|q4|q8] [--prompt P] [--tokens T] [--budget S]
 //                   [--workers N] [--check]
 //
 // Slow paths (booth, c++) time an evenly spaced subset of the T positions so a run stays within
@@ -77,6 +77,11 @@ class CudaBackend final : public llm::Backend {
 public:
     CudaBackend(const llm::Model& m, cudaStream_t s) : m_(m), s_(s), ctx_(m.cfg.max_ctx) {}
 
+    void setScratch(int* xq, float* xd) override {
+        xq_ = xq;
+        xd_ = xd;
+    }
+
     void setContext(int ctx) override {
         ctx_ = ctx;
         const llm::AttnDims d = m_.cfg.attnDims(ctx);
@@ -84,7 +89,10 @@ public:
         ck(cudaMemcpyAsync(m_.attn_dims, dims_.data(), sizeof dims_, cudaMemcpyHostToDevice, s_), "dims");
     }
     void matvec(const llm::Mat& w, const float* x, float* y) override {
-        if (w.format == llm::Weights::Q4X8)
+        if (w.format == llm::Weights::Q4X8Q8) {
+            ck(gpu::llm::quantizeQ8x4(x, xq_, xd_, w.k / 32, s_), "quantize_q8x4");
+            ck(gpu::llm::matvecQ4x8Q8(static_cast<const int*>(w.q), xq_, xd_, y, w.dims, w.rows, s_), "matvec_q4x8_q8");
+        } else if (w.format == llm::Weights::Q4X8)
             ck(gpu::llm::matvecQ4x8(static_cast<const uint8_t*>(w.q), w.s, x, y, w.dims, w.rows, s_), "matvec_q4x8");
         else if (w.format == llm::Weights::Q4)
             ck(gpu::llm::matvecQ4(static_cast<const uint8_t*>(w.q), w.s, x, y, w.dims, w.rows, s_), "matvec_q4");
@@ -121,6 +129,8 @@ private:
     cudaStream_t       s_;
     int                ctx_;
     std::array<int, 5> dims_{};
+    int*               xq_ = nullptr;
+    float*             xd_ = nullptr;
 };
 
 // ---- profilers ----------------------------------------------------------------
@@ -251,7 +261,7 @@ struct Column {
 // ---- main flow ----------------------------------------------------------------
 
 int run(int argc, char** argv) {
-    std::string model = "3b", weights = "q4x8";
+    std::string model = "3b", weights = "q4x8q8";
     int prompt = 32, tokens = 128;
     double budget = 20;
     unsigned workers_opt = 0;
@@ -270,12 +280,12 @@ int run(int argc, char** argv) {
         else if (a == "--budget") budget = std::atof(next().c_str());
         else if (a == "--workers") workers_opt = static_cast<unsigned>(std::atoi(next().c_str()));
         else {
-            std::fprintf(stderr, "usage: pcuda_llm_bench [--model 3b|1b] [--weights q4x8|q4|q8] [--prompt P] "
+            std::fprintf(stderr, "usage: pcuda_llm_bench [--model 3b|1b] [--weights q4x8q8|q4x8|q4|q8] [--prompt P] "
                                  "[--tokens T] [--budget S] [--workers N] [--check]\n");
             return 2;
         }
     }
-    if ((model != "3b" && model != "1b") || (weights != "q4" && weights != "q4x8" && weights != "q8") || prompt < 0 || tokens < 1 ||
+    if ((model != "3b" && model != "1b") || (weights != "q4" && weights != "q4x8" && weights != "q4x8q8" && weights != "q8") || prompt < 0 || tokens < 1 ||
         prompt + tokens > 32768 || budget <= 0) {
         std::fprintf(stderr, "pcuda_llm_bench: bad arguments\n");
         return 2;
@@ -294,7 +304,10 @@ int run(int argc, char** argv) {
         throw std::runtime_error(std::string("registering LLM kernels: ") + pcudaGetLastErrorDetail());
     const unsigned workers = workers_opt ? workers_opt : std::max(1u, std::thread::hardware_concurrency());
 
-    const llm::Weights wf = weights == "q4" ? llm::Weights::Q4 : weights == "q4x8" ? llm::Weights::Q4X8 : llm::Weights::Q8;
+    const llm::Weights wf = weights == "q4"       ? llm::Weights::Q4
+                            : weights == "q4x8"   ? llm::Weights::Q4X8
+                            : weights == "q4x8q8" ? llm::Weights::Q4X8Q8
+                                                  : llm::Weights::Q8;
     if (check) prompt = 20, tokens = 6;
     const llm::Config cfg = check ? llm::tinyConfig(wf)
                                   : model == "1b" ? llm::llama32_1b(prompt + tokens, wf) : llm::llama32_3b(prompt + tokens, wf);
@@ -351,7 +364,11 @@ int run(int argc, char** argv) {
         std::vector<float> glog(size_t(cfg.vocab));
         ca.download(glog.data(), cacts.logits, glog.size() * sizeof(float));
         pcuda::Codegen mv{};
-        pcudaGetKernelCodegenFor(wf == llm::Weights::Q4 ? "matvec_q4" : wf == llm::Weights::Q4X8 ? "matvec_q4x8" : "matvec_q8", &mv);
+        pcudaGetKernelCodegenFor(wf == llm::Weights::Q4     ? "matvec_q4"
+                                 : wf == llm::Weights::Q4X8 ? "matvec_q4x8"
+                                 : wf == llm::Weights::Q4X8Q8 ? "matvec_q4x8_q8"
+                                                              : "matvec_q8",
+                                 &mv);
 
         const bool pcuda_same = plog[0] == plog[1] && plog[1] == plog[2];
         const Agreement ap = compare(plog[0], ref), ag = compare(glog, ref);

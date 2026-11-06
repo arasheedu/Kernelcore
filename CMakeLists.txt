@@ -69,7 +69,7 @@ booth_add_kernel(TARGET pcuda NAME vector_add SOURCE kernels/vector_add.cu)
 add_library(pcuda_llm STATIC llm/llm_kernels.cpp llm/llm_model.cpp llm/llm_reference.cpp)
 target_include_directories(pcuda_llm PUBLIC llm)
 target_link_libraries(pcuda_llm PUBLIC pcuda)
-foreach(k matvec_q8 matvec_q4 matvec_q4x8 rms_norm rope attn_scores softmax attn_values silu_mul)
+foreach(k matvec_q8 matvec_q4 matvec_q4x8 quantize_q8x4 matvec_q4x8_q8 rms_norm rope attn_scores softmax attn_values silu_mul)
   booth_add_kernel(TARGET pcuda_llm NAME ${k} SOURCE kernels/llm/${k}.cu)
 endforeach()
 

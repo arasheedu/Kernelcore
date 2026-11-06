@@ -64,6 +64,37 @@ std::vector<std::string> splitLines(const std::string& s) {
     return v;
 }
 
+// Booth's Metal backend prints negative i32 constants as unsigned decimals (-127 becomes
+// 4294967169). In C++ such a literal is a 64-bit value, so `x < 4294967169` would always be true.
+// Rewrites integer literals in [2^31, 2^32) back to their 32-bit signed value.
+std::string signedLiterals(const std::string& line) {
+    std::string out;
+    size_t i = 0;
+    auto ident = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.'; };
+    while (i < line.size()) {
+        const bool start = std::isdigit(static_cast<unsigned char>(line[i])) && (i == 0 || !ident(line[i - 1]));
+        if (!start) {
+            out.push_back(line[i++]);
+            continue;
+        }
+        size_t j = i;
+        while (j < line.size() && std::isdigit(static_cast<unsigned char>(line[j]))) ++j;
+        const std::string digits = line.substr(i, j - i);
+        const bool plain = j == line.size() || !(ident(line[j]) || line[j] == 'e' || line[j] == 'E');
+        if (plain && digits.size() == 10) {
+            const unsigned long long v = std::stoull(digits);
+            if (v >= 2147483648ull && v < 4294967296ull) {
+                out += std::to_string(static_cast<long long>(v) - 4294967296ll);  // "a - -127" is valid C
+                i = j;
+                continue;
+            }
+        }
+        out += digits;
+        i = j;
+    }
+    return out;
+}
+
 std::string trim(const std::string& s) {
     const size_t a = s.find_first_not_of(" \t");
     if (a == std::string::npos) return {};
@@ -134,6 +165,8 @@ struct Kernel {
     std::map<std::string, Ty> vars;      // declared locals
     std::vector<std::string>  body;      // trimmed lines between the braces (no declarations)
     bool                      helpers = false;  // other functions in the file
+    // Helper function bodies (statements only, declarations dropped), by name.
+    std::map<std::string, std::vector<std::string>> helper_bodies;
     size_t                    kernel_line = 0;
 };
 
@@ -141,10 +174,23 @@ Kernel parseMetal(const std::vector<std::string>& lines, const std::string& name
     Kernel k;
     const std::regex fn_def(R"(^[A-Za-z_][\w ]*\b(\w+)\($)");
     size_t i = 0;
+    const std::regex local_decl(R"(^(int|float|bool|char|device float \*|device int \*|device char \*) v\d+;$)");
     for (; i < lines.size(); ++i) {
         if (lines[i] == "kernel void " + name + "(") break;
         std::smatch m;
-        if (std::regex_match(lines[i], m, fn_def)) k.helpers = true;
+        if (!std::regex_match(lines[i], m, fn_def)) continue;
+        k.helpers = true;
+        const std::string fname = m[1];
+        size_t j = i + 1;
+        while (j < lines.size() && trim(lines[j]).back() != ')' && trim(lines[j]).back() != ';') ++j;
+        if (j + 1 >= lines.size() || trim(lines[j]).back() == ';' || lines[j + 1] != "{") continue;  // prototype
+        std::vector<std::string> body;
+        for (j += 2; j < lines.size() && lines[j] != "}"; ++j) {
+            const std::string t = trim(lines[j]);
+            if (!std::regex_match(t, local_decl)) body.push_back(t);
+        }
+        k.helper_bodies[fname] = body;
+        i = j;
     }
     if (i == lines.size()) die("kernel '" + name + "' not found in Metal output");
     k.kernel_line = i;
@@ -283,6 +329,19 @@ std::string nativeFile(const std::string& name, const std::string& fixed, const 
 
 // ---- simd path ----------------------------------------------------------------
 
+// Booth's Metal output for the pcuda_dp4a helper in kernels/llm/matvec_q4x8_q8.cu (generic path:
+// u8 x s8 products of 4 packed bytes plus c). The simd path replaces calls to a helper with
+// exactly this body by AVX-VNNI vpdpbusd, which computes the same integer result.
+const std::vector<std::string>& dp4aCanonicalBody() {
+    static const std::vector<std::string> body{
+        "v3 = p0 & 255;",  "v4 = p1 << 24;",  "v5 = v4 >> 24;",   "v6 = v3 * v5;",    "v7 = p2 + v6;",
+        "v8 = p0 >> 8;",   "v9 = v8 & 255;",  "v10 = p1 << 16;",  "v11 = v10 >> 24;", "v12 = v9 * v11;",
+        "v13 = v7 + v12;", "v14 = p0 >> 16;", "v15 = v14 & 255;", "v16 = p1 << 8;",   "v17 = v16 >> 24;",
+        "v18 = v15 * v17;", "v19 = v13 + v18;", "v20 = p0 >> 24;", "v21 = v20 & 255;", "v22 = p1 >> 24;",
+        "v23 = v21 * v22;", "v24 = v19 + v23;", "return v24;"};
+    return body;
+}
+
 struct Unsupported : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
@@ -318,7 +377,13 @@ public:
     }
 
     std::string run() {
-        if (k_.helpers) unsupported("calls a helper function");
+        // Helper functions are only allowed when they are known intrinsics with the exact body
+        // pcuda expects; anything else stays on the native path.
+        for (const auto& [fname, body] : k_.helper_bodies) {
+            if (fname != "pcuda_dp4a" || body != dp4aCanonicalBody())
+                unsupported("calls helper function '" + fname + "'");
+        }
+        if (k_.helpers && k_.helper_bodies.empty()) unsupported("calls a helper function");
         regions_.push_back({});
         size_t i = 0;
         std::vector<Stmt> top = parseBlock(i, 0);
@@ -350,9 +415,11 @@ private:
         static const std::regex builtin(R"(^(tid|bid|bdim)\.x$)");
         static const std::regex bin(R"(^(\S+) (\+|-|\*|/|%|<|<=|>|>=|==|!=|&|\||\^|<<|>>|&&|\|\|) (\S+)$)");
         static const std::regex atom(R"(^[\w.\-]+$)");
+        static const std::regex ptrcast(R"(^as_type<device (float|int|char) \*>\((\w+)\)$)");
         std::smatch m;
         Expr e;
-        if (std::regex_match(r, m, load)) e = {Expr::Load, "", {m[1]}};
+        if (std::regex_match(r, m, ptrcast)) e = {Expr::Cast, "ptr:" + m[1].str(), {m[2]}};
+        else if (std::regex_match(r, m, load)) e = {Expr::Load, "", {m[1]}};
         else if (std::regex_match(r, m, builtin)) e = {Expr::Builtin, m[1], {}};
         else if (std::regex_match(r, m, cast)) e = {Expr::Cast, m[1], {m[2]}};
         else if (std::regex_match(r, m, call)) {
@@ -557,8 +624,8 @@ private:
             std::string base;
             for (const Stmt* s : list) {
                 std::string b;
-                if (s->e.kind == Expr::Gep) b = baseOf(s->e.args[0]);
-                else if (s->e.kind == Expr::Atom) b = baseOf(s->e.args[0]);
+                if (s->e.kind == Expr::Gep || s->e.kind == Expr::Atom || s->e.kind == Expr::Cast)
+                    b = baseOf(s->e.args[0]);
                 else unsupported("varying pointer from '" + s->e.op + "'");
                 if (!base.empty() && b != base) unsupported("varying pointer " + v + " with different bases");
                 base = b;
@@ -574,7 +641,8 @@ private:
             auto it = assigns_.find(p);
             if (it == assigns_.end()) unsupported("pointer " + p + " has no assignment");
             const Stmt* s = it->second.front();
-            if (s->e.kind == Expr::Gep || s->e.kind == Expr::Atom) return baseOf(s->e.args[0]);
+            if (s->e.kind == Expr::Gep || s->e.kind == Expr::Atom || s->e.kind == Expr::Cast)
+                return baseOf(s->e.args[0]);
             unsupported("pointer " + p);
         }
         return p;  // uniform pointer: itself
@@ -640,12 +708,21 @@ private:
         case Expr::Cast: {
             const std::string& x = e.args[0];
             const Ty xt = atomTy(x);
+            if (e.op.rfind("ptr:", 0) == 0) {  // as_type pointer cast
+                if (!isPtr(xt)) unsupported("as_type of a non-pointer");
+                const std::string t = e.op.substr(4);
+                if (!varying_.count(x)) return "VPtr<" + t + ">{reinterpret_cast<" + t + "*>(" + x + "), zeroI()}";
+                return "ptrcast<" + t + ">(" + x + ")";
+            }
             std::string v = vec(x, scalarKind(xt));
             if (xt == Ty::Char) v = byteExt(s, v);
             if (e.op == "float") return xt == Ty::Float ? v : "i2f(" + v + ")";
             return xt == Ty::Float ? "f2i(" + v + ")" : v;
         }
         case Expr::Call: {
+            if (e.op == "pcuda_dp4a" && e.args.size() == 3)  // verified helper: AVX-VNNI vpdpbusd
+                return "vdp4a(" + vec(e.args[2], Ty::Int) + ", " + vec(e.args[0], Ty::Int) + ", " +
+                       vec(e.args[1], Ty::Int) + ")";
             std::vector<std::string> a;
             for (const auto& x : e.args) a.push_back(vec(x, Ty::Float));
             if (e.op == "sin" && a.size() == 1) return "vsin(" + a[0] + ")";
@@ -689,6 +766,7 @@ private:
         case Expr::Load: return "*(" + e.args[0] + ")";
         case Expr::Cast: {
             const Ty xt = atomTy(e.args[0]);
+            if (e.op.rfind("ptr:", 0) == 0) return "reinterpret_cast<" + e.op.substr(4) + "*>(" + e.args[0] + ")";
             if (xt == Ty::Char) {
                 const int n = std::stoi(s.lhs.substr(1));
                 auto it = ir_.find(n);
@@ -701,6 +779,7 @@ private:
         case Expr::Call: {
             std::string a;
             for (const auto& x : e.args) a += (a.empty() ? "" : ", ") + x;
+            if (e.op == "pcuda_dp4a") return "pcuda::simd::dp4aScalar(" + a + ")";
             static const std::set<std::string> known{"sin", "cos", "exp2", "log2", "sqrt", "fmax", "fmin"};
             if (!known.count(e.op)) unsupported("call " + e.op);
             return "metal::" + e.op + "(" + a + ")";
@@ -904,7 +983,8 @@ int run(int argc, char** argv) {
     if (metal.empty() || irp.empty() || name.empty() || native.empty() || simd.empty())
         die("usage: pcuda_mslgen --metal F --ir F --kernel NAME --native OUT.cpp --simd OUT.cpp");
 
-    const std::vector<std::string> lines = splitLines(readFile(metal));
+    std::vector<std::string> lines = splitLines(readFile(metal));
+    for (std::string& l : lines) l = signedLiterals(l);
     const auto ir = parseIr(readFile(irp), name);
     const Kernel k = parseMetal(lines, name);
     std::string simd_block;

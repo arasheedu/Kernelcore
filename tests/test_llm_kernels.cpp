@@ -143,6 +143,49 @@ TEST_CASE(matvec_q4x8_matches_reference_and_q4) {
     CHECK_ERR(pcudaLaunchKernel("matvec_q4x8", &bad), Error::InvalidValue);
 }
 
+// 8-bit activations + integer dot products: exact against the C++ reference, and within
+// quantization error of the float kernel on the same weights.
+TEST_CASE(matvec_q4x8_q8_matches_reference) {
+    LlmFixture fx;
+    REQUIRE(fx.ok);
+    for (auto [rows, k] : {std::pair{8, 32}, std::pair{96, 64}, std::pair{1000, 512}}) {
+        std::mt19937 rng(unsigned(rows * 7 + k));
+        std::vector<uint8_t> q(size_t(rows) * k / 2);
+        for (auto& v : q) v = static_cast<uint8_t>(rng());
+        const auto s = randomFloats(size_t(rows) * k / 32, 31, 0.001f, 0.01f);
+        std::vector<int> qw(size_t(rows) * k * 5 / 32);
+        llm::ref::repackQ4x8Q8(q.data(), s.data(), qw.data(), rows, k);
+        auto x = randomFloats(size_t(k), 32, -3, 3);
+        x[0] = 0.0f;  // a zero, and an all-zero block when k allows it
+        if (k >= 64) std::fill(x.begin() + 32, x.begin() + 64, 0.0f);
+        const int nb = k / 32;
+        std::vector<int> xq(size_t(nb) * 8);
+        std::vector<float> xd(size_t(nb) * 2), want(static_cast<size_t>(rows)), flt(static_cast<size_t>(rows));
+        llm::ref::quantizeQ8x4(x.data(), xq.data(), xd.data(), nb);
+        llm::ref::matvecQ4x8Q8(qw.data(), xq.data(), xd.data(), want.data(), rows, k);
+        llm::ref::matvecQ4(q.data(), s.data(), x.data(), flt.data(), rows, k);
+        CHECK(relDiff(want, flt) < 3e-2);  // 8-bit activation rounding
+
+        auto* dx = devCopy(x);
+        auto* dqw = devCopy(qw);
+        auto* dxq = devCopy(std::vector<int>(xq.size(), 0));
+        auto* dxd = devCopy(std::vector<float>(xd.size(), 0.0f));
+        auto* dy = devCopy(std::vector<float>(size_t(rows), 0.0f));
+        auto* dd = devCopy(std::vector<int>{rows, k});
+        REQUIRE(dx && dqw && dxq && dxd && dy && dd);
+        const llm::QuantizeArgs qa{dx, dxq, dxd, nb};
+        CHECK_OK(pcudaLaunchKernel("quantize_q8x4", &qa));
+        CHECK(hostCopy(dxq, xq.size()) == xq);
+        CHECK(bitEqual(hostCopy(dxd, xd.size()), xd));
+        const llm::MatvecQ4Q8Args a{dqw, dxq, dxd, dy, dd, rows, k};
+        CHECK_OK(pcudaLaunchKernel("matvec_q4x8_q8", &a));
+        CHECK(bitEqual(hostCopy(dy, size_t(rows)), want));
+        CHECK_OK(pcudaMemset(dy, 0xFF, size_t(rows) * 4));
+        CHECK_OK(pcudaLaunchKernelChunked("matvec_q4x8_q8", &a, workers(), 8));
+        CHECK(bitEqual(hostCopy(dy, size_t(rows)), want));
+    }
+}
+
 TEST_CASE(attention_kernels_match_reference_and_chunk) {
     LlmFixture fx;
     REQUIRE(fx.ok);
@@ -267,7 +310,7 @@ TEST_CASE(llm_argument_validation) {
 TEST_CASE(tiny_decode_token_pcuda_vs_cpp) {
     LlmFixture fx;
     REQUIRE(fx.ok);
-    for (llm::Weights w : {llm::Weights::Q8, llm::Weights::Q4, llm::Weights::Q4X8}) {
+    for (llm::Weights w : {llm::Weights::Q8, llm::Weights::Q4, llm::Weights::Q4X8, llm::Weights::Q4X8Q8}) {
         const llm::Config cfg = llm::tinyConfig(w);
         llm::PcudaAllocator pa;
         llm::HostAllocator ha;

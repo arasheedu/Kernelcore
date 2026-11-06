@@ -285,7 +285,7 @@ Error startDevice(Runtime& r) {
     }
     r.backend = std::make_unique<cpu::CpuBackend>(r.registry, r.guard_pages);
     r.backend->setCodegen(r.codegen.load());
-    r.default_stream = std::make_unique<Stream>(r.stack_bytes, L"pcuda default stream");
+    r.default_stream = std::make_unique<Stream>(r.stack_bytes, L"pcuda default stream", r.pool_spin_us);
     r.poisoned.store(false);
     {
         std::lock_guard lk(r.fault_mutex);
@@ -667,7 +667,7 @@ Error pcudaStreamCreate(pcudaStream_t* stream) noexcept {
         if (Error e = requireUsable(r); e != Error::Success) return e;
         if (!stream) return Error::InvalidValue;
         auto s = std::make_unique<pcudaStream_st>();
-        s->stream = std::make_unique<Stream>(r.stack_bytes, L"pcuda stream");
+        s->stream = std::make_unique<Stream>(r.stack_bytes, L"pcuda stream", r.pool_spin_us);
         pcudaStream_t h = s.get();
         std::lock_guard lk(r.objects_mutex);
         r.streams.emplace(h, std::move(s));

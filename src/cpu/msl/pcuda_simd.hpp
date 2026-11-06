@@ -8,6 +8,7 @@
 #pragma once
 
 #include <immintrin.h>
+#include <intrin.h>
 
 #include <cstdint>
 
@@ -108,6 +109,35 @@ inline VF vcos(VF a) { return perLane<cosTurns>(a); }
 inline VF vexp2(VF a) { return perLane<::exp2f>(a); }
 inline VF vlog2(VF a) { return perLane<::log2f>(a); }
 
+// ---- 8-bit dot products (pcuda_dp4a in kernels/llm/matvec_q4x8_q8.cu) ----
+// c + sum over the 4 bytes of a (unsigned) times the 4 bytes of b (signed), wrapping 32-bit.
+inline int dp4aScalar(int a, int b, int c) {
+    c += (a & 255) * ((b << 24) >> 24);
+    c += ((a >> 8) & 255) * ((b << 16) >> 24);
+    c += ((a >> 16) & 255) * ((b << 8) >> 24);
+    c += ((a >> 24) & 255) * (b >> 24);
+    return c;
+}
+inline bool cpuHasAvxVnni() {
+    static const bool has = [] {
+        int r[4] = {};
+        __cpuidex(r, 7, 1);
+        return (r[0] & (1 << 4)) != 0;
+    }();
+    return has;
+}
+// AVX-VNNI vpdpbusd computes exactly dp4aScalar per lane (u8 x s8, no saturation). Without
+// VNNI the same integer result comes from four 32-bit multiplies.
+inline VI vdp4a(VI c, VI a, VI b) {
+    if (cpuHasAvxVnni()) return _mm256_dpbusd_avx_epi32(c, a, b);
+    VI r = c;
+    r = add(r, mul(_mm256_and_si256(a, splat(255)), _mm256_srai_epi32(_mm256_slli_epi32(b, 24), 24)));
+    r = add(r, mul(_mm256_and_si256(_mm256_srli_epi32(a, 8), splat(255)), _mm256_srai_epi32(_mm256_slli_epi32(b, 16), 24)));
+    r = add(r, mul(_mm256_and_si256(_mm256_srli_epi32(a, 16), splat(255)), _mm256_srai_epi32(_mm256_slli_epi32(b, 8), 24)));
+    r = add(r, mul(_mm256_srli_epi32(a, 24), _mm256_srai_epi32(b, 24)));
+    return r;
+}
+
 // ---- conversions ----
 inline VF i2f(VI a) { return _mm256_cvtepi32_ps(a); }   // cvtsi2ss per lane (round to nearest)
 inline VI f2i(VF a) { return _mm256_cvttps_epi32(a); }  // truncation, like a C cast
@@ -128,6 +158,12 @@ template <class T>
 inline VPtr<T> gep(VPtr<T> p, VI idx) { return {p.base, add(p.idx, idx)}; }
 template <class T>
 inline VPtr<T> blend(VPtr<T> old, VPtr<T> v, VI m) { return {v.base, blend(old.idx, v.idx, m)}; }
+// Same-size pointer reinterpretation (Metal as_type): the element index is unchanged.
+template <class T, class U>
+inline VPtr<T> ptrcast(VPtr<U> p) {
+    static_assert(sizeof(T) == sizeof(U), "as_type between element types of different size");
+    return {reinterpret_cast<T*>(p.base), p.idx};
+}
 #pragma warning(pop)
 
 // Active lanes form base[i0 + l] with lane 0 active: one masked contiguous access.

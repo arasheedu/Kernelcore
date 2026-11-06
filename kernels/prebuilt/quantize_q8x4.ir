@@ -1,0 +1,156 @@
+; Booth IR
+
+func @quantize_q8x4(ptr<global, f32> %0, ptr<global, i32> %1, ptr<global, f32> %2, i32 %3) __global__ {
+entry:
+    %4 = block_id.x  ; line 10
+    %5 = block_dim.x  ; line 10
+    %6 = mul i32 %4, %5  ; line 10
+    %7 = thread_id.x  ; line 10
+    %8 = add i32 %6, %7  ; line 10
+    %9 = icmp slt i32 %8, %3  ; line 11
+    br_cond %9, if.then, if.end merge if.end  ; line 11
+
+if.then:
+    br for.cond  ; line 13
+
+if.end:
+    ret void  ; line 39
+
+for.cond:
+    %13 = phi f32 [if.then: 0], [for.inc: %23]
+    %14 = phi i32 [if.then: 0], [for.inc: %25]
+    %15 = icmp slt i32 %14, 32  ; line 13
+    br_cond %15, for.body, for.end merge for.end  ; line 13
+
+for.body:
+    %17 = mul i32 %8, 32  ; line 14
+    %18 = add i32 %17, %14  ; line 14
+    %19 = gep ptr<global, f32>, %0, %18  ; line 14
+    %20 = load f32, %19  ; line 14
+    %21 = fsub f32 0, %20  ; line 15
+    %22 = fmax %20 %21  ; line 15
+    %23 = fmax %13 %22  ; line 15
+    br for.inc  ; line 15
+
+for.inc:
+    %25 = add i32 %14, 1  ; line 13
+    br for.cond  ; line 13
+
+for.end:
+    %27 = fdiv f32 %13, 127  ; line 17
+    %28 = fcmp ogt f32 %27, 0  ; line 19
+    br_cond %28, if.then, if.else merge if.end  ; line 19
+
+if.then:
+    %30 = fdiv f32 1, %27  ; line 19
+    br if.end  ; line 19
+
+if.else:
+    br if.end  ; line 20
+
+if.end:
+    %33 = phi f32 [if.then: %30], [if.else: 0]
+    br for.cond  ; line 22
+
+for.cond:
+    %35 = phi i32 [if.end: 0], [for.inc: %54]
+    %36 = phi i32 [if.end: 0], [for.inc: %43]
+    %37 = phi f32 [if.end: undef], [for.inc: %57]
+    %38 = phi i32 [if.end: undef], [for.inc: %58]
+    %39 = phi i32 [if.end: undef], [for.inc: %59]
+    %40 = icmp slt i32 %36, 8  ; line 22
+    br_cond %40, for.body, for.end merge for.end  ; line 22
+
+for.body:
+    br for.cond  ; line 24
+
+for.inc:
+    %43 = add i32 %36, 1  ; line 22
+    br for.cond  ; line 22
+
+for.end:
+    %45 = mul i32 %8, 2  ; line 38
+    %46 = gep ptr<global, f32>, %2, %45  ; line 38
+    store f32 %27, %46  ; line 38
+    %48 = mul i32 %8, 2  ; line 39
+    %49 = add i32 %48, 1  ; line 39
+    %50 = gep ptr<global, f32>, %2, %49  ; line 39
+    %51 = sitofp i32 %35 to f32  ; line 39
+    store f32 %51, %50  ; line 39
+    br if.end  ; line 39
+
+for.cond:
+    %54 = phi i32 [for.body: %35], [for.inc: %91]
+    %55 = phi i32 [for.body: 0], [for.inc: %95]
+    %56 = phi i32 [for.body: 0], [for.inc: %71]
+    %57 = phi f32 [for.body: %37], [for.inc: %68]
+    %58 = phi i32 [for.body: %38], [for.inc: %84]
+    %59 = phi i32 [for.body: %39], [for.inc: %90]
+    %60 = icmp slt i32 %56, 4  ; line 24
+    br_cond %60, for.body, for.end merge for.end  ; line 24
+
+for.body:
+    %62 = mul i32 %8, 32  ; line 25
+    %63 = mul i32 %36, 4  ; line 25
+    %64 = add i32 %62, %63  ; line 25
+    %65 = add i32 %64, %56  ; line 25
+    %66 = gep ptr<global, f32>, %0, %65  ; line 25
+    %67 = load f32, %66  ; line 25
+    %68 = fmul f32 %67, %33  ; line 25
+    %69 = fcmp oge f32 %68, 0  ; line 27
+    br_cond %69, if.then, if.else merge if.end  ; line 27
+
+for.inc:
+    %71 = add i32 %56, 1  ; line 24
+    br for.cond  ; line 24
+
+for.end:
+    %73 = mul i32 %8, 8  ; line 36
+    %74 = add i32 %73, %36  ; line 36
+    %75 = gep ptr<global, i32>, %1, %74  ; line 36
+    store i32 %55, %75  ; line 36
+    br for.inc  ; line 36
+
+if.then:
+    %78 = fadd f32 %68, 0.5  ; line 27
+    %79 = fptosi f32 %78 to i32  ; line 27
+    br if.end  ; line 27
+
+if.else:
+    %81 = fsub f32 %68, 0.5  ; line 28
+    %82 = fptosi f32 %81 to i32  ; line 28
+    br if.end  ; line 28
+
+if.end:
+    %84 = phi i32 [if.then: %79], [if.else: %82]
+    %85 = icmp sgt i32 %84, 127  ; line 30
+    br_cond %85, if.then, if.else merge if.end  ; line 30
+
+if.then:
+    br if.end  ; line 30
+
+if.else:
+    %88 = icmp slt i32 %84, 4294967169  ; line 31
+    br_cond %88, if.then, if.else merge if.end  ; line 31
+
+if.end:
+    %90 = phi i32 [if.then: 127], [if.end: %99]
+    %91 = add i32 %54, %90  ; line 33
+    %92 = and i32 %90, 255  ; line 34
+    %93 = mul i32 %56, 8  ; line 34
+    %94 = shl i32 %92, %93  ; line 34
+    %95 = or i32 %55, %94  ; line 34
+    br for.inc  ; line 34
+
+if.then:
+    br if.end  ; line 31
+
+if.else:
+    br if.end  ; line 32
+
+if.end:
+    %99 = phi i32 [if.then: 4294967169], [if.else: %84]
+    br if.end  ; line 32
+}
+
+; 1 functions, 0 globals, 101 instructions

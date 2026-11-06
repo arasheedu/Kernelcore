@@ -53,8 +53,8 @@ $promptTokens = [int]$gpu.prompt_eval_count
 Write-Host ("Ollama: prompt {0} tokens; GPU {1:N1} tok/s, CPU {2:N1} tok/s" -f $promptTokens,
     ($gpu.eval_count / ($gpu.eval_duration / 1e9)), ($cpu.eval_count / ($cpu.eval_duration / 1e9)))
 Write-Host ""
-Write-Host "Running pcuda_llm_bench --model 3b --weights q4x8 --prompt $promptTokens --tokens $Tokens ..."
-$out = & $Bench --model 3b --weights q4x8 --prompt $promptTokens --tokens $Tokens --budget $Budget
+Write-Host "Running pcuda_llm_bench --model 3b --weights q4x8q8 --prompt $promptTokens --tokens $Tokens ..."
+$out = & $Bench --model 3b --weights q4x8q8 --prompt $promptTokens --tokens $Tokens --budget $Budget
 $out | Where-Object { $_ -notmatch '^RESULT' } | ForEach-Object { Write-Host $_ }
 if ($LASTEXITCODE -ne 0) { throw "pcuda_llm_bench failed ($LASTEXITCODE)" }
 

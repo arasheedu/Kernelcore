@@ -181,6 +181,34 @@ TEST_CASE(llm_kernels_identical_on_all_paths) {
                 return ch ? pcudaLaunchKernelChunked("matvec_q4x8", &a4, 4, 8) : pcudaLaunchKernel("matvec_q4x8", &a4);
             }, true);
     }
+    // 8-bit activations and the integer dot-product matvec (AVX-VNNI on the simd path).
+    for (auto [rows, k] : {std::pair{8, 32}, std::pair{1000, 256}}) {
+        const auto x = floats(size_t(k), 11, -2, 2);
+        const auto w = bytes(size_t(rows) * k * 5 / 8, 12);  // any bit pattern is a valid stream
+        std::vector<int> qw(w.size() / 4);
+        std::memcpy(qw.data(), w.data(), w.size());
+        for (size_t i = 0; i < qw.size(); ++i)  // keep the in-stream scales finite
+            if (i % 40 >= 32) qw[i] = std::bit_cast<int>(0.004f + float(i % 7) * 0.001f);
+        const int nb = k / 32;
+        float* dx = dev(x);
+        int* dqw = dev(qw);
+        int* dxq = dev(std::vector<int>(size_t(nb) * 8));
+        float* dxd = dev(std::vector<float>(size_t(nb) * 2));
+        float* dy = dev(std::vector<float>(size_t(rows)));
+        int* dd = dev(std::vector<int>{rows, k});
+        REQUIRE(dx && dqw && dxq && dxd && dy && dd);
+        const llm::QuantizeArgs qa{dx, dxq, dxd, nb};
+        sameOnAllPaths("quantize_q8x4", dxq, size_t(nb) * 8 * 4, [&](bool ch) {
+            return ch ? pcudaLaunchKernelChunked("quantize_q8x4", &qa, 4, 1) : pcudaLaunchKernel("quantize_q8x4", &qa);
+        }, true);
+        REQUIRE_OK(pcudaSetKernelCodegen(Codegen::Booth));
+        REQUIRE_OK(pcudaLaunchKernel("quantize_q8x4", &qa));
+        const llm::MatvecQ4Q8Args a{dqw, dxq, dxd, dy, dd, rows, k};
+        sameOnAllPaths(("matvec_q4x8_q8 " + std::to_string(rows)).c_str(), dy, size_t(rows) * 4, [&](bool ch) {
+            return ch ? pcudaLaunchKernelChunked("matvec_q4x8_q8", &a, 4, 8) : pcudaLaunchKernel("matvec_q4x8_q8", &a);
+        }, true);
+    }
+
     // Attention, softmax (fmax, varying loops), rms_norm (sqrt), rope (sin/cos).
     const llm::AttnDims d{6, 77, 64, 128, 3};
     const auto q = floats(size_t(d.n_heads) * d.head_dim, 6, -1, 1);

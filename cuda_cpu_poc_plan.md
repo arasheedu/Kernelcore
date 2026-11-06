@@ -798,3 +798,41 @@ Pool changes alone (`pcuda_bench`, vector_add):
 **Remaining gap to Ollama's 28.4 tok/s** (about 3.2× on SIMD). The SIMD path is still compute-bound at about 1 µop per weight: per weight it converts to float, multiplies and adds, and a contiguity check runs on every load. Next steps:
 - 2: 8-bit activations with integer dot products (AVX-VNNI `vpdpbusd`, through a `__dp4a`-style helper that the generator maps to VNNI).
 - 3: fewer launches and barriers per token.
+
+## 23. Step 2: 8-bit activations and integer dot products (AVX-VNNI) (2026-11-06)
+
+**Change.**
+- **`quantize_q8x4`:** per block of 32 activations, d = max|x|/127 and q = round(x/d), half away from zero, clamped to ±127. It writes packed int8 words plus {d, Σq}.
+- **`matvec_q4x8_q8`:** 4-bit weights in an 8-row interleaved int stream with the f32 block scales inside it. That's the same 5 bits per weight, and it keeps the kernel within Booth's 5-parameter limit through a pointer cast. Per block it computes dot = Σ nibble·q with two independent dp4a chains, then (dot − 8·Σq) · d_w · d_x.
+- **`pcuda_dp4a`:** a `__device__` helper doing a u8 × s8 dot product of 4 packed bytes.
+  - On nvcc it is `__dp4a`, selected by `__NVCC__`.
+  - Elsewhere it is generic byte arithmetic, which is what Booth compiles.
+  - `pcuda_mslgen` maps calls to it onto AVX-VNNI `_mm256_dpbusd_avx_epi32`, after checking that the helper's Metal body matches the canonical body exactly. CPUs without VNNI get an exact AVX2 fallback.
+- **Translator support:** `as_type` pointer casts (`ptrcast`), verified intrinsic helpers, and signed rewriting of literals Booth prints as unsigned (F17).
+- **Model and benchmark:** `Weights::Q4X8Q8` (`ref::repackQ4x8Q8`), with per-backend activation scratch (`Backend::setScratch`). It is the default in `pcuda_llm_bench` and `compare_llm.ps1`.
+- **Streams:** the stream worker and `runSync` callers now spin 50 µs before sleeping (`PCUDA_POOL_SPIN_US`). Before, every synchronous launch paid a thread wake-up, which mattered for the roughly 300 tiny launches per token.
+- **Two more Booth Metal bugs found:** F17 (negative constants printed as unsigned) and F18 (phi copy dropped for an `if` without `else`). The kernels avoid the F18 pattern, and MSVC C4701 stays an error to catch it.
+
+**Verification.**
+- `quantize_q8x4` and `matvec_q4x8_q8` are bit-exact against their C++ references, chunked too, and bit-identical on booth, native and simd.
+- `matvec_q4x8_q8` is within 3e-2 of the float `matvec_q4` (activation rounding).
+- Pass rates: 27/27 NVIDIA; 25/25 normal, prebuilt-only and ASan.
+
+**Results** (3B shapes, prompt 43, 128 tokens):
+
+| ms/token | booth | native | simd | CUDA |
+|---|---|---|---|---|
+| q4x8 (float activations) | 1,666 | 208 | 111 | 39 |
+| q4x8q8 (8-bit activations, dp4a / VNNI) | 1,004 | 229 | 63 | 33 |
+| + stream spin | 995 | 218 | **51** | 33 |
+
+- The SIMD path reaches 18–19.5 tok/s (36–39 GB/s), up from 6.4 tok/s at the start of §21.
+- Ollama CPU-only measured 28.2 tok/s in the same run.
+- The same kernels on CUDA reach 30 tok/s.
+
+**Remaining gap to Ollama CPU (about 1.5×).**
+- Matrix-vector work is about 41 ms per token, roughly 49 GB/s within matvec. The rest (about 8 ms) is about 300 small launches: rms_norm, rope, attention, silu, add and quantize.
+- Next steps (step 3):
+  - fuse q/k/v and gate/up into single launches and quantize once per input;
+  - run rms_norm as row-parallel chunks;
+  - record a token as one pool job with barriers instead of about 470 separate launches.

@@ -4,6 +4,7 @@
 
 #include <pcuda/kernels.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -59,6 +60,7 @@ const char* weightsName(Weights w) {
     case Weights::Q8: return "Q8 (8-bit + f32 scale per 32)";
     case Weights::Q4: return "Q4 (4-bit + f32 scale per 32)";
     case Weights::Q4X8: return "Q4 x8 (4-bit + f32 scale per 32, 8 rows interleaved)";
+    case Weights::Q4X8Q8: return "Q4 x8 with 8-bit activations (4-bit + f32 scale per 32; integer dot products)";
     }
     return "?";
 }
@@ -178,6 +180,17 @@ std::vector<Mat> makeMat(Rng& rng, const std::vector<Allocator*>& allocs, int ro
     }
     const float base = 1.0f / std::sqrt(var * static_cast<float>(k));
     std::vector<float> s = uniformVector(rng, n / 32, base, 0.1f * base);
+    if (fmt == Weights::Q4X8Q8) {  // same values as Q4, in the interleaved int stream with scales
+        if (rows % 8 != 0) throw std::invalid_argument("Q4X8Q8 needs a multiple of 8 rows");
+        std::vector<int> qw(n * 5 / 32);
+        ref::repackQ4x8Q8(q.data(), s.data(), qw.data(), rows, k);
+        const std::vector<int> dims{rows, k};
+        const auto qd = uploadAll(allocs, qw);
+        const auto dd = uploadAll(allocs, dims);
+        std::vector<Mat> out;
+        for (size_t i = 0; i < allocs.size(); ++i) out.push_back(Mat{rows, k, fmt, qd[i], nullptr, dd[i]});
+        return out;
+    }
     if (fmt == Weights::Q4X8) {  // same values as Q4, repacked
         if (rows % 8 != 0) throw std::invalid_argument("Q4X8 needs a multiple of 8 rows");
         std::vector<uint8_t> q8(q.size());
@@ -263,6 +276,9 @@ Acts allocActs(const Config& c, Allocator& alloc, uint64_t seed) {
     a.u = buf(c.inter);
     a.h = buf(c.inter);
     a.logits = buf(c.vocab);
+    const int maxk = std::max({c.hidden, c.inter, c.heads * c.head_dim});
+    a.xq = reinterpret_cast<int*>(buf(maxk / 32 * 8));
+    a.xd = buf(maxk / 32 * 2);
     return a;
 }
 
@@ -277,6 +293,7 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
         if (prof) prof->end(o);
     };
     const size_t slot = size_t(pos) * size_t(c.kvStride());
+    b.setScratch(a.xq, a.xd);
     b.setContext(pos + 1);
     b.copy(a.x, a.x0, c.hidden);
     for (const Layer& L : m.layers) {
@@ -320,6 +337,10 @@ class PcudaBackend final : public Backend {
 public:
     PcudaBackend(const Model& m, unsigned workers) : m_(m), workers_(workers), ctx_(m.cfg.max_ctx) {}
 
+    void setScratch(int* xq, float* xd) override {
+        xq_ = xq;
+        xd_ = xd;
+    }
     void setContext(int ctx) override {
         ctx_ = ctx;
         const AttnDims d = m_.cfg.attnDims(ctx);
@@ -327,7 +348,12 @@ public:
         pcudaCheck(pcudaMemcpy(m_.attn_dims, dims, sizeof dims, pcuda::CopyKind::HostToDevice), "pcudaMemcpy dims");
     }
     void matvec(const Mat& w, const float* x, float* y) override {
-        if (w.format == Weights::Q4 || w.format == Weights::Q4X8) {
+        if (w.format == Weights::Q4X8Q8) {
+            const QuantizeArgs qa{x, xq_, xd_, w.k / 32};
+            launch("quantize_q8x4", &qa, 0);
+            const MatvecQ4Q8Args a{static_cast<const int*>(w.q), xq_, xd_, y, w.dims, w.rows, w.k};
+            launch("matvec_q4x8_q8", &a, 16);
+        } else if (w.format == Weights::Q4 || w.format == Weights::Q4X8) {
             const MatvecQ4Args a{static_cast<const uint8_t*>(w.q), w.s, x, y, w.dims, w.rows, w.k};
             launch(w.format == Weights::Q4 ? "matvec_q4" : "matvec_q4x8", &a, 16);
         } else {
@@ -381,15 +407,24 @@ private:
     const Model& m_;
     unsigned     workers_;
     int          ctx_;
+    int*         xq_ = nullptr;
+    float*       xd_ = nullptr;
 };
 
 class CppBackend final : public Backend {
 public:
     explicit CppBackend(const Model& m) : m_(m), ctx_(m.cfg.max_ctx) {}
 
+    void setScratch(int* xq, float* xd) override {
+        xq_ = xq;
+        xd_ = xd;
+    }
     void setContext(int ctx) override { ctx_ = ctx; }
     void matvec(const Mat& w, const float* x, float* y) override {
-        if (w.format == Weights::Q4X8) ref::matvecQ4x8(static_cast<const uint8_t*>(w.q), w.s, x, y, w.rows, w.k);
+        if (w.format == Weights::Q4X8Q8) {
+            ref::quantizeQ8x4(x, xq_, xd_, w.k / 32);
+            ref::matvecQ4x8Q8(static_cast<const int*>(w.q), xq_, xd_, y, w.rows, w.k);
+        } else if (w.format == Weights::Q4X8) ref::matvecQ4x8(static_cast<const uint8_t*>(w.q), w.s, x, y, w.rows, w.k);
         else if (w.format == Weights::Q4) ref::matvecQ4(static_cast<const uint8_t*>(w.q), w.s, x, y, w.rows, w.k);
         else ref::matvecQ8(static_cast<const int8_t*>(w.q), w.s, x, y, w.rows, w.k);
     }
@@ -415,6 +450,8 @@ public:
 private:
     const Model& m_;
     int          ctx_;
+    int*         xq_ = nullptr;
+    float*       xd_ = nullptr;
 };
 
 } // namespace

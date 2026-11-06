@@ -43,6 +43,15 @@ Metal backend (--metal) and IR (--ir), used by the native/simd code paths (tools
       (and uitofp/sitofp) print identically; the IR keeps the difference (upstream bug).  verified (matvec_q4)
   F16 inline float ops in --cpu code: fmax(a,b) = maxss a,b (b on NaN or equality); sqrt = sqrtss.
                                                                                          verified (objdump)
+  F17 --metal prints negative i32 constants as unsigned decimals (-127 -> 4294967169), which C++
+      reads as 64-bit values (x < 4294967169 is always true). pcuda_mslgen rewrites them.  verified (quantize_q8x4)
+  F18 --metal drops the fall-through copy of a phi for an `if` without `else`
+      (`a = v; if (c) a = w;` prints only `if (c) { a = w; }`). The IR and --cpu code are right.
+      Kernels use explicit else branches; MSVC's C4701 (kept as an error) flags any occurrence.
+                                                                                         verified (quantize_q8x4)
+  F19 pointer casts become IR bitcasts, printed as as_type<device T *>(p); a __device__ helper
+      stays a separate function and a call in both --metal and --cpu; __NVCC__ is not defined.
+                                                                                         verified
 Exact command lines for the native paths:
   kath --metal <file.cu> -o <file.metal>
   kath --ir <file.cu> > <file.ir>

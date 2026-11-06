@@ -28,7 +28,8 @@ class Stream {
 public:
     using Task = std::function<Error()>;
 
-    explicit Stream(size_t stack_bytes, const wchar_t* description);
+    // spin_us: the worker and a runSync caller spin this long before blocking (0 = never).
+    Stream(size_t stack_bytes, const wchar_t* description, unsigned spin_us = 50);
     ~Stream();  // drains remaining work, then joins
     Stream(const Stream&) = delete;
     Stream& operator=(const Stream&) = delete;
@@ -41,7 +42,7 @@ public:
 
 private:
     struct SyncSlot {
-        bool        done = false;
+        std::atomic<bool> done{false};
         Error       result = Error::Success;
         std::string detail;
     };
@@ -58,7 +59,9 @@ private:
     std::deque<Item>        queue_;
     uint64_t                submitted_ = 0;
     uint64_t                completed_ = 0;
-    bool                    stopping_ = false;
+    std::atomic<bool>       stopping_{false};
+    std::atomic<size_t>     queued_{0};  // queue_.size(), readable without the lock
+    unsigned                spin_us_;
     Error                   first_error_ = Error::Success;
     std::string             first_error_detail_;
     void*                   thread_ = nullptr;

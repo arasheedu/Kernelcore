@@ -30,6 +30,18 @@ unsigned __stdcall threadMain(void* p) {
     return 0;
 }
 
+// Spins with `pause` until pred() or `us` microseconds pass. Returns pred().
+template <class Pred>
+bool spinFor(unsigned us, Pred pred) {
+    if (us == 0) return pred();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(us);
+    for (unsigned i = 0;; ++i) {
+        if (pred()) return true;
+        _mm_pause();
+        if ((i & 63) == 63 && std::chrono::steady_clock::now() >= deadline) return pred();
+    }
+}
+
 Error runTask(const Stream::Task& t) noexcept {
     detail::clearDetail();
     try {
@@ -72,7 +84,7 @@ void joinThread(void* handle) noexcept {
 
 // ---------------------------------------------------------------- Stream
 
-Stream::Stream(size_t stack_bytes, const wchar_t* description) {
+Stream::Stream(size_t stack_bytes, const wchar_t* description, unsigned spin_us) : spin_us_(spin_us) {
     thread_ = startThread(stack_bytes, description, [this] { loop(); });
 }
 
@@ -87,13 +99,16 @@ Stream::~Stream() {
 
 void Stream::loop() {
     for (;;) {
+        // Spin briefly first: back-to-back launches then skip the thread wake-up.
+        spinFor(spin_us_, [&] { return queued_.load(std::memory_order_acquire) != 0 || stopping_.load(); });
         Item item;
         {
             std::unique_lock lk(mutex_);
-            work_cv_.wait(lk, [&] { return stopping_ || !queue_.empty(); });
+            work_cv_.wait(lk, [&] { return stopping_.load() || !queue_.empty(); });
             if (queue_.empty()) return;  // stopping and drained
             item = std::move(queue_.front());
             queue_.pop_front();
+            queued_.store(queue_.size(), std::memory_order_release);
         }
         const Error e = runTask(item.task);
         std::string why = detailFor(e);
@@ -102,7 +117,7 @@ void Stream::loop() {
             if (item.slot) {
                 item.slot->result = e;
                 item.slot->detail = std::move(why);
-                item.slot->done = true;
+                item.slot->done.store(true, std::memory_order_release);
             } else if (e != Error::Success && first_error_ == Error::Success) {
                 first_error_ = e;
                 first_error_detail_ = std::move(why);
@@ -117,6 +132,7 @@ void Stream::enqueue(Task task) {
     {
         std::lock_guard lk(mutex_);
         queue_.push_back(Item{std::move(task), nullptr});
+        queued_.store(queue_.size(), std::memory_order_release);
         ++submitted_;
     }
     work_cv_.notify_one();
@@ -127,11 +143,15 @@ Error Stream::runSync(Task task) {
     {
         std::lock_guard lk(mutex_);
         queue_.push_back(Item{std::move(task), slot});
+        queued_.store(queue_.size(), std::memory_order_release);
         ++submitted_;
     }
     work_cv_.notify_one();
-    std::unique_lock lk(mutex_);
-    done_cv_.wait(lk, [&] { return slot->done; });
+    if (!spinFor(spin_us_, [&] { return slot->done.load(std::memory_order_acquire); })) {
+        std::unique_lock lk(mutex_);
+        done_cv_.wait(lk, [&] { return slot->done.load(); });
+    }
+    std::lock_guard lk(mutex_);  // pairs with the worker's update of the slot
     if (slot->result != Error::Success) detail::setDetail(slot->detail);
     return slot->result;
 }
@@ -168,17 +188,6 @@ struct WorkerPool::Group {
 
 namespace {
 
-// Spins with `pause` until pred() or `us` microseconds pass. Returns pred().
-template <class Pred>
-bool spinFor(unsigned us, Pred pred) {
-    if (us == 0) return pred();
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(us);
-    for (unsigned i = 0;; ++i) {
-        if (pred()) return true;
-        _mm_pause();
-        if ((i & 63) == 63 && std::chrono::steady_clock::now() >= deadline) return pred();
-    }
-}
 
 } // namespace
 

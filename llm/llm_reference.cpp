@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace llm::ref {
 
@@ -70,6 +71,80 @@ void repackQ4x8(const uint8_t* qs, const float* scales, uint8_t* qs8, float* sca
             const size_t blk = size_t(g) * nb + b;
             for (int j = 0; j < 16; ++j) qs8[blk * 128 + size_t(j) * 8 + l] = qs[size_t(row) * (k / 2) + size_t(b) * 16 + j];
             scales8[blk * 8 + l] = scales[size_t(row) * nb + b];
+        }
+    }
+}
+
+void quantizeQ8x4(const float* x, int* xq, float* xd, int count) {
+    for (int b = 0; b < count; ++b) {
+        const float* xb = x + size_t(b) * 32;
+        float amax = 0.0f;
+        for (int i = 0; i < 32; ++i) {  // fmaxf as maxss: a > b ? a : b
+            const float a = xb[i] > 0.0f - xb[i] ? xb[i] : 0.0f - xb[i];
+            amax = amax > a ? amax : a;
+        }
+        const float d = amax / 127.0f;
+        const float id = d > 0.0f ? 1.0f / d : 0.0f;
+        int sum = 0;
+        for (int w = 0; w < 8; ++w) {
+            uint32_t word = 0;
+            for (int i = 0; i < 4; ++i) {
+                const float t = xb[w * 4 + i] * id;
+                int q = t >= 0.0f ? static_cast<int>(t + 0.5f) : static_cast<int>(t - 0.5f);
+                q = q > 127 ? 127 : q < -127 ? -127 : q;
+                sum += q;
+                word |= (static_cast<uint32_t>(q) & 255u) << (i * 8);
+            }
+            xq[size_t(b) * 8 + w] = static_cast<int>(word);
+        }
+        xd[size_t(b) * 2] = d;
+        xd[size_t(b) * 2 + 1] = static_cast<float>(sum);
+    }
+}
+
+namespace {
+int dp4a(int a, int b, int c) {  // u8 x s8, as pcuda_dp4a
+    for (int i = 0; i < 4; ++i)
+        c += ((a >> (8 * i)) & 255) * static_cast<int8_t>(static_cast<uint32_t>(b) >> (8 * i));
+    return c;
+}
+} // namespace
+
+void matvecQ4x8Q8(const int* qw, const int* xq, const float* xd, float* y, int rows, int k) {
+    const int nb = k / 32;
+    for (int row = 0; row < rows; ++row) {
+        const int g = row / 8, l = row % 8;
+        float acc = 0.0f;
+        for (int b = 0; b < nb; ++b) {
+            const int* blk = qw + (size_t(g) * nb + b) * 40;
+            int lo = 0, hi = 0;
+            for (int w = 0; w < 4; ++w) {
+                const int q = blk[w * 8 + l];
+                lo = dp4a(q & 0x0F0F0F0F, xq[size_t(b) * 8 + w], lo);
+                hi = dp4a((q >> 4) & 0x0F0F0F0F, xq[size_t(b) * 8 + 4 + w], hi);
+            }
+            float sc;
+            std::memcpy(&sc, blk + 32 + l, sizeof sc);
+            const int dot = lo + hi - 8 * static_cast<int>(xd[size_t(b) * 2 + 1]);
+            acc += static_cast<float>(dot) * (sc * xd[size_t(b) * 2]);
+        }
+        y[row] = acc;
+    }
+}
+
+void repackQ4x8Q8(const uint8_t* qs, const float* scales, int* qw, int rows, int k) {
+    const int nb = k / 32;
+    for (int row = 0; row < rows; ++row) {
+        const int g = row / 8, l = row % 8;
+        for (int b = 0; b < nb; ++b) {
+            int* blk = qw + (size_t(g) * nb + b) * 40;
+            const uint8_t* src = qs + size_t(row) * (k / 2) + size_t(b) * 16;
+            for (int w = 0; w < 4; ++w) {
+                uint32_t word = 0;
+                for (int i = 0; i < 4; ++i) word |= uint32_t(src[w * 4 + i]) << (8 * i);
+                blk[w * 8 + l] = static_cast<int>(word);
+            }
+            std::memcpy(blk + 32 + l, &scales[size_t(row) * nb + b], sizeof(float));
         }
     }
 }

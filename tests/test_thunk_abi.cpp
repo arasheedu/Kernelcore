@@ -105,6 +105,10 @@ TEST_CASE(stack_overflow_is_recovered_repeatedly_on_one_thread) {
     int recovered = 0;
     // Default std::thread stack (1 MB) keeps this quick; three rounds prove the guard page is re-armed.
     std::thread t([&] {
+        // Like pcuda's own threads (startThread): reserve room for exception dispatch after an
+        // overflow. Without it the remaining stack is OS-dependent and the handler can fault again.
+        ULONG guarantee = 64 * 1024;
+        SetThreadStackGuarantee(&guarantee);
         LaunchArgs a{};
         for (int i = 0; i < 3; ++i) {
             const auto res = pcuda::cpu::invokeSysV(reinterpret_cast<const void*>(&sysv_recurse), a, "recurse",

@@ -292,6 +292,7 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
     b.setScratch(a.xq, a.xd);
     b.setContext(pos + 1);
     b.copy(a.x, a.x0, c.hidden);
+    b.beginToken(prof != nullptr);
     const bool q8 = c.weights == Weights::Q4X8Q8;
     op(Op::RmsNorm, [&] { b.rmsNorm(a.x, m.layers[0].attn_norm, a.xn); });
     for (size_t l = 0; l < m.layers.size(); ++l) {
@@ -321,6 +322,7 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
         op(Op::Add, [&] { b.addRmsNorm(a.x, a.t, next_norm, a.xn); });
     }
     op(Op::MatvecLmHead, [&] { b.matvec(m.lm_head, a.xn, a.logits); });
+    b.endToken();
 }
 
 // ---- backends -----------------------------------------------------------------
@@ -329,7 +331,15 @@ namespace {
 
 class PcudaBackend final : public Backend {
 public:
-    PcudaBackend(const Model& m, unsigned workers) : m_(m), workers_(workers), ctx_(m.cfg.max_ctx) {}
+    PcudaBackend(const Model& m, unsigned workers, bool graphs)
+        : m_(m), workers_(workers), graphs_(graphs), ctx_(m.cfg.max_ctx) {}
+    ~PcudaBackend() override { abandonCapture(); }
+    void abandonCapture() noexcept {
+        if (!capturing_) return;
+        capturing_ = false;
+        pcudaGraph_t g = nullptr;
+        if (pcudaStreamEndCapture(nullptr, &g) == pcuda::Error::Success) pcudaGraphDestroy(g);
+    }
 
     void setScratch(int* xq, float* xd) override {
         xq_ = xq;
@@ -406,6 +416,26 @@ public:
         pcudaCheck(pcudaMemcpy(dst, src, size_t(n) * sizeof(float), pcuda::CopyKind::DeviceToDevice), "pcudaMemcpy");
     }
     void finish() override { pcudaCheck(pcudaDeviceSynchronize(), "pcudaDeviceSynchronize"); }
+    void beginToken(bool profiling) override {
+        abandonCapture();  // an earlier token threw before endToken
+        if (!graphs_ || profiling) return;
+        pcudaCheck(pcudaStreamBeginCapture(nullptr), "pcudaStreamBeginCapture");
+        capturing_ = true;
+    }
+    void endToken() override {
+        if (!capturing_) return;
+        capturing_ = false;
+        pcudaGraph_t g = nullptr;
+        pcudaCheck(pcudaStreamEndCapture(nullptr, &g), "pcudaStreamEndCapture");
+        const pcuda::Error e = pcudaGraphLaunch(g, nullptr);  // synchronous: logits ready after
+        if (e != pcuda::Error::Success) {
+            const std::string why = std::string("pcudaGraphLaunch: ") + pcudaGetErrorString(e) + " (" +
+                                    pcudaGetLastErrorDetail() + ")";
+            pcudaGraphDestroy(g);
+            throw std::runtime_error(why);
+        }
+        pcudaCheck(pcudaGraphDestroy(g), "pcudaGraphDestroy");
+    }
 
 private:
     // min_chunk == 0: never chunked (too little work to share).
@@ -417,6 +447,8 @@ private:
 
     const Model& m_;
     unsigned     workers_;
+    bool         graphs_;
+    bool         capturing_ = false;
     int          ctx_;
     int*         xq_ = nullptr;
     float*       xd_ = nullptr;
@@ -477,8 +509,8 @@ private:
 
 } // namespace
 
-std::unique_ptr<Backend> makePcudaBackend(const Model& m, unsigned workers) {
-    return std::make_unique<PcudaBackend>(m, workers);
+std::unique_ptr<Backend> makePcudaBackend(const Model& m, unsigned workers, bool graphs) {
+    return std::make_unique<PcudaBackend>(m, workers, graphs);
 }
 
 std::unique_ptr<Backend> makeCppBackend(const Model& m) { return std::make_unique<CppBackend>(m); }

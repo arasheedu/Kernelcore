@@ -14,6 +14,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -82,14 +83,24 @@ public:
     unsigned size() const noexcept { return static_cast<unsigned>(threads_.size()); }
     // Runs all tasks (concurrently: pool threads plus the caller) and waits. Returns the error
     // of the lowest-index failing task, so results are deterministic.
-    Error run(std::vector<Stream::Task>& tasks);
+    Error run(const std::vector<Stream::Task>& tasks);
+
+    // One job of several steps (a graph: one step per kernel). The tasks of a step run
+    // concurrently; a step starts when the previous one has finished (a barrier, no wake-up
+    // per step). After a failing step no later step runs. Returns the first failure in
+    // (step, task) order and its step index through failed_step.
+    struct Step {
+        const Stream::Task* tasks;
+        size_t              count;
+    };
+    Error runSteps(std::span<const Step> steps, size_t* failed_step);
 
 private:
     struct Group;
     void                   loop();
     void                   stop() noexcept;
     std::shared_ptr<Group> grab();  // a published launch with chunks left to claim
-    static void            work(Group& g);
+    void                   work(Group& g) const;
 
     std::mutex                          mutex_;   // guards active_ only
     std::vector<std::shared_ptr<Group>> active_;  // launches in progress (one per calling stream)

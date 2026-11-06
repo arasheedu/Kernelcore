@@ -11,7 +11,9 @@
 //   generated tokens, each attending over every position so far, logits back on the host.
 //
 //   pcuda_llm_bench [--model 3b|1b] [--weights q4x8q8|q4x8|q4|q8] [--prompt P] [--tokens T] [--budget S]
-//                   [--workers N] [--paths booth,native,simd,cuda,cpp] [--check]
+//                   [--workers N] [--paths booth,native,simd,cuda,cpp] [--graphs on|off] [--check]
+// --graphs on (default): each token runs as one pcuda graph and one CUDA graph (launches recorded
+//   and run as one batch). The per-op breakdown always runs launches one by one.
 //
 // Slow paths (booth, c++) time an evenly spaced subset of the T positions so a run stays within
 // --budget seconds per path; the average per-token cost is over the same context range.
@@ -139,9 +141,40 @@ public:
     }
     void finish() override { ck(cudaStreamSynchronize(s_), "cudaStreamSynchronize"); }
 
+    // CUDA graphs, as llama.cpp's CUDA backend uses them: capture the token's launches, update
+    // the one executable graph in place (grid sizes and arguments change with the context),
+    // re-instantiate only when the update is refused, and launch it.
+    void useGraphs(bool on) { graphs_ = on; }
+    void beginToken(bool profiling) override {
+        if (!graphs_ || profiling) return;
+        ck(cudaStreamBeginCapture(s_, cudaStreamCaptureModeThreadLocal), "cudaStreamBeginCapture");
+        capturing_ = true;
+    }
+    void endToken() override {
+        if (!capturing_) return;
+        capturing_ = false;
+        cudaGraph_t g = nullptr;
+        ck(cudaStreamEndCapture(s_, &g), "cudaStreamEndCapture");
+        cudaGraphExecUpdateResultInfo info{};
+        if (!exec_ || cudaGraphExecUpdate(exec_, g, &info) != cudaSuccess) {
+            cudaGetLastError();  // clear a refused update
+            if (exec_) cudaGraphExecDestroy(exec_);
+            exec_ = nullptr;
+            ck(cudaGraphInstantiate(&exec_, g, 0), "cudaGraphInstantiate");
+        }
+        ck(cudaGraphLaunch(exec_, s_), "cudaGraphLaunch");
+        cudaGraphDestroy(g);
+    }
+    ~CudaBackend() override {
+        if (exec_) cudaGraphExecDestroy(exec_);
+    }
+
 private:
     const llm::Model&  m_;
     cudaStream_t       s_;
+    bool               graphs_ = false;
+    bool               capturing_ = false;
+    cudaGraphExec_t    exec_ = nullptr;
     int                ctx_;
     std::array<int, 7> dims_{};
     int*               xq_ = nullptr;
@@ -282,6 +315,7 @@ int run(int argc, char** argv) {
     unsigned workers_opt = 0;
     bool check = false;
     std::string paths_opt = "booth,native,simd,cuda,cpp";
+    bool graphs = true;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -296,10 +330,15 @@ int run(int argc, char** argv) {
         else if (a == "--budget") budget = std::atof(next().c_str());
         else if (a == "--workers") workers_opt = static_cast<unsigned>(std::atoi(next().c_str()));
         else if (a == "--paths") paths_opt = next();
+        else if (a == "--graphs") {
+            const std::string v = next();
+            if (v != "on" && v != "off") throw std::invalid_argument("--graphs takes on or off");
+            graphs = v == "on";
+        }
         else {
             std::fprintf(stderr, "usage: pcuda_llm_bench [--model 3b|1b] [--weights q4x8q8|q4x8|q4|q8] [--prompt P] "
                                  "[--tokens T] [--budget S] [--workers N] [--paths booth,native,simd,cuda,cpp] "
-                                 "[--check]\n");
+                                 "[--graphs on|off] [--check]\n");
             return 2;
         }
     }
@@ -342,6 +381,7 @@ int run(int argc, char** argv) {
     std::printf("GPU   : %s, %zu MiB\n", prop.name, prop.totalGlobalMem >> 20);
     std::printf("CPU   : %u logical processors; pcuda pool of %u threads + the launching thread; workers = %u\n",
                 std::thread::hardware_concurrency(), pprops.worker_count, workers);
+    std::printf("Graphs: %s (each token as one pcuda graph and one CUDA graph)\n", graphs ? "on" : "off");
     std::fflush(stdout);
 
     cudaStream_t stream{};
@@ -364,8 +404,9 @@ int run(int argc, char** argv) {
         std::printf("Built identical random weights for pcuda and the GPU in %.1f s\n\n", msSince(t0) / 1000.0);
 
         auto cpp = llm::makeCppBackend(pm);
-        auto pcu = llm::makePcudaBackend(pm, workers);
+        auto pcu = llm::makePcudaBackend(pm, workers, graphs);
         CudaBackend cuda(cm, stream);
+        cuda.useGraphs(graphs);
         const int first = prompt;
 
         // ---- correctness: every path at the first generated position ----

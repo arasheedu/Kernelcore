@@ -50,6 +50,20 @@ pcuda::Error pcudaEventSynchronize(pcudaEvent_t event) noexcept;
 pcuda::Error pcudaEventQuery(pcudaEvent_t event) noexcept;         // Success or NotReady
 pcuda::Error pcudaStreamWaitEvent(pcudaStream_t stream, pcudaEvent_t event) noexcept; // UnsupportedOperation in POC
 
+// ---- graphs (like CUDA graphs: record launches once, run them as one job) ----
+// Between BeginCapture and EndCapture, kernel launches on the stream (from any thread) are
+// validated and recorded instead of run, and return Success. Copies, memsets, frees and device
+// synchronization are refused (UnsupportedOperation) while any stream captures, as are
+// synchronizing, host functions and event records on the capturing stream itself.
+pcuda::Error pcudaStreamBeginCapture(pcudaStream_t stream) noexcept;
+pcuda::Error pcudaStreamEndCapture(pcudaStream_t stream, pcudaGraph_t* graph) noexcept;
+// Runs the recorded kernels in order as one pool job: each kernel's chunks run concurrently and
+// the next kernel starts when they are all done, without a stream hand-off or thread wake-up
+// per kernel. Results match running the launches one by one. After a failing kernel, later
+// kernels are skipped; the error names the graph node. stream == nullptr: synchronous.
+pcuda::Error pcudaGraphLaunch(pcudaGraph_t graph, pcudaStream_t stream = nullptr) noexcept;
+pcuda::Error pcudaGraphDestroy(pcudaGraph_t graph) noexcept;  // a pending launch keeps its data
+
 // ---- code generation path ---------------------------------------------------
 // Process-wide; applies to launches made after the call. Default: env PCUDA_CODEGEN, else Auto.
 pcuda::Error pcudaSetKernelCodegen(pcuda::Codegen codegen) noexcept;

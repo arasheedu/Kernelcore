@@ -14,7 +14,7 @@ target_include_directories(pcuda_test_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR
 get_filename_component(_msvc_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
 
 set(PCUDA_TESTS test_api test_memory test_loader test_thunk_abi test_vector_add test_fault test_stream
-                test_chunked_vector_add test_llm_kernels test_codegen)
+                test_chunked_vector_add test_llm_kernels test_codegen test_graph)
 foreach(t IN LISTS PCUDA_TESTS)
   add_executable(${t} ${t}.cpp)
   target_link_libraries(${t} PRIVATE pcuda_test_support pcuda_llm)
@@ -25,7 +25,7 @@ endforeach()
 
 # Suites that run kernels also run on each code generation path (PCUDA_CODEGEN). The plain
 # test names above use the default (auto = simd where available, else native).
-foreach(t test_vector_add test_fault test_stream test_chunked_vector_add test_llm_kernels)
+foreach(t test_vector_add test_fault test_stream test_chunked_vector_add test_llm_kernels test_graph)
   foreach(cg booth native simd)
     add_test(NAME ${t}_${cg} COMMAND ${t})
     set_tests_properties(${t}_${cg} PROPERTIES TIMEOUT 600

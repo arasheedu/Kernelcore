@@ -109,6 +109,26 @@ pcudaMemcpy(host_out, out, n * sizeof(float), pcuda::CopyKind::DeviceToHost);
 pcudaShutdown();
 ```
 
+Graphs work like CUDA graphs. Launches between `pcudaStreamBeginCapture` and
+`pcudaStreamEndCapture` are validated and recorded, not run. `pcudaGraphLaunch` then runs them in
+order as one job on the worker pool: each kernel's chunks run in parallel, and the next kernel starts
+at a barrier. There is no stream hand-off or thread wake-up per kernel. Results match running the
+launches one by one.
+
+```cpp
+pcudaStreamBeginCapture(nullptr);            // the default stream
+pcudaLaunchKernelChunked("vector_add", &args1, workers);
+pcudaLaunchKernel("scale_add", &args2);      // reads vector_add's output
+pcudaGraph_t g;
+pcudaStreamEndCapture(nullptr, &g);
+pcudaGraphLaunch(g);                         // synchronous; or pass a stream
+pcudaGraphDestroy(g);
+```
+
+During a capture, copies, memsets, frees and synchronization return `UnsupportedOperation`, as in
+CUDA, because they would run ahead of the recorded work. After a failing kernel the rest of the
+graph is skipped, and the error detail names the graph node.
+
 To add a kernel:
 1. Write `kernels/<name>.cu` with exactly one `__global__` function.
 2. Add `booth_add_kernel(TARGET pcuda NAME <name> SOURCE kernels/<name>.cu)`.
@@ -198,12 +218,13 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
 | pcuda, `simd` path, 8-row interleaved Q4 (`q4x8`) | 111 | 9.0 | 18.0 |
 | pcuda, `simd` path, `q4x8` + 8-bit activations, AVX-VNNI (`q4x8q8`) | 51–56 | 18–19.5 | 36–39 |
 | pcuda, `simd` path, `q4x8q8` + fused launches | 46–49 | 20–22 | 41–44 |
-| pcuda, `simd` path, + affine lanes, transposed K, pool on P-cores (default) | **36–37** | **27.1–27.9** | **54–56** |
+| pcuda, `simd` path, + affine lanes, transposed K, pool on P-cores | 36–37 | 27.1–27.9 | 54–56 |
+| pcuda, `simd` path, + **each token as one graph** (default) | **33.1–34.0** | **29.4–30.2** | **59–61** |
 | CUDA, same kernels (nvcc) | 65 | 15.4 | 30.9 |
 | CUDA, same kernels, `q4x8` (coalesced) | 39 | 25.7 | 51.5 |
-| CUDA, same kernels, `q4x8q8` (`__dp4a`), transposed K | 33 | 30.1 | 60.4 |
+| CUDA, same kernels, `q4x8q8` (`__dp4a`), transposed K, CUDA graphs | 33 | 30.2 | 60.7 |
 | plain C++ `/O2`, 1 thread | 1,195 | 0.84 | 1.7 |
-| Ollama llama.cpp, CPU only (5 runs) | 34–38 | 26.2–29.5 | 53–60 |
+| Ollama llama.cpp, CPU only (7 runs) | 34–38 | 26.2–29.5 | 53–60 |
 | Ollama llama.cpp, GPU | 9.3 | 107 | 216 |
 
 - Compiling Booth's IR with MSVC instead of using Booth's x86 back end makes the same kernels 8× faster
@@ -243,6 +264,11 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
     thread: 11 threads here. With 16 threads plus the launching and host threads, waiting workers
     took processors from the threads with work, and busy efficiency cores slowed the rest. 12
     threads in all ran 10–15% faster than 18.
+- Each token now runs as one pcuda graph: about 450 launches recorded, then run as one pool job,
+  instead of a stream hand-off and pool wake-up per launch. That saves about 4 ms per token
+  (37.5 → 33.6 ms in alternating runs, `--graphs on|off`). In two runs against Ollama, pcuda was
+  ahead: 29.4 vs 28.6 and 30.2 vs 28.7 tok/s. The CUDA side uses CUDA graphs in the same way,
+  as llama.cpp does, but gains little: its time is in the kernels.
 - This machine reads memory at up to 84 GB/s (DDR5-6000, 16 threads), a limit of about 41.6 tok/s for
   2.02 GB per token. Ollama reaches 58 GB/s, and more threads don't change that
   (6/10/16 threads: 26.4/29.5/28.6 tok/s).

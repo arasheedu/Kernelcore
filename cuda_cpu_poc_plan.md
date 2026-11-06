@@ -943,3 +943,37 @@ pcuda's simd path from the same CUDA C sources now matches Ollama on CPU within 
 - run a token as one pool job (§24 candidate 3);
 - fuse rope into `kv_append`;
 - vectorize `exp2`/`sin`/`cos` with one shared deterministic implementation for all paths.
+
+## 26. Step 7: each token as one graph (2026-11-06)
+
+**API** (like CUDA graphs): `pcudaStreamBeginCapture`, `pcudaStreamEndCapture`, `pcudaGraphLaunch` and `pcudaGraphDestroy`.
+- **During a capture:** launches on the stream are validated and marshalled at once, then recorded as nodes, each with one argument set per chunk. They return Success without running.
+- **Refused during a capture** (`UnsupportedOperation`, as CUDA does), because they would run ahead of the recorded work:
+  - copies, memsets, frees and device synchronization while any stream captures;
+  - stream synchronization, host functions and event records on the capturing stream itself.
+- **Graph data:** immutable. The per-chunk tasks are built once at `EndCapture`, and a queued launch keeps the data alive after `pcudaGraphDestroy`. `pcudaDeviceReset` drops all graphs and captures.
+
+**Execution.** `WorkerPool::runSteps` runs a list of steps, one step per kernel, as one job.
+- Threads claim the current step's chunks with an atomic counter.
+- The thread finishing a step's last chunk opens the next step with one release store plus `WakeByAddressAll`. Threads with nothing left to claim wait in `UMWAIT`, then `WaitOnAddress`.
+- A failure ends the job after its step. The reported error is the first in (step, chunk) order, with the node index and kernel name.
+- An ordinary chunked launch is now the one-step case of the same code.
+
+**Decode.** `Backend::beginToken`/`endToken` bracket a token.
+- The pcuda backend captures the token's ~450 launches and runs them as one synchronous graph launch.
+- The bench's CUDA backend captures a CUDA graph, updates the one executable graph in place (`cudaGraphExecUpdate`), and launches it, as llama.cpp does.
+- Per-op profiling still runs launches one by one.
+- `pcuda_llm_bench --graphs on|off` (default on).
+
+**Results:**
+- **Graphs on vs off**, alternating runs: 33.3/34.0 vs 37.5/37.7 ms, about 4 ms saved per token.
+- **`compare_llm.ps1`, two runs:**
+  - pcuda simd 34.0 and 33.1 ms (29.4 and 30.2 tok/s);
+  - Ollama CPU-only 35.0 and 34.8 ms (28.6 and 28.7 tok/s);
+  - CUDA with the same kernels and CUDA graphs: 33.1 ms (30.2 tok/s), with no gain from graphs, because its time is in the naive kernels.
+
+**Correctness:** all CPU paths remain bit-identical to each other and to the C++ reference with graphs on. New tests:
+- `test_graph` on every code path: order and barriers, async launch with destroy, a capture on one stream leaving the default stream running, capture rules, and a fault naming its node with later nodes skipped;
+- graph decode bit-identical to direct launches.
+
+Stability: 150 repeated runs of the pool and stream tests, plus AddressSanitizer.

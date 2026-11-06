@@ -165,6 +165,11 @@ public:
     virtual void add(float* x, const float* t, int n) = 0;
     virtual void copy(float* dst, const float* src, int n) = 0;
     virtual void finish() = 0;  // wait until queued work is done
+    // Bracket one token's launches (decodeToken calls them). A backend may record the launches
+    // between them and run them as one batch (pcuda / CUDA graphs). `profiling`: per-op timing
+    // is wanted, so run launches one by one.
+    virtual void beginToken(bool profiling) { (void)profiling; }
+    virtual void endToken() {}
 };
 
 // One decode step for the token at position `pos` (0-based): every layer (with K/V appended at
@@ -174,7 +179,8 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
 // Synchronous pcuda launches; the kernel code path follows pcudaSetKernelCodegen.
 // workers == 0: one launch per kernel; workers > 0: matvec, attention, softmax and silu are
 // chunked (pcudaLaunchKernelChunked with that many workers).
-std::unique_ptr<Backend> makePcudaBackend(const Model& m, unsigned workers);
+// graphs: run each token as one pcuda graph (pcudaStreamBeginCapture / pcudaGraphLaunch).
+std::unique_ptr<Backend> makePcudaBackend(const Model& m, unsigned workers, bool graphs = true);
 
 // Plain C++ on host memory (single thread), reading the weights of a pcuda Model directly
 // (pcuda device memory is host memory).

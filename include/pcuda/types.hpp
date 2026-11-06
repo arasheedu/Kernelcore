@@ -29,5 +29,7 @@ struct DeviceProperties {
 // Opaque handles (CUDA-style naming, project-prefixed).
 struct pcudaStream_st;
 struct pcudaEvent_st;
+struct pcudaGraph_st;
 using pcudaStream_t = pcudaStream_st*;   // nullptr = default stream (synchronous launches)
 using pcudaEvent_t  = pcudaEvent_st*;
+using pcudaGraph_t  = pcudaGraph_st*;

@@ -391,8 +391,9 @@ TEST_CASE(tiny_decode_token_pcuda_vs_cpp) {
         const llm::Acts ap = llm::allocActs(cfg, pa, 7);
         const llm::Acts ah = llm::allocActs(cfg, ha, 7);
 
-        auto serial = llm::makePcudaBackend(m, 0);
-        auto chunked = llm::makePcudaBackend(m, workers());
+        auto serial = llm::makePcudaBackend(m, 0, false);
+        auto chunked = llm::makePcudaBackend(m, workers(), false);
+        auto graph = llm::makePcudaBackend(m, workers(), true);  // each token as one pcuda graph
         auto cpp = llm::makeCppBackend(m);
 
         // Same position each time: every run appends its K/V at slot 17, then attends over 0..17.
@@ -400,10 +401,13 @@ TEST_CASE(tiny_decode_token_pcuda_vs_cpp) {
         const auto ls = hostCopy(ap.logits, size_t(cfg.vocab));
         llm::decodeToken(*chunked, m, ap, 17);
         const auto lc = hostCopy(ap.logits, size_t(cfg.vocab));
+        llm::decodeToken(*graph, m, ap, 17);
+        const auto lg = hostCopy(ap.logits, size_t(cfg.vocab));
         llm::decodeToken(*cpp, m, ah, 17);
         const std::vector<float> lr(ah.logits, ah.logits + cfg.vocab);
 
         CHECK(bitEqual(ls, lc));
+        CHECK(bitEqual(ls, lg));
         const double d = relDiff(ls, lr);  // only rope's sin/cos lowering differs
         if (!(d < 1e-4)) th::fail(__FILE__, __LINE__, "logits differ from C++ reference: " + std::to_string(d));
         CHECK(std::max_element(ls.begin(), ls.end()) - ls.begin() ==

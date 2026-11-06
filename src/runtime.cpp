@@ -75,6 +75,25 @@ struct pcudaEvent_st {
     std::shared_ptr<EventState> state = std::make_shared<EventState>();
 };
 
+namespace {
+// One captured kernel launch: its argument sets (one per chunk), validated at capture.
+struct GraphNode {
+    const pcuda::KernelEntry*      entry;
+    std::string                    name;
+    std::vector<pcuda::LaunchArgs> parts;
+};
+// Immutable once captured; a running launch keeps it alive after pcudaGraphDestroy.
+struct GraphData {
+    std::vector<GraphNode>                        nodes;
+    std::vector<std::vector<pcuda::Stream::Task>> tasks;  // per node: one task per part
+    std::vector<pcuda::WorkerPool::Step>          steps;
+};
+} // namespace
+
+struct pcudaGraph_st {
+    std::shared_ptr<const GraphData> data;
+};
+
 // ---------------------------------------------------------------- diagnostics
 
 namespace pcuda::detail {
@@ -121,6 +140,12 @@ struct Runtime {
     std::mutex                                                       objects_mutex;
     std::map<pcudaStream_t, std::unique_ptr<pcudaStream_st>>         streams;
     std::map<pcudaEvent_t, std::unique_ptr<pcudaEvent_st>>           events;
+    std::map<pcudaGraph_t, std::unique_ptr<pcudaGraph_st>>           graphs;
+
+    // Streams being captured: launches on them are recorded into a graph instead of run.
+    std::mutex                                                 capture_mutex;
+    std::map<Stream*, std::shared_ptr<std::vector<GraphNode>>> captures;
+    std::atomic<int>                                           capture_count{0};
 
     std::mutex                                kernels_mutex;
     std::map<std::string, const KernelEntry*> kernels;
@@ -350,6 +375,12 @@ size_t stopDevice(Runtime& r) {
     {
         std::lock_guard lk(r.objects_mutex);
         r.events.clear();
+        r.graphs.clear();
+    }
+    {
+        std::lock_guard lk(r.capture_mutex);
+        r.captures.clear();
+        r.capture_count.store(0);
     }
     const auto blocks = r.registry.drain();
     for (const auto& b : blocks) cpu::releaseBlock(b);
@@ -365,6 +396,41 @@ Error checkPlatform() {
         return Error::UnsupportedOperation;
     }
     return Error::Success;
+}
+
+WorkerPool* ensurePool(Runtime& r) {
+    std::lock_guard lk(r.pool_mutex);
+    if (!r.pool) r.pool = std::make_unique<WorkerPool>(r.hw_threads, r.stack_bytes, r.pool_spin_us);
+    return r.pool.get();
+}
+
+// Runs one argument set of a kernel; `a` must outlive the task.
+Stream::Task partTask(const KernelEntry* entry, const LaunchArgs* a) {
+    return [entry, a]() -> Error {
+        Runtime& rt = R();
+        const Error e = rt.backend->launch(*entry, *a);
+        if (e == Error::KernelFault) recordFault(rt, rt.backend->lastFault());
+        return e;
+    };
+}
+
+Error skipIfPoisoned(const Runtime& r) {
+    if (!r.poisoned.load()) return Error::Success;
+    setDetail("skipped: context poisoned by an earlier kernel fault");
+    return Error::ContextPoisoned;
+}
+
+// Copies, memsets and synchronization run at once, so during a capture they would overtake the
+// recorded work. Like CUDA, they are refused until the capture ends.
+Error rejectDuringCapture(Runtime& r, const char* what) {
+    if (r.capture_count.load() == 0) return Error::Success;
+    setDetail(std::format("{} is not allowed while a stream is capturing (end the capture first)", what));
+    return Error::UnsupportedOperation;
+}
+bool isCapturing(Runtime& r, Stream* s) {
+    if (r.capture_count.load() == 0) return false;
+    std::lock_guard lk(r.capture_mutex);
+    return r.captures.count(s) != 0;
 }
 
 Error launchCommon(const char* name, const void* typed_args, pcudaStream_t stream, bool chunked,
@@ -393,18 +459,10 @@ Error launchCommon(const char* name, const void* typed_args, pcudaStream_t strea
     const cpu::BoothImage* img = nullptr;
     if (Error e = r.backend->image(*entry, &img); e != Error::Success) return e;
 
-    Stream::Task task;
+    // The launch as argument sets: the whole launch, or one per chunk.
+    std::vector<LaunchArgs> parts;
     if (!chunked) {
-        task = [entry, whole]() -> Error {
-            Runtime& rt = R();
-            if (rt.poisoned.load()) {
-                setDetail("skipped: context poisoned by an earlier kernel fault");
-                return Error::ContextPoisoned;
-            }
-            const Error e = rt.backend->launch(*entry, whole);
-            if (e == Error::KernelFault) recordFault(rt, rt.backend->lastFault());
-            return e;
-        };
+        parts.push_back(whole);
     } else {
         if (!entry->extent || !entry->marshal_chunk) {
             setDetail(std::format("kernel '{}' is not registered as chunkable", name));
@@ -425,31 +483,37 @@ Error launchCommon(const char* name, const void* typed_args, pcudaStream_t strea
             setDetail("internal: chunk plan does not cover the launch exactly");
             return Error::InternalError;
         }
-        std::vector<LaunchArgs> per_chunk(chunks.size());
+        parts.resize(chunks.size());
         for (size_t i = 0; i < chunks.size(); ++i)
-            if (Error e = entry->marshal_chunk(typed_args, chunks[i].begin, chunks[i].length, &per_chunk[i]);
+            if (Error e = entry->marshal_chunk(typed_args, chunks[i].begin, chunks[i].length, &parts[i]);
                 e != Error::Success)
                 return e;
-        {
-            std::lock_guard lk(r.pool_mutex);
-            if (!r.pool) r.pool = std::make_unique<WorkerPool>(r.hw_threads, r.stack_bytes, r.pool_spin_us);
+    }
+
+    if (r.capture_count.load() != 0) {  // recorded, not run
+        std::lock_guard lk(r.capture_mutex);
+        if (auto it = r.captures.find(target); it != r.captures.end()) {
+            it->second->push_back(GraphNode{entry, name, std::move(parts)});
+            return Error::Success;
         }
-        WorkerPool* pool = r.pool.get();
-        task = [entry, per_chunk = std::move(per_chunk), pool]() -> Error {
+    }
+
+    Stream::Task task;
+    if (!chunked) {
+        task = [entry, whole]() -> Error {
             Runtime& rt = R();
-            if (rt.poisoned.load()) {
-                setDetail("skipped: context poisoned by an earlier kernel fault");
-                return Error::ContextPoisoned;
-            }
+            if (Error e = skipIfPoisoned(rt); e != Error::Success) return e;
+            const Error e = rt.backend->launch(*entry, whole);
+            if (e == Error::KernelFault) recordFault(rt, rt.backend->lastFault());
+            return e;
+        };
+    } else {
+        WorkerPool* pool = ensurePool(r);
+        task = [entry, per_chunk = std::move(parts), pool]() -> Error {
+            if (Error e = skipIfPoisoned(R()); e != Error::Success) return e;
             std::vector<Stream::Task> jobs;
             jobs.reserve(per_chunk.size());
-            for (const LaunchArgs& a : per_chunk)
-                jobs.push_back([entry, &a]() -> Error {
-                    Runtime& rt2 = R();
-                    const Error e = rt2.backend->launch(*entry, a);
-                    if (e == Error::KernelFault) recordFault(rt2, rt2.backend->lastFault());
-                    return e;
-                });
+            for (const LaunchArgs& a : per_chunk) jobs.push_back(partTask(entry, &a));
             return pool->run(jobs);
         };
     }
@@ -579,6 +643,7 @@ Error pcudaDeviceSynchronize() noexcept {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
+        if (Error e = rejectDuringCapture(r, "pcudaDeviceSynchronize"); e != Error::Success) return e;
         Error first = r.default_stream->synchronize();
         std::string first_detail = detail::lastDetail();
         std::vector<Stream*> snap;
@@ -626,6 +691,7 @@ Error pcudaFree(void* ptr) noexcept {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
+        if (Error e = rejectDuringCapture(r, "pcudaFree"); e != Error::Success) return e;
         if (!ptr) return Error::Success;
         waitAllIdle(r);  // a queued kernel may still use this memory
         return r.backend->release(ptr);
@@ -637,6 +703,7 @@ Error pcudaMemcpy(void* dst, const void* src, size_t bytes, CopyKind kind) noexc
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireUsable(r); e != Error::Success) return e;
+        if (Error e = rejectDuringCapture(r, "pcudaMemcpy"); e != Error::Success) return e;
         const int k = static_cast<int>(kind);
         if (k < 0 || k > 3) {
             setDetail("invalid CopyKind");
@@ -657,6 +724,7 @@ Error pcudaMemset(void* dst, int value, size_t bytes) noexcept {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireUsable(r); e != Error::Success) return e;
+        if (Error e = rejectDuringCapture(r, "pcudaMemset"); e != Error::Success) return e;
         if (bytes == 0) return Error::Success;
         std::string why;
         if (Error e = r.registry.checkRange(dst, bytes, why); e != Error::Success) {
@@ -736,6 +804,7 @@ Error pcudaStreamSynchronize(pcudaStream_t stream) noexcept {
         if (Error e = requireInit(r); e != Error::Success) return e;
         Stream* s = nullptr;
         if (Error e = findStream(r, stream, &s); e != Error::Success) return e;
+        if (isCapturing(r, s)) return rejectDuringCapture(r, "pcudaStreamSynchronize on a capturing stream");
         if (Error e = s->synchronize(); e != Error::Success) return e;
         return requireUsable(r);
     });
@@ -760,12 +829,124 @@ Error pcudaLaunchHostFunc(pcudaStream_t stream, void (*fn)(void*), void* user) n
         if (!fn) return Error::InvalidValue;
         Stream* s = nullptr;
         if (Error e = findStream(r, stream, &s); e != Error::Success) return e;
+        if (isCapturing(r, s)) return rejectDuringCapture(r, "pcudaLaunchHostFunc on a capturing stream");
         Stream::Task t = [fn, user]() -> Error {
             fn(user);
             return Error::Success;
         };
         if (!stream) return s->runSync(std::move(t));
         s->enqueue(std::move(t));
+        return Error::Success;
+    });
+}
+
+// ================================================================ graphs
+
+Error pcudaStreamBeginCapture(pcudaStream_t stream) noexcept {
+    return api("pcudaStreamBeginCapture", [&] {
+        Runtime& r = R();
+        std::shared_lock life(r.lifecycle);
+        if (Error e = requireUsable(r); e != Error::Success) return e;
+        Stream* s = nullptr;
+        if (Error e = findStream(r, stream, &s); e != Error::Success) return e;
+        std::lock_guard lk(r.capture_mutex);
+        if (r.captures.count(s)) {
+            setDetail("the stream is already capturing");
+            return Error::InvalidValue;
+        }
+        r.captures.emplace(s, std::make_shared<std::vector<GraphNode>>());
+        r.capture_count.fetch_add(1);
+        return Error::Success;
+    });
+}
+
+Error pcudaStreamEndCapture(pcudaStream_t stream, pcudaGraph_t* graph) noexcept {
+    return api("pcudaStreamEndCapture", [&] {
+        Runtime& r = R();
+        std::shared_lock life(r.lifecycle);
+        if (Error e = requireInit(r); e != Error::Success) return e;
+        if (!graph) return Error::InvalidValue;
+        *graph = nullptr;
+        Stream* s = nullptr;
+        if (Error e = findStream(r, stream, &s); e != Error::Success) return e;
+        std::shared_ptr<std::vector<GraphNode>> nodes;
+        {
+            std::lock_guard lk(r.capture_mutex);
+            auto it = r.captures.find(s);
+            if (it == r.captures.end()) {
+                setDetail("the stream is not capturing");
+                return Error::InvalidValue;
+            }
+            nodes = std::move(it->second);
+            r.captures.erase(it);
+            r.capture_count.fetch_sub(1);
+        }
+        auto data = std::make_shared<GraphData>();
+        data->nodes = std::move(*nodes);
+        data->tasks.resize(data->nodes.size());
+        data->steps.reserve(data->nodes.size());
+        for (size_t k = 0; k < data->nodes.size(); ++k) {  // nodes and parts no longer move
+            const GraphNode& n = data->nodes[k];
+            for (const LaunchArgs& a : n.parts) data->tasks[k].push_back(partTask(n.entry, &a));
+            data->steps.push_back({data->tasks[k].data(), data->tasks[k].size()});
+        }
+        auto g = std::make_unique<pcudaGraph_st>();
+        g->data = std::move(data);
+        pcudaGraph_t h = g.get();
+        std::lock_guard lk(r.objects_mutex);
+        r.graphs.emplace(h, std::move(g));
+        *graph = h;
+        return Error::Success;
+    });
+}
+
+Error pcudaGraphLaunch(pcudaGraph_t graph, pcudaStream_t stream) noexcept {
+    return api("pcudaGraphLaunch", [&] {
+        Runtime& r = R();
+        std::shared_lock life(r.lifecycle);
+        if (Error e = requireUsable(r); e != Error::Success) return e;
+        std::shared_ptr<const GraphData> data;
+        {
+            std::lock_guard lk(r.objects_mutex);
+            auto it = r.graphs.find(graph);
+            if (!graph || it == r.graphs.end()) {
+                setDetail("unknown graph handle");
+                return Error::InvalidResourceHandle;
+            }
+            data = it->second->data;
+        }
+        Stream* s = nullptr;
+        if (Error e = findStream(r, stream, &s); e != Error::Success) return e;
+        if (isCapturing(r, s)) return rejectDuringCapture(r, "pcudaGraphLaunch on a capturing stream");
+        if (data->nodes.empty()) return Error::Success;
+        WorkerPool* pool = ensurePool(r);
+        Stream::Task task = [data, pool]() -> Error {
+            if (Error e = skipIfPoisoned(R()); e != Error::Success) return e;
+            size_t failed = 0;
+            const Error e = pool->runSteps(data->steps, &failed);
+            if (e != Error::Success)
+                setDetail(std::format("graph node {} ('{}'), {}", failed, data->nodes[failed].name,
+                                      detail::lastDetail()));
+            return e;
+        };
+        if (!stream) return s->runSync(std::move(task));
+        s->enqueue(std::move(task));
+        return Error::Success;
+    });
+}
+
+Error pcudaGraphDestroy(pcudaGraph_t graph) noexcept {
+    return api("pcudaGraphDestroy", [&] {
+        Runtime& r = R();
+        std::shared_lock life(r.lifecycle);
+        if (Error e = requireInit(r); e != Error::Success) return e;
+        std::lock_guard lk(r.objects_mutex);
+        auto it = r.graphs.find(graph);
+        if (!graph || it == r.graphs.end()) {
+            setDetail("unknown graph handle");
+            return Error::InvalidResourceHandle;
+        }
+        r.graphs.erase(it);  // a queued launch keeps the graph's data alive
         return Error::Success;
     });
 }
@@ -812,6 +993,7 @@ Error pcudaEventRecord(pcudaEvent_t event, pcudaStream_t stream) noexcept {
         if (Error e = findEvent(r, event, &st); e != Error::Success) return e;
         Stream* s = nullptr;
         if (Error e = findStream(r, stream, &s); e != Error::Success) return e;
+        if (isCapturing(r, s)) return rejectDuringCapture(r, "pcudaEventRecord on a capturing stream");
         uint64_t gen;
         {
             std::lock_guard lk(st->mutex);

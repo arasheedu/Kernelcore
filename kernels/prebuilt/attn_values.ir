@@ -1,65 +1,75 @@
 ; Booth IR
 
-func @attn_values(ptr<global, f32> %0, ptr<global, f32> %1, ptr<global, f32> %2, ptr<global, i32> %3, i32 %4) __global__ {
+func @pcuda_aligned8(i32 %0) __device__ {
 entry:
-    %5 = block_id.x  ; line 5
-    %6 = block_dim.x  ; line 5
-    %7 = mul i32 %5, %6  ; line 5
-    %8 = add i32 %4, %7  ; line 5
-    %9 = thread_id.x  ; line 5
-    %10 = add i32 %8, %9  ; line 5
-    %11 = gep ptr<global, i32>, %3, 0  ; line 6
-    %12 = load i32, %11  ; line 6
-    %13 = gep ptr<global, i32>, %3, 1  ; line 7
-    %14 = load i32, %13  ; line 7
-    %15 = gep ptr<global, i32>, %3, 2  ; line 8
-    %16 = load i32, %15  ; line 8
-    %17 = gep ptr<global, i32>, %3, 3  ; line 9
-    %18 = load i32, %17  ; line 9
-    %19 = gep ptr<global, i32>, %3, 4  ; line 10
-    %20 = load i32, %19  ; line 10
-    %21 = mul i32 %12, %16  ; line 11
-    %22 = icmp slt i32 %10, %21  ; line 11
-    br_cond %22, if.then, if.end merge if.end  ; line 11
-
-if.then:
-    %24 = sdiv i32 %10, %16  ; line 12
-    %25 = srem i32 %10, %16  ; line 13
-    %26 = sdiv i32 %24, %20  ; line 14
-    %27 = mul i32 %26, %16  ; line 14
-    %28 = add i32 %27, %25  ; line 14
-    br for.cond  ; line 16
-
-if.end:
-    ret void  ; line 17
-
-for.cond:
-    %31 = phi f32 [if.then: 0], [for.inc: %44]
-    %32 = phi i32 [if.then: 0], [for.inc: %46]
-    %33 = icmp slt i32 %32, %14  ; line 16
-    br_cond %33, for.body, for.end merge for.end  ; line 16
-
-for.body:
-    %35 = mul i32 %24, %14  ; line 16
-    %36 = add i32 %35, %32  ; line 16
-    %37 = gep ptr<global, f32>, %0, %36  ; line 16
-    %38 = load f32, %37  ; line 16
-    %39 = mul i32 %32, %18  ; line 16
-    %40 = add i32 %39, %28  ; line 16
-    %41 = gep ptr<global, f32>, %1, %40  ; line 16
-    %42 = load f32, %41  ; line 16
-    %43 = fmul f32 %38, %42  ; line 16
-    %44 = fadd f32 %31, %43  ; line 16
-    br for.inc  ; line 16
-
-for.inc:
-    %46 = add i32 %32, 1  ; line 16
-    br for.cond  ; line 16
-
-for.end:
-    %48 = gep ptr<global, f32>, %2, %10  ; line 17
-    store f32 %31, %48  ; line 17
-    br if.end  ; line 17
+    ret i32 %0  ; line 11
 }
 
-; 1 functions, 0 globals, 51 instructions
+func @attn_values(ptr<global, f32> %0, ptr<global, f32> %1, ptr<global, f32> %2, ptr<global, i32> %3, i32 %4) __global__ {
+entry:
+    %5 = call i32 @pcuda_aligned8(%4)  ; line 17
+    %6 = block_id.x  ; line 17
+    %7 = block_dim.x  ; line 17
+    %8 = mul i32 %6, %7  ; line 17
+    %9 = add i32 %5, %8  ; line 17
+    %10 = thread_id.x  ; line 17
+    %11 = add i32 %9, %10  ; line 17
+    %12 = gep ptr<global, i32>, %3, 0  ; line 18
+    %13 = load i32, %12  ; line 18
+    %14 = gep ptr<global, i32>, %3, 1  ; line 19
+    %15 = load i32, %14  ; line 19
+    %16 = gep ptr<global, i32>, %3, 2  ; line 20
+    %17 = load i32, %16  ; line 20
+    %18 = call i32 @pcuda_aligned8(%17)  ; line 20
+    %19 = gep ptr<global, i32>, %3, 3  ; line 21
+    %20 = load i32, %19  ; line 21
+    %21 = gep ptr<global, i32>, %3, 4  ; line 22
+    %22 = load i32, %21  ; line 22
+    %23 = gep ptr<global, i32>, %3, 5  ; line 23
+    %24 = load i32, %23  ; line 23
+    %25 = mul i32 %13, %18  ; line 24
+    %26 = icmp slt i32 %11, %25  ; line 24
+    br_cond %26, if.then, if.end merge if.end  ; line 24
+
+if.then:
+    %28 = sdiv i32 %11, %18  ; line 25
+    %29 = mul i32 %28, %18  ; line 26
+    %30 = sub i32 %11, %29  ; line 26
+    %31 = sdiv i32 %28, %22  ; line 27
+    %32 = mul i32 %31, %18  ; line 27
+    %33 = add i32 %32, %30  ; line 27
+    br for.cond  ; line 29
+
+if.end:
+    ret void  ; line 30
+
+for.cond:
+    %36 = phi f32 [if.then: 0], [for.inc: %49]
+    %37 = phi i32 [if.then: 0], [for.inc: %51]
+    %38 = icmp slt i32 %37, %15  ; line 29
+    br_cond %38, for.body, for.end merge for.end  ; line 29
+
+for.body:
+    %40 = mul i32 %28, %24  ; line 29
+    %41 = add i32 %40, %37  ; line 29
+    %42 = gep ptr<global, f32>, %0, %41  ; line 29
+    %43 = load f32, %42  ; line 29
+    %44 = mul i32 %37, %20  ; line 29
+    %45 = add i32 %44, %33  ; line 29
+    %46 = gep ptr<global, f32>, %1, %45  ; line 29
+    %47 = load f32, %46  ; line 29
+    %48 = fmul f32 %43, %47  ; line 29
+    %49 = fadd f32 %36, %48  ; line 29
+    br for.inc  ; line 29
+
+for.inc:
+    %51 = add i32 %37, 1  ; line 29
+    br for.cond  ; line 29
+
+for.end:
+    %53 = gep ptr<global, f32>, %2, %11  ; line 30
+    store f32 %36, %53  ; line 30
+    br if.end  ; line 30
+}
+
+; 2 functions, 0 globals, 58 instructions

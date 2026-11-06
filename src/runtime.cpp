@@ -44,6 +44,33 @@ struct EventState {
 };
 } // namespace
 
+namespace {
+// Logical processors on the fastest cores (P-cores on hybrid Intel CPUs; all of them otherwise).
+// Busy efficiency cores make memory-bound launches slower overall on such CPUs (they share the
+// ring and memory path but finish chunks late), so the pool leaves them alone by default.
+unsigned performanceLogicalProcessors() {
+    const unsigned all = std::max(1u, std::thread::hardware_concurrency());
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
+    if (len == 0) return all;
+    std::vector<uint8_t> buf(len);
+    auto* info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data());
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info, &len)) return all;
+    unsigned best_class = 0, count = 0;
+    for (DWORD off = 0; off < len;) {
+        auto* e = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data() + off);
+        const unsigned cls = e->Processor.EfficiencyClass;
+        unsigned lps = 0;
+        for (WORD g = 0; g < e->Processor.GroupCount; ++g)
+            lps += static_cast<unsigned>(__popcnt64(e->Processor.GroupMask[g].Mask));
+        if (cls > best_class) best_class = cls, count = 0;
+        if (cls == best_class) count += lps;
+        off += e->Size;
+    }
+    return count ? count : all;
+}
+} // namespace
+
 struct pcudaEvent_st {
     std::shared_ptr<EventState> state = std::make_shared<EventState>();
 };
@@ -272,8 +299,11 @@ Error startDevice(Runtime& r) {
     r.guard_pages = envInt("PCUDA_GUARD_PAGES", 1, 0, 1) != 0;
     r.stack_bytes = static_cast<size_t>(envInt("PCUDA_KERNEL_STACK_MB", 8, 1, 1024)) * kMiB;
     // Threads in the chunked-launch pool. A launch's `workers` argument sets the chunk count.
+    // Default: the performance cores' logical processors, minus one for the launching (stream)
+    // thread, which runs chunks too. More threads than processors made waiting workers take
+    // processors from the threads with work (measured: 16 threads ~13% slower than 12).
     r.hw_threads = static_cast<unsigned>(
-        envInt("PCUDA_POOL_THREADS", std::max(1u, std::thread::hardware_concurrency()), 1, 1024));
+        envInt("PCUDA_POOL_THREADS", std::max(1u, performanceLogicalProcessors() - 1), 1, 1024));
     r.chunks_per_worker = static_cast<unsigned>(envInt("PCUDA_CHUNKS_PER_WORKER", 4, 1, 64));
     r.pool_spin_us = static_cast<unsigned>(envInt("PCUDA_POOL_SPIN_US", 50, 0, 10000));
     if (!r.codegen_set.load()) {
@@ -388,7 +418,9 @@ Error launchCommon(const char* name, const void* typed_args, pcudaStream_t strea
         if (Error e = entry->extent(typed_args, &total); e != Error::Success) return e;
         // Several chunks per worker: fast cores pick up the work slow (efficiency) cores would
         // otherwise finish last. Results don't depend on the split (chunks are disjoint).
-        const std::vector<ChunkSpec> chunks = planChunks(total, workers * r.chunks_per_worker, min_chunk);
+        // Boundaries at multiples of 16 threads: whole 8-lane simd groups, and 64-byte lines
+        // for one float per thread.
+        const std::vector<ChunkSpec> chunks = planChunks(total, workers * r.chunks_per_worker, min_chunk, 16);
         if (!chunksCoverExactly(chunks, total)) {
             setDetail("internal: chunk plan does not cover the launch exactly");
             return Error::InternalError;

@@ -17,6 +17,7 @@
 #include "kernels/llm/rope.cu"
 #include "kernels/llm/attn_scores.cu"
 #include "kernels/llm/softmax.cu"
+#include "kernels/llm/kv_append.cu"
 #include "kernels/llm/attn_values.cu"
 #include "kernels/llm/silu_mul.cu"
 
@@ -91,9 +92,15 @@ cudaError_t attnScores(const float* q, const float* k, float* scores, const int*
     return cudaGetLastError();
 }
 
-cudaError_t softmax(float* x, int n, int rows, cudaStream_t s) {
+cudaError_t softmax(float* x, int n, int stride, int rows, cudaStream_t s) {
     if (rows <= 0) return cudaSuccess;
-    ::softmax<<<blocksFor(rows), kBlockSize, 0, s>>>(x, n, rows);
+    ::softmax<<<blocksFor(rows), kBlockSize, 0, s>>>(x, n, stride, rows);
+    return cudaGetLastError();
+}
+
+cudaError_t kvAppend(const float* k, const float* v, float* kt, float* vc, const int* dims, int n, cudaStream_t s) {
+    if (n <= 0) return cudaSuccess;
+    kv_append<<<blocksFor(n), kBlockSize, 0, s>>>(k, v, kt, vc, dims);
     return cudaGetLastError();
 }
 

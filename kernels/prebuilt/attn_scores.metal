@@ -6,6 +6,15 @@
 #include <metal_stdlib>
 using namespace metal;
 
+int pcuda_aligned8(
+    int p0);
+
+int pcuda_aligned8(
+    int p0)
+{
+    return p0;
+}
+
 kernel void attn_scores(
     device float * p0 [[buffer(0)]],
     device float * p1 [[buffer(1)]],
@@ -17,95 +26,109 @@ kernel void attn_scores(
     uint3 bid [[threadgroup_position_in_grid]],
     uint3 bdim [[threads_per_threadgroup]])
 {
-    int v6;
-    int v7;
     int v8;
     int v9;
     int v10;
     int v11;
-    device int * v12;
+    int v12;
     int v13;
-    device int * v14;
-    int v15;
-    device int * v16;
-    int v17;
-    device int * v18;
-    int v19;
-    device int * v20;
-    int v21;
+    int v14;
+    device int * v15;
+    int v16;
+    device int * v17;
+    int v18;
+    device int * v19;
+    int v20;
+    device int * v21;
     int v22;
-    bool v23;
+    device int * v23;
+    int v24;
     int v25;
-    int v26;
+    device int * v26;
     int v27;
     int v28;
-    int v29;
-    int v30;
-    float v33;
-    int v34;
-    bool v35;
+    bool v29;
+    int v31;
+    int v32;
+    int v33;
+    bool v34;
     int v37;
     int v38;
-    device float * v39;
-    float v40;
-    int v41;
-    device float * v42;
-    float v43;
-    float v44;
-    float v45;
-    int v47;
-    device float * v49;
-    float v50;
-    v6 = bid.x;
-    v7 = bdim.x;
-    v8 = v6 * v7;
-    v9 = p4 + v8;
-    v10 = tid.x;
-    v11 = v9 + v10;
-    v12 = p3 + (0);
-    v13 = *(v12);
-    v14 = p3 + (1);
-    v15 = *(v14);
-    v16 = p3 + (2);
-    v17 = *(v16);
-    v18 = p3 + (3);
-    v19 = *(v18);
-    v20 = p3 + (4);
-    v21 = *(v20);
-    v22 = v13 * v15;
-    v23 = v11 < v22;
-    if (v23) {
-        v25 = v11 / v15;
-        v26 = v11 % v15;
-        v27 = v26 * v19;
-        v28 = v25 / v21;
-        v29 = v28 * v17;
-        v30 = v27 + v29;
-        v33 = 0.0f;
-        v34 = 0;
-        while (true) {
-            v35 = v34 < v17;
-            if (v35) {
-                v37 = v25 * v17;
-                v38 = v37 + v34;
-                v39 = p0 + (v38);
-                v40 = *(v39);
-                v41 = v30 + v34;
-                v42 = p1 + (v41);
-                v43 = *(v42);
-                v44 = v40 * v43;
-                v45 = v33 + v44;
-                v47 = v34 + 1;
-                v33 = v45;
-                v34 = v47;
-                continue;
-            } else {
-                break;
+    float v41;
+    int v42;
+    bool v43;
+    int v45;
+    int v46;
+    device float * v47;
+    float v48;
+    int v49;
+    int v50;
+    int v51;
+    device float * v52;
+    float v53;
+    float v54;
+    float v55;
+    int v57;
+    device float * v59;
+    float v60;
+    v8 = pcuda_aligned8(p4);
+    v9 = bid.x;
+    v10 = bdim.x;
+    v11 = v9 * v10;
+    v12 = v8 + v11;
+    v13 = tid.x;
+    v14 = v12 + v13;
+    v15 = p3 + (0);
+    v16 = *(v15);
+    v17 = p3 + (1);
+    v18 = *(v17);
+    v19 = p3 + (2);
+    v20 = *(v19);
+    v21 = p3 + (4);
+    v22 = *(v21);
+    v23 = p3 + (5);
+    v24 = *(v23);
+    v25 = pcuda_aligned8(v24);
+    v26 = p3 + (6);
+    v27 = *(v26);
+    v28 = v16 * v25;
+    v29 = v14 < v28;
+    if (v29) {
+        v31 = v14 / v25;
+        v32 = v31 * v25;
+        v33 = v14 - v32;
+        v34 = v33 < v18;
+        if (v34) {
+            v37 = v31 / v22;
+            v38 = v37 * v20;
+            v41 = 0.0f;
+            v42 = 0;
+            while (true) {
+                v43 = v42 < v20;
+                if (v43) {
+                    v45 = v31 * v20;
+                    v46 = v45 + v42;
+                    v47 = p0 + (v46);
+                    v48 = *(v47);
+                    v49 = v38 + v42;
+                    v50 = v49 * v27;
+                    v51 = v50 + v33;
+                    v52 = p1 + (v51);
+                    v53 = *(v52);
+                    v54 = v48 * v53;
+                    v55 = v41 + v54;
+                    v57 = v42 + 1;
+                    v41 = v55;
+                    v42 = v57;
+                    continue;
+                } else {
+                    break;
+                }
             }
+            v59 = p2 + (v14);
+            v60 = v41 * p5;
+            *(v59) = v60;
         }
-        v49 = p2 + (v11);
-        v50 = v33 * p5;
-        *(v49) = v50;
     }
     return;
 }

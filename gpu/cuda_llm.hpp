@@ -24,7 +24,8 @@ cudaError_t siluMulQ8x4(const float* g, const float* u, int* xq, float* xd, int 
 cudaError_t rope(float* x, int pairs_per_head, int pos, int count, float log2_base, cudaStream_t s);
 cudaError_t attnScores(const float* q, const float* k, float* scores, const int* dims, int total, float scale,
                        cudaStream_t s);
-cudaError_t softmax(float* x, int n, int rows, cudaStream_t s);
+cudaError_t softmax(float* x, int n, int stride, int rows, cudaStream_t s);
+cudaError_t kvAppend(const float* k, const float* v, float* kt, float* vc, const int* dims, int n, cudaStream_t s);
 cudaError_t attnValues(const float* p, const float* v, float* out, const int* dims, int total, cudaStream_t s);
 cudaError_t siluMul(const float* g, const float* u, float* out, int count, cudaStream_t s);
 

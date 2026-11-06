@@ -25,8 +25,11 @@ void rmsNorm(const float* x, const float* w, float* y, int n, int rows, float ep
 void addRmsNorm(float* x, const float* t, const float* w, float* y, int n, float eps);  // add, then rmsNorm
 void siluMulQ8x4(const float* g, const float* u, int* xq, float* xd, int count);          // siluMul, then quantizeQ8x4
 void rope(float* x, int pairs_per_head, int pos, int count, float log2_base);
-void attnScores(const float* q, const float* k, float* scores, const AttnDims& d, float scale);
-void softmax(float* x, int n, int rows);
+// Layouts as in AttnDims: kt[kv_stride][k_stride] (K transposed), v[ctx][kv_stride],
+// scores/p[n_heads][ctx_pad] (entries t >= ctx untouched).
+void appendKv(const float* k, const float* v, float* kt, float* vc, int n, int k_stride, int pos);
+void attnScores(const float* q, const float* kt, float* scores, const AttnDims& d, float scale);
+void softmax(float* x, int n, int stride, int rows);
 void attnValues(const float* p, const float* v, float* out, const AttnDims& d);
 void siluMul(const float* g, const float* u, float* out, int count);
 void add(float* x, const float* t, int n);

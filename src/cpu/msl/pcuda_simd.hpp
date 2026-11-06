@@ -128,6 +128,21 @@ inline bool cpuHasAvxVnni() {
 }
 // AVX-VNNI vpdpbusd computes exactly dp4aScalar per lane (u8 x s8, no saturation). Without
 // VNNI the same integer result comes from four 32-bit multiplies.
+// Generated kernels pick the variant once per launch (template parameter): a runtime check in the
+// loop made MSVC spill every vector register around it.
+template <bool Vnni>
+inline VI vdp4aT(VI c, VI a, VI b) {
+    if constexpr (Vnni) {
+        return _mm256_dpbusd_avx_epi32(c, a, b);
+    } else {
+        VI r = c;
+        r = add(r, mul(_mm256_and_si256(a, splat(255)), _mm256_srai_epi32(_mm256_slli_epi32(b, 24), 24)));
+        r = add(r, mul(_mm256_and_si256(_mm256_srli_epi32(a, 8), splat(255)), _mm256_srai_epi32(_mm256_slli_epi32(b, 16), 24)));
+        r = add(r, mul(_mm256_and_si256(_mm256_srli_epi32(a, 16), splat(255)), _mm256_srai_epi32(_mm256_slli_epi32(b, 8), 24)));
+        r = add(r, mul(_mm256_srli_epi32(a, 24), _mm256_srai_epi32(b, 24)));
+        return r;
+    }
+}
 inline VI vdp4a(VI c, VI a, VI b) {
     if (cpuHasAvxVnni()) return _mm256_dpbusd_avx_epi32(c, a, b);
     VI r = c;
@@ -274,6 +289,30 @@ inline void store(VPtr<char> p, VI v, VI m) {
     for (int l = 0; l < kLanes; ++l)
         if (k[l]) p.base[ix[l]] = static_cast<char>(x[l]);
 }
+
+// pcuda_aligned8(x) in a kernel promises x >= 0 and x % 8 == 0; the generated code relies on it
+// (x-based divisions stay uniform across lanes), so a broken promise faults instead of
+// producing wrong results. The fault guard reports it like any kernel fault.
+inline int aligned8(int x) {
+    if (x < 0 || (x & 7) != 0) __debugbreak();
+    return x;
+}
+
+// ---- affine values: lane l holds b + s*l, kept as the scalar b while s is a compile-time constant ----
+inline VI affine(int b, int s) { return add(splat(b), _mm256_mullo_epi32(iota(), splat(s))); }
+template <class T>
+inline VPtr<T> affinePtr(T* p, int s) { return {p, _mm256_mullo_epi32(iota(), splat(s))}; }
+// Consecutive elements p[0..7] (stride 1): no index checks; masked lanes are not touched.
+inline VF loadc(float* p, VI m) { return _mm256_maskload_ps(p, m); }
+inline VI loadc(int* p, VI m) { return _mm256_maskload_epi32(p, m); }
+inline VI loadc(char* p, VI m) {
+    if (_mm256_movemask_ps(_mm256_castsi256_ps(m)) == 0xFF)
+        return _mm256_cvtepu8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(p)));
+    return load(VPtr<char>{p, iota()}, m);
+}
+inline void storec(float* p, VF v, VI m) { _mm256_maskstore_ps(p, m, v); }
+inline void storec(int* p, VI v, VI m) { _mm256_maskstore_epi32(p, m, v); }
+inline void storec(char* p, VI v, VI m) { store(VPtr<char>{p, iota()}, v, m); }
 
 // A uniform address written by several threads keeps the last (highest) active lane's value.
 inline float lastActive(VF v, VI m) {

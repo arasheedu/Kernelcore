@@ -230,38 +230,46 @@ TEST_CASE(fused_kernels_equal_unfused_sequences) {
 TEST_CASE(attention_kernels_match_reference_and_chunk) {
     LlmFixture fx;
     REQUIRE(fx.ok);
-    // Grouped-query shape: 6 query heads share 2 KV heads; ctx not a multiple of 64.
-    const llm::AttnDims d{6, 333, 64, 2 * 64, 3};
+    // Grouped-query shape: 6 query heads share 2 KV heads; ctx not a multiple of 8 or 64.
+    // Scores rows are padded to 336; the transposed K cache holds 340 positions.
+    const llm::AttnDims d{6, 333, 64, 2 * 64, 3, llm::padTo8(333), 340};
     const auto q = randomFloats(size_t(d.n_heads) * d.head_dim, 1);
-    const auto k = randomFloats(size_t(d.ctx) * d.kv_stride, 2);
+    const auto k = randomFloats(size_t(d.kv_stride) * d.k_stride, 2);
     const auto v = randomFloats(size_t(d.ctx) * d.kv_stride, 3);
     auto* dq = devCopy(q);
     auto* dk = devCopy(k);
     auto* dv = devCopy(v);
-    auto* dsc = devCopy(std::vector<float>(size_t(d.n_heads) * d.ctx, 0.0f));
+    auto* dsc = devCopy(std::vector<float>(size_t(d.n_heads) * d.ctx_pad, 0.0f));
     auto* dout = devCopy(std::vector<float>(size_t(d.n_heads) * d.head_dim, 0.0f));
-    auto* dd = devCopy(std::vector<int>{d.n_heads, d.ctx, d.head_dim, d.kv_stride, d.group});
+    auto* dd = devCopy(std::vector<int>{d.n_heads, d.ctx, d.head_dim, d.kv_stride, d.group, d.ctx_pad, d.k_stride});
     REQUIRE(dq && dk && dv && dsc && dout && dd);
     const float scale = 0.125f;
+    // Positions t >= ctx of each padded row are not written by design: compare the rest.
+    auto valid = [&](const std::vector<float>& s) {
+        std::vector<float> r;
+        for (int h = 0; h < d.n_heads; ++h)
+            r.insert(r.end(), s.begin() + ptrdiff_t(h) * d.ctx_pad, s.begin() + ptrdiff_t(h) * d.ctx_pad + d.ctx);
+        return r;
+    };
 
-    std::vector<float> rs(size_t(d.n_heads) * d.ctx), ro(size_t(d.n_heads) * d.head_dim);
+    std::vector<float> rs(size_t(d.n_heads) * d.ctx_pad), ro(size_t(d.n_heads) * d.head_dim);
     llm::ref::attnScores(q.data(), k.data(), rs.data(), d, scale);
     const llm::AttnScoresArgs sa{dq, dk, dsc, dd, d, scale};
     CHECK_OK(pcudaLaunchKernel("attn_scores", &sa));
     const auto scores = hostCopy(dsc, rs.size());
-    CHECK(bitEqual(scores, rs));
+    CHECK(bitEqual(valid(scores), valid(rs)));
     CHECK_OK(pcudaMemset(dsc, 0xFF, rs.size() * 4));
     CHECK_OK(pcudaLaunchKernelChunked("attn_scores", &sa, workers(), 64));
-    CHECK(bitEqual(hostCopy(dsc, rs.size()), scores));
+    CHECK(bitEqual(valid(hostCopy(dsc, rs.size())), valid(scores)));
 
-    llm::ref::softmax(rs.data(), d.ctx, d.n_heads);
-    const llm::SoftmaxArgs sm{dsc, d.ctx, d.n_heads};
+    llm::ref::softmax(rs.data(), d.ctx, d.ctx_pad, d.n_heads);
+    const llm::SoftmaxArgs sm{dsc, d.ctx, d.ctx_pad, d.n_heads};
     CHECK_OK(pcudaLaunchKernel("softmax", &sm));
     const auto probs = hostCopy(dsc, rs.size());
-    CHECK(relDiff(probs, rs) < 1e-6);
+    CHECK(relDiff(valid(probs), valid(rs)) < 1e-6);
     for (int h = 0; h < d.n_heads; ++h) {
         double sum = 0;
-        for (int t = 0; t < d.ctx; ++t) sum += probs[size_t(h) * d.ctx + t];
+        for (int t = 0; t < d.ctx; ++t) sum += probs[size_t(h) * d.ctx_pad + t];
         CHECK(std::abs(sum - 1.0) < 1e-5);
     }
 
@@ -273,6 +281,28 @@ TEST_CASE(attention_kernels_match_reference_and_chunk) {
     CHECK_OK(pcudaMemset(dout, 0xFF, ro.size() * 4));
     CHECK_OK(pcudaLaunchKernelChunked("attn_values", &va, workers(), 64));
     CHECK(bitEqual(hostCopy(dout, ro.size()), out));
+}
+
+TEST_CASE(kv_append_writes_transposed_k_and_row_major_v) {
+    LlmFixture fx;
+    REQUIRE(fx.ok);
+    // 3 KV heads of 32: n = 96; K cache rows hold 24 positions; appending position 13 (ctx 14).
+    const llm::AttnDims d{6, 14, 32, 96, 2, 16, 24};
+    const int n = d.kv_stride, pos = d.ctx - 1;
+    const auto k = randomFloats(size_t(n), 21), v = randomFloats(size_t(n), 22);
+    auto kt = randomFloats(size_t(n) * d.k_stride, 23), vc = randomFloats(size_t(n) * d.ctx, 24);
+    auto *dk = devCopy(k), *dv = devCopy(v), *dkt = devCopy(kt), *dvc = devCopy(vc);
+    auto* dd = devCopy(std::vector<int>{d.n_heads, d.ctx, d.head_dim, d.kv_stride, d.group, d.ctx_pad, d.k_stride});
+    REQUIRE(dk && dv && dkt && dvc && dd);
+    const llm::KvAppendArgs a{dk, dv, dkt, dvc, dd, d};
+    CHECK_OK(pcudaLaunchKernel("kv_append", &a));
+    llm::ref::appendKv(k.data(), v.data(), kt.data(), vc.data(), n, d.k_stride, pos);
+    CHECK(bitEqual(hostCopy(dkt, kt.size()), kt));
+    CHECK(bitEqual(hostCopy(dvc, vc.size()), vc));
+    llm::AttnDims big = d;  // context past the K cache rows
+    big.ctx = 25, big.ctx_pad = 32;
+    const llm::KvAppendArgs past{dk, dv, dkt, dvc, dd, big};
+    CHECK_ERR(pcudaLaunchKernel("kv_append", &past), Error::InvalidValue);
 }
 
 TEST_CASE(norm_rope_silu_match_reference) {
@@ -340,7 +370,7 @@ TEST_CASE(llm_argument_validation) {
     a = {q, buf, buf, buf, dims128, 128, 32};
     CHECK_ERR(pcudaLaunchKernel("matvec_q8", &a), Error::InvalidPointer);
     // Heads not divisible by the group size.
-    const llm::AttnDims bad{5, 4, 32, 64, 2};
+    const llm::AttnDims bad{5, 4, 32, 64, 2, 8, 4};
     const llm::AttnScoresArgs s{buf, buf, buf, dims, bad, 1.0f};
     CHECK_ERR(pcudaLaunchKernel("attn_scores", &s), Error::InvalidValue);
     // rope count must be whole heads.

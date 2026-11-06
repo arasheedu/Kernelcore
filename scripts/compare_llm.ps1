@@ -19,7 +19,9 @@ param(
     [int]$Tokens = 128,
     [double]$Budget = 20,
     [string]$Server = 'http://127.0.0.1:11434',
-    [string]$Bench = ''
+    [string]$Bench = '',
+    # pcuda paths to time; booth and native are slow and heat the CPU before the simd run
+    [string]$Paths = 'simd,cuda'
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -62,8 +64,8 @@ while ((Get-Date) -lt $deadline) {
 }
 Start-Sleep -Seconds 15
 Write-Host ""
-Write-Host "Running pcuda_llm_bench --model 3b --weights q4x8q8 --prompt $promptTokens --tokens $Tokens ..."
-$out = & $Bench --model 3b --weights q4x8q8 --prompt $promptTokens --tokens $Tokens --budget $Budget
+Write-Host "Running pcuda_llm_bench --model 3b --weights q4x8q8 --prompt $promptTokens --tokens $Tokens --paths $Paths ..."
+$out = & $Bench --model 3b --weights q4x8q8 --prompt $promptTokens --tokens $Tokens --budget $Budget --paths $Paths
 $out | Where-Object { $_ -notmatch '^RESULT' } | ForEach-Object { Write-Host $_ }
 if ($LASTEXITCODE -ne 0) { throw "pcuda_llm_bench failed ($LASTEXITCODE)" }
 

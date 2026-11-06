@@ -30,15 +30,35 @@ unsigned __stdcall threadMain(void* p) {
     return 0;
 }
 
-// Spins with `pause` until pred() or `us` microseconds pass. Returns pred().
+bool cpuHasWaitpkg() {
+    static const bool has = [] {
+        int r[4] = {};
+        __cpuidex(r, 7, 0);
+        return (r[2] & (1 << 5)) != 0;  // ECX bit 5: UMONITOR / UMWAIT / TPAUSE
+    }();
+    return has;
+}
+
+// Waits until pred() or `us` microseconds pass; returns pred(). pred() must become true only
+// through a write to the cache line at `watch`. With WAITPKG the thread sleeps in UMWAIT (light
+// C0.1 state, woken by that write): no wake-up latency and much less power than spinning, which
+// lets busy cores keep their turbo clocks. Otherwise it spins with `pause`.
 template <class Pred>
-bool spinFor(unsigned us, Pred pred) {
+bool spinFor(unsigned us, Pred pred, const volatile void* watch = nullptr) {
     if (us == 0) return pred();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(us);
+    const bool umwait = watch && cpuHasWaitpkg();
     for (unsigned i = 0;; ++i) {
         if (pred()) return true;
-        _mm_pause();
-        if ((i & 63) == 63 && std::chrono::steady_clock::now() >= deadline) return pred();
+        if (umwait) {
+            _umonitor(const_cast<void*>(watch));
+            if (pred()) return true;
+            _umwait(1, __rdtsc() + 20000);  // C0.1; the OS also caps each wait
+            if (std::chrono::steady_clock::now() >= deadline) return pred();
+        } else {
+            _mm_pause();
+            if ((i & 63) == 63 && std::chrono::steady_clock::now() >= deadline) return pred();
+        }
     }
 }
 
@@ -100,7 +120,7 @@ Stream::~Stream() {
 void Stream::loop() {
     for (;;) {
         // Spin briefly first: back-to-back launches then skip the thread wake-up.
-        spinFor(spin_us_, [&] { return queued_.load(std::memory_order_acquire) != 0 || stopping_.load(); });
+        spinFor(spin_us_, [&] { return queued_.load(std::memory_order_acquire) != 0 || stopping_.load(); }, &queued_);
         Item item;
         {
             std::unique_lock lk(mutex_);
@@ -147,7 +167,7 @@ Error Stream::runSync(Task task) {
         ++submitted_;
     }
     work_cv_.notify_one();
-    if (!spinFor(spin_us_, [&] { return slot->done.load(std::memory_order_acquire); })) {
+    if (!spinFor(spin_us_, [&] { return slot->done.load(std::memory_order_acquire); }, &slot->done)) {
         std::unique_lock lk(mutex_);
         done_cv_.wait(lk, [&] { return slot->done.load(); });
     }
@@ -178,18 +198,16 @@ bool Stream::idle() {
 
 // ---------------------------------------------------------------- WorkerPool
 
+// One launch at a time per caller; several callers (streams) may share the pool.
+// Chunks are claimed with an atomic counter, so taking work needs no lock.
 struct WorkerPool::Group {
-    std::mutex               mutex;
-    std::condition_variable  cv;
-    std::atomic<size_t>      remaining{0};
-    std::vector<Error>       results;
-    std::vector<std::string> details;
+    std::vector<Stream::Task>* tasks = nullptr;
+    uint32_t                   count = 0;
+    std::atomic<uint32_t>      next{0};       // next unclaimed chunk
+    std::atomic<uint32_t>      remaining{0};  // chunks not finished; the caller waits for 0
+    std::vector<Error>         results;       // one slot per chunk, written by its runner only
+    std::vector<std::string>   details;
 };
-
-namespace {
-
-
-} // namespace
 
 WorkerPool::WorkerPool(unsigned threads, size_t stack_bytes, unsigned spin_us) : spin_us_(spin_us) {
     threads = std::max(1u, threads);
@@ -197,58 +215,53 @@ WorkerPool::WorkerPool(unsigned threads, size_t stack_bytes, unsigned spin_us) :
         for (unsigned i = 0; i < threads; ++i)
             threads_.push_back(startThread(stack_bytes, L"pcuda pool worker", [this] { loop(); }));
     } catch (...) {
-        {
-            std::lock_guard lk(mutex_);
-            stopping_ = true;
-        }
-        cv_.notify_all();
-        for (void* t : threads_) joinThread(t);
+        stop();
         throw;
     }
 }
 
-WorkerPool::~WorkerPool() {
-    {
-        std::lock_guard lk(mutex_);
-        stopping_ = true;
-    }
-    cv_.notify_all();
+WorkerPool::~WorkerPool() { stop(); }
+
+void WorkerPool::stop() noexcept {
+    stopping_.store(true);
+    epoch_.fetch_add(1, std::memory_order_acq_rel);
+    WakeByAddressAll(&epoch_);
     for (void* t : threads_) joinThread(t);
+    threads_.clear();
 }
 
-bool WorkerPool::takeJob(Job& out, const Group* only) {
-    for (auto it = jobs_.begin(); it != jobs_.end(); ++it) {
-        if (only && it->group.get() != only) continue;
-        out = *it;
-        jobs_.erase(it);
-        pending_.store(jobs_.size(), std::memory_order_release);
-        return true;
+std::shared_ptr<WorkerPool::Group> WorkerPool::grab() {
+    std::lock_guard lk(mutex_);
+    for (const auto& g : active_)
+        if (g->next.load(std::memory_order_relaxed) < g->count) return g;
+    return nullptr;
+}
+
+// Runs chunks of g until none are left to claim. The shared_ptr keeps g alive while this thread
+// signals completion, even after the caller has seen remaining == 0 and returned.
+void WorkerPool::work(Group& g) {
+    for (;;) {
+        const uint32_t i = g.next.fetch_add(1, std::memory_order_acq_rel);
+        if (i >= g.count) return;
+        const Error e = runTask((*g.tasks)[i]);
+        if (e != Error::Success) {
+            g.results[i] = e;
+            g.details[i] = detailFor(e);
+        }
+        if (g.remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) WakeByAddressAll(&g.remaining);
     }
-    return false;
-}
-
-void WorkerPool::execute(const Job& job) {
-    const Error e = runTask(*job.task);
-    std::string why = detailFor(e);
-    // The job owns a reference to the group, so it stays alive while this thread signals it,
-    // even if the caller has already seen remaining == 0 and returned.
-    std::lock_guard lk(job.group->mutex);
-    job.group->results[job.index] = e;
-    job.group->details[job.index] = std::move(why);
-    job.group->remaining.fetch_sub(1, std::memory_order_acq_rel);
-    job.group->cv.notify_all();
 }
 
 void WorkerPool::loop() {
     for (;;) {
-        spinFor(spin_us_, [&] { return pending_.load(std::memory_order_acquire) != 0 || stopping_.load(); });
-        Job job;
-        {
-            std::unique_lock lk(mutex_);
-            cv_.wait(lk, [&] { return stopping_.load() || !jobs_.empty(); });
-            if (!takeJob(job, nullptr)) return;  // stopping and drained
+        uint32_t seen = epoch_.load(std::memory_order_acquire);  // before looking for work
+        if (auto g = grab()) {
+            work(*g);
+            continue;
         }
-        execute(job);
+        if (stopping_.load()) return;
+        if (!spinFor(spin_us_, [&] { return epoch_.load(std::memory_order_acquire) != seen; }, &epoch_))
+            WaitOnAddress(&epoch_, &seen, sizeof seen, INFINITE);  // returns at once if epoch_ moved
     }
 }
 
@@ -261,29 +274,28 @@ Error WorkerPool::run(std::vector<Stream::Task>& tasks) {
     }
     auto gp = std::make_shared<Group>();
     Group& g = *gp;
-    g.remaining.store(tasks.size());
+    g.tasks = &tasks;
+    g.count = static_cast<uint32_t>(tasks.size());
+    g.remaining.store(g.count);
     g.results.assign(tasks.size(), Error::Success);
     g.details.assign(tasks.size(), std::string());
     {
         std::lock_guard lk(mutex_);
-        for (size_t i = 0; i < tasks.size(); ++i) jobs_.push_back(Job{&tasks[i], gp, i});
-        pending_.store(jobs_.size(), std::memory_order_release);
+        active_.push_back(gp);
     }
-    // The caller takes one chunk itself; wake only as many sleepers as there are other chunks.
-    const size_t wake = std::min(tasks.size() - 1, threads_.size());
-    for (size_t i = 0; i < wake; ++i) cv_.notify_one();
-    // The caller works on its own launch too, then waits for chunks still running elsewhere.
+    epoch_.fetch_add(1, std::memory_order_acq_rel);
+    WakeByAddressAll(&epoch_);  // one call wakes every sleeping worker
+    work(g);                    // the caller runs chunks of its own launch too
     for (;;) {
-        Job job;
-        {
-            std::lock_guard lk(mutex_);
-            if (!takeJob(job, &g)) break;
-        }
-        execute(job);
+        uint32_t left = g.remaining.load(std::memory_order_acquire);
+        if (left == 0) break;
+        if (spinFor(spin_us_, [&] { return g.remaining.load(std::memory_order_acquire) == 0; }, &g.remaining)) break;
+        left = g.remaining.load(std::memory_order_acquire);
+        if (left != 0) WaitOnAddress(&g.remaining, &left, sizeof left, INFINITE);
     }
-    if (!spinFor(spin_us_, [&] { return g.remaining.load(std::memory_order_acquire) == 0; })) {
-        std::unique_lock lk(g.mutex);
-        g.cv.wait(lk, [&] { return g.remaining.load(std::memory_order_acquire) == 0; });
+    {
+        std::lock_guard lk(mutex_);
+        active_.erase(std::find(active_.begin(), active_.end(), gp));
     }
     for (size_t i = 0; i < g.results.size(); ++i) {
         if (g.results[i] != Error::Success) {

@@ -10,124 +10,125 @@ kernel void softmax(
     device float * p0 [[buffer(0)]],
     constant int &p1 [[buffer(1)]],
     constant int &p2 [[buffer(2)]],
+    constant int &p3 [[buffer(3)]],
     uint3 tid [[thread_position_in_threadgroup]],
     uint3 bid [[threadgroup_position_in_grid]],
     uint3 bdim [[threads_per_threadgroup]])
 {
-    int v3;
     int v4;
     int v5;
     int v6;
     int v7;
-    bool v8;
-    int v10;
-    device float * v11;
-    float v12;
-    float v15;
-    int v16;
-    bool v17;
-    int v19;
+    int v8;
+    bool v9;
+    int v11;
+    device float * v12;
+    float v13;
+    float v16;
+    int v17;
+    bool v18;
     int v20;
-    device float * v21;
-    float v22;
+    int v21;
+    device float * v22;
     float v23;
-    int v25;
-    float v28;
-    int v29;
-    bool v30;
-    int v32;
+    float v24;
+    int v26;
+    float v29;
+    int v30;
+    bool v31;
     int v33;
-    device float * v34;
-    float v35;
+    int v34;
+    device float * v35;
     float v36;
     float v37;
     float v38;
-    int v39;
+    float v39;
     int v40;
-    device float * v41;
-    float v43;
-    int v45;
-    float v47;
-    int v49;
-    bool v50;
-    int v52;
+    int v41;
+    device float * v42;
+    float v44;
+    int v46;
+    float v48;
+    int v50;
+    bool v51;
     int v53;
-    device float * v54;
-    int v55;
+    int v54;
+    device float * v55;
     int v56;
-    device float * v57;
-    float v58;
+    int v57;
+    device float * v58;
     float v59;
-    int v62;
-    v3 = bid.x;
-    v4 = bdim.x;
-    v5 = v3 * v4;
-    v6 = tid.x;
-    v7 = v5 + v6;
-    v8 = v7 < p2;
-    if (v8) {
-        v10 = v7 * p1;
-        v11 = p0 + (v10);
-        v12 = *(v11);
-        v15 = v12;
-        v16 = 1;
+    float v60;
+    int v63;
+    v4 = bid.x;
+    v5 = bdim.x;
+    v6 = v4 * v5;
+    v7 = tid.x;
+    v8 = v6 + v7;
+    v9 = v8 < p3;
+    if (v9) {
+        v11 = v8 * p2;
+        v12 = p0 + (v11);
+        v13 = *(v12);
+        v16 = v13;
+        v17 = 1;
         while (true) {
-            v17 = v16 < p1;
-            if (v17) {
-                v19 = v7 * p1;
-                v20 = v19 + v16;
-                v21 = p0 + (v20);
-                v22 = *(v21);
-                v23 = fmax(v15, v22);
-                v25 = v16 + 1;
-                v15 = v23;
-                v16 = v25;
+            v18 = v17 < p1;
+            if (v18) {
+                v20 = v8 * p2;
+                v21 = v20 + v17;
+                v22 = p0 + (v21);
+                v23 = *(v22);
+                v24 = fmax(v16, v23);
+                v26 = v17 + 1;
+                v16 = v24;
+                v17 = v26;
                 continue;
             } else {
                 break;
             }
         }
-        v28 = 0.0f;
-        v29 = 0;
+        v29 = 0.0f;
+        v30 = 0;
         while (true) {
-            v30 = v29 < p1;
-            if (v30) {
-                v32 = v7 * p1;
-                v33 = v32 + v29;
-                v34 = p0 + (v33);
-                v35 = *(v34);
-                v36 = v35 - v15;
-                v37 = v36 * 1.44269504f;
-                v38 = exp2(v37);
-                v39 = v7 * p1;
-                v40 = v39 + v29;
-                v41 = p0 + (v40);
-                *(v41) = v38;
-                v43 = v28 + v38;
-                v45 = v29 + 1;
-                v28 = v43;
-                v29 = v45;
+            v31 = v30 < p1;
+            if (v31) {
+                v33 = v8 * p2;
+                v34 = v33 + v30;
+                v35 = p0 + (v34);
+                v36 = *(v35);
+                v37 = v36 - v16;
+                v38 = v37 * 1.44269504f;
+                v39 = exp2(v38);
+                v40 = v8 * p2;
+                v41 = v40 + v30;
+                v42 = p0 + (v41);
+                *(v42) = v39;
+                v44 = v29 + v39;
+                v46 = v30 + 1;
+                v29 = v44;
+                v30 = v46;
                 continue;
             } else {
                 break;
             }
         }
-        v47 = 1.0f / v28;
-        v49 = 0;
+        v48 = 1.0f / v29;
+        v50 = 0;
         while (true) {
-            v50 = v49 < p1;
-            if (v50) {
-                v52 = v7 * p1;
-                v53 = v52 + v49;
-                v54 = p0 + (v53);
-                v55 = v7 * p1;
-                v56 = v55 + v49;
-                v57 = p0 + (v56);
-                v58 = *(v57);
-                v59 = v58 * v47;
-                *(v54) = v59;
-                v62 = v49 + 1;
-                v49 = v62;
+            v51 = v50 < p1;
+            if (v51) {
+                v53 = v8 * p2;
+                v54 = v53 + v50;
+                v55 = p0 + (v54);
+                v56 = v8 * p2;
+                v57 = v56 + v50;
+                v58 = p0 + (v57);
+                v59 = *(v58);
+                v60 = v59 * v48;
+                *(v55) = v60;
+                v63 = v50 + 1;
+                v50 = v63;
                 continue;
             } else {
                 break;

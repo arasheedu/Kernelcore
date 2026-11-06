@@ -66,7 +66,14 @@ plain structured C. So each kernel is built three ways from the one `.cu` file:
   fixes both from the IR, and fails the build on an IR operation it can't reproduce exactly.
 - `simd` keeps values that are the same in every lane (loop counters, `x[j]` loads) scalar. It
   masks divergent `if`s and loops, and touches memory only in active lanes. A kernel it can't translate
-  (for example one calling a helper function) uses `native`.
+  (for example one calling an unknown helper function) uses `native`.
+- `simd` also tracks values of the form "lane-0 value + constant × lane" (thread indices and the
+  addresses built from them) as scalars. A group of 8 threads starts at a multiple of 8, so the
+  generator can prove `row / 8` is the same in every lane and `row % 8` is the lane number. Loads
+  and stores through such addresses become single vector loads with no run-time checks. A kernel can
+  promise that a run-time value is a non-negative multiple of 8 with a `pcuda_aligned8(x)` helper
+  (the identity; see `kernels/llm/attn_scores.cu`). Divisions by it then stay uniform too, and the
+  simd path checks the promise and faults if it is broken.
 - All three paths are bit-identical for race-free kernels (`test_codegen`, and every kernel test runs
   on each path). Native and simd code runs under the same thunk and fault guard, so out-of-bounds
   accesses, divide-by-zero and stack overflow are contained the same way.
@@ -190,12 +197,13 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
 | pcuda, `simd` path, 16 threads | 156 | 6.4 | 12.9 |
 | pcuda, `simd` path, 8-row interleaved Q4 (`q4x8`) | 111 | 9.0 | 18.0 |
 | pcuda, `simd` path, `q4x8` + 8-bit activations, AVX-VNNI (`q4x8q8`) | 51–56 | 18–19.5 | 36–39 |
-| pcuda, `simd` path, `q4x8q8` + **fused launches** (default) | **46–49** | **20–22** | **41–44** |
+| pcuda, `simd` path, `q4x8q8` + fused launches | 46–49 | 20–22 | 41–44 |
+| pcuda, `simd` path, + affine lanes, transposed K, pool on P-cores (default) | **36–37** | **27.1–27.9** | **54–56** |
 | CUDA, same kernels (nvcc) | 65 | 15.4 | 30.9 |
 | CUDA, same kernels, `q4x8` (coalesced) | 39 | 25.7 | 51.5 |
-| CUDA, same kernels, `q4x8q8` (`__dp4a`) | 33 | 30.1 | 60.4 |
+| CUDA, same kernels, `q4x8q8` (`__dp4a`), transposed K | 33 | 30.1 | 60.4 |
 | plain C++ `/O2`, 1 thread | 1,195 | 0.84 | 1.7 |
-| Ollama llama.cpp, CPU only | 35 | 28.7 | 58 |
+| Ollama llama.cpp, CPU only (5 runs) | 34–38 | 26.2–29.5 | 53–60 |
 | Ollama llama.cpp, GPU | 9.3 | 107 | 216 |
 
 - Compiling Booth's IR with MSVC instead of using Booth's x86 back end makes the same kernels 8× faster
@@ -221,6 +229,20 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
   quantization), SwiGLU is fused with quantization, and each residual add with the next RMS norm.
   That's about 15 launches per layer instead of 24, with bit-identical results. Launches with fewer
   than 8 threads use the native path.
+- Then, with the same kernels and memory traffic, simd went from 46–49 to 36–37 ms per token. It is
+  now on par with Ollama on CPU: in two back-to-back runs, 27.1 vs 26.2 and 27.5 vs 29.5 tok/s.
+  - The generator keeps lane-affine values scalar (see Code paths): the matvec inner loop is now
+    one vector load and two `vpdpbusd`, with no per-load checks.
+  - VNNI is picked once per launch (a template parameter). A check inside the loop had made MSVC
+    spill every vector register.
+  - K is cached transposed (`kv_append` writes it), so the 8 lanes of `attn_scores` read 8
+    consecutive positions. `pcuda_aligned8` keeps head and position indices uniform.
+  - The pool hands out chunks through an atomic counter and wakes workers with one
+    `WakeByAddressAll`. Waiting threads use `UMWAIT` where available.
+  - The pool uses only the performance cores' logical processors, minus one for the launching
+    thread: 11 threads here. With 16 threads plus the launching and host threads, waiting workers
+    took processors from the threads with work, and busy efficiency cores slowed the rest. 12
+    threads in all ran 10–15% faster than 18.
 - This machine reads memory at up to 84 GB/s (DDR5-6000, 16 threads), a limit of about 41.6 tok/s for
   2.02 GB per token. Ollama reaches 58 GB/s, and more threads don't change that
   (6/10/16 threads: 26.4/29.5/28.6 tok/s).
@@ -234,9 +256,9 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
 | `PCUDA_GUARD_PAGES` | `1` | `0` uses `_aligned_malloc` instead of guard-page allocations |
 | `PCUDA_KERNEL_STACK_MB` | `8` | Stack reserve for stream and worker threads (1–1024) |
 | `PCUDA_CODEGEN` | `auto` | Kernel code path: `auto`, `booth`, `native` or `simd` (see Code paths) |
-| `PCUDA_POOL_THREADS` | logical CPUs | Threads in the chunked-launch pool (1–1024) |
+| `PCUDA_POOL_THREADS` | P-core logical CPUs − 1 | Threads in the chunked-launch pool (1–1024); the launching thread runs chunks too. On non-hybrid CPUs: all logical CPUs − 1 |
 | `PCUDA_CHUNKS_PER_WORKER` | `4` | A chunked launch with `workers = N` is split into up to N × this many chunks, so fast cores pick up the slow (efficiency) cores' share |
-| `PCUDA_POOL_SPIN_US` | `50` | Pool and stream threads, and a waiting caller, spin this long before sleeping, so back-to-back launches skip the thread wake-up |
+| `PCUDA_POOL_SPIN_US` | `50` | Pool and stream threads, and a waiting caller, wait this long (in `UMWAIT` if the CPU has WAITPKG, else spinning) before sleeping, so back-to-back launches skip the thread wake-up. Longer was slower here |
 | `PCUDA_ALLOW_EMULATION` | unset | `1` lets the runtime start under x64 emulation on ARM64 (unsupported) |
 
 ## Limits and known issues

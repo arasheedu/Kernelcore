@@ -43,7 +43,8 @@ struct Config {
 
     int     kvStride() const { return kv_heads * head_dim; }
     int     group() const { return heads / kv_heads; }
-    AttnDims attnDims(int ctx) const { return {heads, ctx, head_dim, kvStride(), group()}; }
+    int     kStride() const { return padTo8(max_ctx); }  // transposed K cache row length
+    AttnDims attnDims(int ctx) const { return {heads, ctx, head_dim, kvStride(), group(), padTo8(ctx), kStride()}; }
     int64_t weightParams() const;  // matrix elements (all layers + lm_head)
     int64_t weightBytes() const;   // quantized values + f32 scales: read once per token
 };
@@ -103,8 +104,8 @@ struct Layer {
     Mat          wd;
     const float* attn_norm = nullptr;
     const float* ffn_norm = nullptr;
-    float*       k_cache = nullptr;  // [max_ctx][kv_stride]
-    float*       v_cache = nullptr;
+    float*       k_cache = nullptr;  // transposed: [kv_stride][kStride()]
+    float*       v_cache = nullptr;  // [max_ctx][kv_stride]
 };
 
 struct Model {
@@ -112,7 +113,7 @@ struct Model {
     std::vector<Layer> layers;
     const float*       out_norm = nullptr;
     Mat                lm_head;              // tied embeddings: [vocab][hidden]
-    int*               attn_dims = nullptr;  // device int[5], rewritten for each token's context
+    int*               attn_dims = nullptr;  // device int[7], rewritten for each token's context
 };
 
 struct Acts {
@@ -156,6 +157,7 @@ public:
     virtual void siluMulQuant(const float* g, const float* u, int n) = 0;
     virtual void matvecQuantized(const Mat& w, float* y) = 0;
     virtual void rope(float* x, int heads, int pos) = 0;
+    virtual void appendKv(const float* k, const float* v, float* kt, float* vc, int pos) = 0;
     virtual void attnScores(const float* q, const float* k, float* scores) = 0;
     virtual void softmax(float* scores) = 0;
     virtual void attnValues(const float* p, const float* v, float* out) = 0;

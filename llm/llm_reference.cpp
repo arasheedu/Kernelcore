@@ -179,21 +179,28 @@ void rope(float* x, int pairs_per_head, int pos, int count, float log2_base) {
     }
 }
 
-void attnScores(const float* q, const float* k, float* scores, const AttnDims& d, float scale) {
+void appendKv(const float* k, const float* v, float* kt, float* vc, int n, int k_stride, int pos) {
+    for (int j = 0; j < n; ++j) {
+        kt[size_t(j) * k_stride + pos] = k[j];
+        vc[size_t(pos) * n + j] = v[j];
+    }
+}
+
+void attnScores(const float* q, const float* kt, float* scores, const AttnDims& d, float scale) {
     for (int h = 0; h < d.n_heads; ++h) {
         const float* qh = q + size_t(h) * d.head_dim;
+        const size_t kb = size_t(h / d.group) * d.head_dim;
         for (int t = 0; t < d.ctx; ++t) {
-            const float* kt = k + size_t(t) * d.kv_stride + size_t(h / d.group) * d.head_dim;
             float s = 0.0f;
-            for (int i = 0; i < d.head_dim; ++i) s += qh[i] * kt[i];
-            scores[size_t(h) * d.ctx + t] = s * scale;
+            for (int i = 0; i < d.head_dim; ++i) s += qh[i] * kt[(kb + i) * d.k_stride + t];
+            scores[size_t(h) * d.ctx_pad + t] = s * scale;
         }
     }
 }
 
-void softmax(float* x, int n, int rows) {
+void softmax(float* x, int n, int stride, int rows) {
     for (int row = 0; row < rows; ++row) {
-        float* xr = x + size_t(row) * n;
+        float* xr = x + size_t(row) * stride;
         float m = xr[0];
         for (int j = 1; j < n; ++j) m = std::max(m, xr[j]);
         float sum = 0.0f;
@@ -212,7 +219,7 @@ void attnValues(const float* p, const float* v, float* out, const AttnDims& d) {
         for (int i = 0; i < d.head_dim; ++i) {
             const size_t vo = size_t(h / d.group) * d.head_dim + i;
             float s = 0.0f;
-            for (int t = 0; t < d.ctx; ++t) s += p[size_t(h) * d.ctx + t] * v[size_t(t) * d.kv_stride + vo];
+            for (int t = 0; t < d.ctx; ++t) s += p[size_t(h) * d.ctx_pad + t] * v[size_t(t) * d.kv_stride + vo];
             out[size_t(h) * d.head_dim + i] = s;
         }
     }

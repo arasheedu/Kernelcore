@@ -52,6 +52,10 @@ Metal backend (--metal) and IR (--ir), used by the native/simd code paths (tools
   F19 pointer casts become IR bitcasts, printed as as_type<device T *>(p); a __device__ helper
       stays a separate function and a call in both --metal and --cpu; __NVCC__ is not defined.
                                                                                          verified
+  F20 #ifndef/#define/#endif guards work (two kernels can share a helper definition when nvcc
+      sees them in one translation unit); an identity helper prints as `return p0;`.
+      A kernel takes at most 5 integer/pointer parameters (pcuda_mslgen rejects more).
+                                                                                         verified (kv_append, attn_*)
 Exact command lines for the native paths:
   kath --metal <file.cu> -o <file.metal>
   kath --ir <file.cu> > <file.ir>

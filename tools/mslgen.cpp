@@ -26,6 +26,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -380,6 +381,7 @@ public:
         // Helper functions are only allowed when they are known intrinsics with the exact body
         // pcuda expects; anything else stays on the native path.
         for (const auto& [fname, body] : k_.helper_bodies) {
+            if (fname == "pcuda_aligned8" && body == std::vector<std::string>{"return p0;"}) continue;
             if (fname != "pcuda_dp4a" || body != dp4aCanonicalBody())
                 unsupported("calls helper function '" + fname + "'");
         }
@@ -565,9 +567,11 @@ private:
         std::string c = regions_[size_t(r)].cond;
         return !c.empty() && c[0] == '!' ? c.substr(1) : c;
     }
-    bool regionVarying(int r) const {
+    bool regionVarying(int r) const {  // the condition differs between lanes
         const std::string c = condVar(r);
-        return !c.empty() && varying_.count(c);
+        if (c.empty()) return false;
+        const Shape s = shapeOf(c);
+        return s.k == Shape::Aff || s.k == Shape::Gen;
     }
     int innermostVarying(int r) const {
         for (; r > 0; r = regions_[size_t(r)].parent)
@@ -584,30 +588,194 @@ private:
         return false;
     }
 
-    bool exprVarying(const Expr& e) const {
-        if (e.kind == Expr::Builtin) return e.op == "tid";
-        for (const auto& a : e.args)
-            if (varying_.count(a)) return true;
-        return false;
+    // Shape of a value across the 8 lanes of a group:
+    //   Uni  the same in every lane (scalar; `c` = its value when known at generation time)
+    //   Aff  lane l holds b + stride*l: kept as the scalar b (the lane-0 value), stride constant.
+    //        Int and pointer values only (pointer stride in elements).
+    //   `aligned`: the (lane-0) value is a non-negative multiple of 8. For an Aff value with
+    //        stride 1 the lanes b..b+7 then share one quotient x / D for any aligned divisor D,
+    //        and x % D is b % D + lane. tid is aligned (groups start at multiples of 8);
+    //        uniform values are aligned when constant or promised by pcuda_aligned8().
+    //   Gen  anything else: a full vector
+    // Uni and Aff values are computed by the scalar C expression on lane-0 values, which gives
+    // exactly lane 0's value; other lanes follow from the stride.
+    struct Shape {
+        enum K { Top, Uni, Aff, Gen } k = Top;  // Top: not known yet (optimistic start)
+        long long                 stride = 0;
+        bool                      aligned = false;
+        std::optional<long long>  c;
+        bool operator==(const Shape& o) const {
+            return k == o.k && stride == o.stride && aligned == o.aligned && c == o.c;
+        }
+    };
+    static Shape uniS(std::optional<long long> c = std::nullopt, bool al = false) {
+        return {Shape::Uni, 0, al || (c && *c >= 0 && *c % 8 == 0), c};
+    }
+    static Shape gen() { return {Shape::Gen, 0, false, std::nullopt}; }
+    static Shape aff(long long s, bool al) {
+        if (s == 0) return uniS();
+        if (s > (1 << 20) || s < -(1 << 20)) return gen();
+        return {Shape::Aff, s, al, std::nullopt};
+    }
+    static Shape meet(const Shape& a, const Shape& b) {
+        if (a.k == Shape::Top) return b;
+        if (b.k == Shape::Top) return a;
+        if (a.k == Shape::Gen || b.k == Shape::Gen || a.k != b.k) return gen();
+        if (a.k == Shape::Uni) return uniS(a.c == b.c ? a.c : std::nullopt, a.aligned && b.aligned);
+        if (a.stride != b.stride) return gen();
+        return {Shape::Aff, a.stride, a.aligned && b.aligned, std::nullopt};
+    }
+    Shape shapeOf(const std::string& a) const {
+        if (isLiteral(a)) {
+            if (isFloatLit(a)) return uniS();
+            try {
+                return uniS(std::stoll(a));
+            } catch (...) {
+                return uniS();
+            }
+        }
+        auto it = shape_.find(a);
+        return it == shape_.end() ? uniS() : it->second;  // parameters are uniform
+    }
+    static std::optional<long long> fold(const std::string& op, long long a, long long b) {
+        long long r;
+        if (op == "+") r = a + b;
+        else if (op == "-") r = a - b;
+        else if (op == "*") r = a * b;
+        else if (op == "/" && b != 0) r = a / b;
+        else if (op == "%" && b != 0) r = a % b;
+        else return std::nullopt;
+        if (r < INT32_MIN || r > INT32_MAX) return std::nullopt;
+        return r;
+    }
+
+    Shape transfer(const Stmt& s) const {
+        const Expr& e = s.e;
+        const Ty lt = types_.at(s.lhs);
+        Shape r;
+        switch (e.kind) {
+        case Expr::Atom: r = shapeOf(e.args[0]); break;
+        case Expr::Builtin:
+            r = e.op == "tid" ? Shape{Shape::Aff, 1, true, std::nullopt} : e.op == "bid" ? uniS(0) : uniS();
+            break;
+        case Expr::Bin: {
+            const Shape a = shapeOf(e.args[0]), b = shapeOf(e.args[1]);
+            if (a.k == Shape::Top || b.k == Shape::Top) return {};
+            if (a.k == Shape::Gen || b.k == Shape::Gen) return gen();
+            const bool f = atomTy(e.args[0]) == Ty::Float || atomTy(e.args[1]) == Ty::Float;
+            const std::string& op = e.op;
+            if (a.k == Shape::Uni && b.k == Shape::Uni) {
+                if (!f && op == "*" && (a.c == 0 || b.c == 0)) r = uniS(0);  // blockIdx (0) * blockDim
+                else r = uniS(!f && a.c && b.c ? fold(op, *a.c, *b.c) : std::nullopt,
+                              !f && (op == "+" || op == "*") && a.aligned && b.aligned);
+                break;
+            }
+            if (f) return gen();
+            const bool ua = a.k == Shape::Uni, ub = b.k == Shape::Uni;
+            if (op == "+") {
+                if (!ua && !ub) r = aff(a.stride + b.stride, false);
+                else {
+                    const Shape& x = ua ? b : a;
+                    const Shape& u = ua ? a : b;
+                    r = aff(x.stride, x.aligned && u.aligned);
+                }
+            } else if (op == "-") {
+                if (!ua && !ub) r = aff(a.stride - b.stride, false);
+                else if (ub) r = aff(a.stride, a.aligned && b.c == 0);
+                else r = aff(-b.stride, false);
+            } else if (op == "*") {
+                const Shape& x = ua ? b : a;
+                const Shape& u = ua ? a : b;
+                if (!ua && !ub) r = gen();
+                else if (!u.c) r = gen();
+                else if (*u.c == 0) r = uniS(0);
+                else r = aff(x.stride * *u.c, false);
+            } else if (op == "/" && !ua && ub && a.stride == 1 && a.aligned && b.aligned) {
+                r = uniS();  // b..b+7 lie between two multiples of D: one quotient
+            } else if (op == "%" && !ua && ub && a.stride == 1 && a.aligned && b.aligned) {
+                r = Shape{Shape::Aff, 1, true, std::nullopt};  // b % D + lane
+            } else if (op == "<<" && !ua && ub && b.c && *b.c >= 0 && *b.c <= 20) {
+                r = aff(a.stride << *b.c, false);
+            } else {
+                r = gen();
+            }
+            break;
+        }
+        case Expr::Gep: {
+            const Shape p = shapeOf(e.args[0]), i = shapeOf(e.args[1]);
+            if (p.k == Shape::Top || i.k == Shape::Top) return {};
+            if (p.k == Shape::Gen || i.k == Shape::Gen) return gen();
+            r = aff(p.stride + i.stride, false);
+            break;
+        }
+        case Expr::Cast:
+            r = shapeOf(e.args[0]);
+            if (r.k == Shape::Top) return {};
+            if (e.op.rfind("ptr:", 0) != 0) {  // value conversion
+                if (r.k == Shape::Aff) r = gen();
+                else if (r.k == Shape::Uni && !(e.op == "int" && atomTy(e.args[0]) == Ty::Int)) r = uniS();
+            }
+            break;
+        case Expr::Load: {
+            const Shape p = shapeOf(e.args[0]);
+            if (p.k == Shape::Top) return {};
+            r = p.k == Shape::Uni ? uniS() : gen();
+            break;
+        }
+        case Expr::Call:
+            if (e.op == "pcuda_aligned8" && e.args.size() == 1) {  // checked promise, identity
+                r = shapeOf(e.args[0]);
+                if (r.k == Shape::Top) return {};
+                if (r.k == Shape::Uni) r.aligned = true;
+                break;
+            }
+            r = uniS();
+            for (const auto& x : e.args) {
+                const Shape a = shapeOf(x);
+                if (a.k == Shape::Top) return {};
+                if (a.k != Shape::Uni) r = gen();
+            }
+            break;
+        }
+        if (r.k == Shape::Aff && lt != Ty::Int && !isPtr(lt)) r = gen();
+        if (r.k == Shape::Uni && lt != Ty::Int) r.c.reset(), r.aligned = false;
+        return r;
     }
 
     void analyse() {
+        // Optimistic fixed point: shapes only move down (Top -> Uni/Aff -> Gen).
+        for (const auto& [v, list] : assigns_) shape_[v] = {};
         bool changed = true;
         while (changed) {
             changed = false;
             for (const auto& [v, list] : assigns_) {
-                if (varying_.count(v)) continue;
-                bool vary = false;
+                Shape& cur = shape_[v];
+                if (cur.k == Shape::Gen) continue;
+                Shape n;
                 for (const Stmt* s : list) {
-                    if (exprVarying(s->e)) vary = true;
+                    n = meet(n, transfer(*s));
+                    // Assigned under a partial mask and observed where the mask differs: blended.
                     const int vr = innermostVarying(s->region);
-                    if (vr > 0 && escapes(v, vr)) vary = true;
+                    if (vr > 0 && escapes(v, vr)) n = gen();
                 }
-                if (vary) {
-                    varying_.insert(v);
+                n = meet(cur, n);
+                // A vector pointer derived from an affine pointer keeps one base for blends:
+                // only uniform pointers serve as bases, so such a pointer becomes a vector too.
+                if (n.k == Shape::Aff && isPtr(types_.at(v)))
+                    for (const auto& [w, wl] : assigns_)
+                        if (w != v && shape_[w].k == Shape::Gen && isPtr(types_.at(w)))
+                            for (const Stmt* s : wl)
+                                if (s->kind == Stmt::Assign && !s->e.args.empty() && s->e.args[0] == v) n = gen();
+                if (!(n == cur)) {
+                    cur = n;
                     changed = true;
                 }
             }
+        }
+        for (auto& [v, sh] : shape_) {
+            if (sh.k == Shape::Top) sh = gen();  // never resolved: stay safe
+            if (sh.k == Shape::Gen) varying_.insert(v);
+            else if (sh.k == Shape::Aff) aff_[v] = int(sh.stride);
         }
         // Blend when a value assigned under a partial mask is observed (or reassigned) where the
         // mask differs: outside the innermost varying region of the assignment.
@@ -656,6 +824,10 @@ private:
     // Operand as a vector of type t.
     std::string vec(const std::string& a, Ty t) const {
         if (!isLiteral(a) && varying_.count(a)) return a;
+        if (auto it = aff_.find(a); it != aff_.end()) {
+            const std::string v = "affine(" + a + ", " + std::to_string(it->second) + ")";
+            return t == Ty::Float ? "i2f(" + v + ")" : v;
+        }
         if (t == Ty::Float) return "splat(static_cast<float>(" + a + "))";
         return "splat(static_cast<int>(" + a + "))";
     }
@@ -702,6 +874,9 @@ private:
         case Expr::Load: {
             const std::string& p = e.args[0];
             const Ty pt = atomTy(p);
+            if (auto it = aff_.find(p); it != aff_.end())  // lane l reads p[stride * l]
+                return it->second == 1 ? "loadc(" + p + ", " + mask_ + ")"
+                                       : "load(affinePtr(" + p + ", " + std::to_string(it->second) + "), " + mask_ + ")";
             if (!varying_.count(p)) return vec("(*" + p + ")", scalarKind(elemOf(pt)));
             return "load(" + p + ", " + mask_ + ")";
         }
@@ -720,8 +895,9 @@ private:
             return xt == Ty::Float ? "f2i(" + v + ")" : v;
         }
         case Expr::Call: {
+            if (e.op == "pcuda_aligned8" && e.args.size() == 1) return vec(e.args[0], Ty::Int);  // not uniform: unchecked
             if (e.op == "pcuda_dp4a" && e.args.size() == 3)  // verified helper: AVX-VNNI vpdpbusd
-                return "vdp4a(" + vec(e.args[2], Ty::Int) + ", " + vec(e.args[0], Ty::Int) + ", " +
+                return "vdp4aT<kVnni_>(" + vec(e.args[2], Ty::Int) + ", " + vec(e.args[0], Ty::Int) + ", " +
                        vec(e.args[1], Ty::Int) + ")";
             std::vector<std::string> a;
             for (const auto& x : e.args) a.push_back(vec(x, Ty::Float));
@@ -761,7 +937,8 @@ private:
         case Expr::Builtin:
             if (e.op == "bid") return "0";
             if (e.op == "bdim") return "static_cast<int>(n_)";
-            unsupported("uniform tid");
+            if (e.op == "tid") return "static_cast<int>(t0_)";  // affine: lane 0's thread index
+            unsupported("builtin " + e.op);
         case Expr::Bin: return e.args[0] + " " + e.op + " " + e.args[1];
         case Expr::Load: return "*(" + e.args[0] + ")";
         case Expr::Cast: {
@@ -780,6 +957,8 @@ private:
             std::string a;
             for (const auto& x : e.args) a += (a.empty() ? "" : ", ") + x;
             if (e.op == "pcuda_dp4a") return "pcuda::simd::dp4aScalar(" + a + ")";
+            if (e.op == "pcuda_aligned8")  // checked when uniform; otherwise the identity
+                return shapeOf(e.args[0]).k == Shape::Uni ? "pcuda::simd::aligned8(" + a + ")" : a;
             static const std::set<std::string> known{"sin", "cos", "exp2", "log2", "sqrt", "fmax", "fmin"};
             if (!known.count(e.op)) unsupported("call " + e.op);
             return "metal::" + e.op + "(" + a + ")";
@@ -812,10 +991,16 @@ private:
             const std::string& v = s.e.args[0];
             const Ty pt = atomTy(p);
             const Ty et = elemOf(pt);
-            if (varying_.count(p)) {
+            if (auto it = aff_.find(p); it != aff_.end()) {
+                const std::string val = vec(v, scalarKind(et));
+                line(it->second == 1 ? "storec(" + p + ", " + val + ", " + mask_ + ");"
+                                     : "store(affinePtr(" + p + ", " + std::to_string(it->second) + "), " + val +
+                                           ", " + mask_ + ");");
+            } else if (varying_.count(p)) {
                 line("store(" + p + ", " + vec(v, scalarKind(et)) + ", " + mask_ + ");");
-            } else if (!isLiteral(v) && varying_.count(v)) {
-                line("*(" + p + ") = static_cast<" + cElem(pt) + ">(lastActive(" + v + ", " + mask_ + "));");
+            } else if (!isLiteral(v) && (varying_.count(v) || aff_.count(v))) {
+                line("*(" + p + ") = static_cast<" + cElem(pt) + ">(lastActive(" + vec(v, scalarKind(et)) + ", " +
+                     mask_ + "));");
             } else {
                 line("*(" + p + ") = static_cast<" + cElem(pt) + ">(" + v + ");");
             }
@@ -948,11 +1133,16 @@ private:
                         "#include <pcuda/kernel_registry.hpp>\n#include <bit>\n#include <cstdint>\n"
                         "#include <metal_stdlib>\n#include \"pcuda_simd.hpp\"\n\n"
                         "namespace {\n#pragma warning(push)\n#pragma warning(disable : 4100 4189 4244 4245 4305 4700)\n"
+                        "template <bool kVnni_>  // AVX-VNNI available: chosen once per launch\n"
                         "void group(" + params + "unsigned t0_, unsigned n_) {\n" + body +
                         "}\n#pragma warning(pop)\n} // namespace\n\n"
                         "extern \"C\" void pcuda_ksimd_" + name_ + "(const pcuda::LaunchArgs* a) {\n" + unpack +
-                        "    const unsigned n = static_cast<unsigned>(a->nthreads);\n"
-                        "    for (unsigned t0 = 0; t0 < n; t0 += pcuda::simd::kLanes) group(" + call + "t0, n);\n}\n";
+                        "    const unsigned n = static_cast<unsigned>(a->nthreads);\n";
+        if (body.find("vdp4aT<") != std::string::npos)
+            s += "    if (pcuda::simd::cpuHasAvxVnni()) {\n"
+                 "        for (unsigned t0 = 0; t0 < n; t0 += pcuda::simd::kLanes) group<true>(" + call + "t0, n);\n"
+                 "        return;\n    }\n";
+        s += "    for (unsigned t0 = 0; t0 < n; t0 += pcuda::simd::kLanes) group<false>(" + call + "t0, n);\n}\n";
         return s;
     }
 
@@ -962,7 +1152,9 @@ private:
     std::map<std::string, Ty>          types_;
     std::vector<Region>                regions_;
     std::vector<Stmt>                  top_;
-    std::set<std::string>              varying_{"tid"};
+    std::set<std::string>              varying_{"tid"};  // Gen: held as vectors
+    std::map<std::string, Shape>       shape_;
+    std::map<std::string, int>         aff_;  // Aff: scalar lane-0 value, constant stride
     std::set<std::string>              blend_;
     std::map<std::string, std::string> ptr_base_;
     std::string                        out_, mask_;

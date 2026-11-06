@@ -69,9 +69,9 @@ private:
 
 // Fixed pool of worker threads for chunked launches.
 //
-// Latency: workers and the waiting caller spin for `spin_us` (with pause) before blocking on
-// a condition variable, so back-to-back launches don't pay a thread wake-up each time.
-// The calling thread also runs chunks of its own launch instead of only waiting.
+// Latency: chunks are claimed with an atomic counter (no lock per chunk); one WakeByAddressAll
+// per launch wakes sleeping workers; workers and the waiting caller spin for `spin_us` (with
+// pause) before sleeping in WaitOnAddress. The calling thread also runs chunks of its launch.
 class WorkerPool {
 public:
     WorkerPool(unsigned threads, size_t stack_bytes, unsigned spin_us = 50);
@@ -86,22 +86,17 @@ public:
 
 private:
     struct Group;
-    struct Job {
-        Stream::Task*          task;
-        std::shared_ptr<Group> group;  // keeps the group alive until the last job has signalled
-        size_t                 index;
-    };
-    void loop();
-    bool takeJob(Job& out, const Group* only);  // under mutex_
-    static void execute(const Job& job);
+    void                   loop();
+    void                   stop() noexcept;
+    std::shared_ptr<Group> grab();  // a published launch with chunks left to claim
+    static void            work(Group& g);
 
-    std::mutex              mutex_;
-    std::condition_variable cv_;
-    std::deque<Job>         jobs_;
-    std::atomic<size_t>     pending_{0};  // jobs_.size(), readable without the lock
-    std::atomic<bool>       stopping_{false};
-    unsigned                spin_us_;
-    std::vector<void*>      threads_;
+    std::mutex                          mutex_;   // guards active_ only
+    std::vector<std::shared_ptr<Group>> active_;  // launches in progress (one per calling stream)
+    std::atomic<uint32_t>               epoch_{0};  // bumped per launch; idle workers wait on it
+    std::atomic<bool>                   stopping_{false};
+    unsigned                            spin_us_;
+    std::vector<void*>                  threads_;
 };
 
 // Chunk planning for independent 1-D kernels.

@@ -17,6 +17,7 @@ PCUDA_DECLARE_KERNEL_IMAGE(add_rms_norm);
 PCUDA_DECLARE_KERNEL_IMAGE(silu_mul_q8x4);
 PCUDA_DECLARE_KERNEL_IMAGE(rms_norm);
 PCUDA_DECLARE_KERNEL_IMAGE(rope);
+PCUDA_DECLARE_KERNEL_IMAGE(kv_append);
 PCUDA_DECLARE_KERNEL_IMAGE(attn_scores);
 PCUDA_DECLARE_KERNEL_IMAGE(softmax);
 PCUDA_DECLARE_KERNEL_IMAGE(attn_values);
@@ -54,7 +55,7 @@ bool chunkOk(int64_t total, int64_t begin, int64_t length) {
 // array agrees with the sizes it validated. A mismatch would let the kernel index past a buffer.
 bool dimsMatch(const int* dims, const AttnDims& d) {
     return dims[0] == d.n_heads && dims[1] == d.ctx && dims[2] == d.head_dim && dims[3] == d.kv_stride &&
-           dims[4] == d.group;
+           dims[4] == d.group && dims[5] == d.ctx_pad && dims[6] == d.k_stride;
 }
 
 Error checkAttnShape(const AttnDims& d) {
@@ -63,6 +64,9 @@ Error checkAttnShape(const AttnDims& d) {
     if (!fitsIndex(d.n_heads, d.ctx) || !fitsIndex(d.n_heads, d.head_dim) || !fitsIndex(d.ctx, d.kv_stride))
         return Error::InvalidValue;
     if (static_cast<int64_t>(d.n_heads / d.group) * d.head_dim > d.kv_stride) return Error::InvalidValue;
+    // The kernels promise pcuda_aligned8() for head_dim and ctx_pad.
+    if (d.head_dim % 8 || d.ctx_pad % 8 || d.ctx_pad < d.ctx || d.k_stride < d.ctx) return Error::InvalidValue;
+    if (!fitsIndex(d.n_heads, d.ctx_pad) || !fitsIndex(d.kv_stride, d.k_stride)) return Error::InvalidValue;
     return Error::Success;
 }
 
@@ -287,38 +291,39 @@ Error scoresMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) no
     const auto& a = *static_cast<const AttnScoresArgs*>(p);
     LLM_TRY(checkAttnShape(a.d));
     LLM_TRY(check(ctx, a.q, f32Bytes(int64_t(a.d.n_heads) * a.d.head_dim), "q"));
-    LLM_TRY(check(ctx, a.k, f32Bytes(int64_t(a.d.ctx) * a.d.kv_stride), "k"));
-    LLM_TRY(check(ctx, a.scores, f32Bytes(int64_t(a.d.n_heads) * a.d.ctx), "scores"));
-    LLM_TRY(check(ctx, a.dims, 5 * sizeof(int), "dims"));
+    LLM_TRY(check(ctx, a.k, f32Bytes(int64_t(a.d.kv_stride) * a.d.k_stride), "k"));
+    LLM_TRY(check(ctx, a.scores, f32Bytes(int64_t(a.d.n_heads) * a.d.ctx_pad), "scores"));
+    LLM_TRY(check(ctx, a.dims, 7 * sizeof(int), "dims"));
     if (!dimsMatch(a.dims, a.d)) return Error::InvalidValue;
     ArgPacker pk(*out);
     pk.ptr(a.q).ptr(a.k).ptr(a.scores).ptr(a.dims).i32(0).f32(a.scale);
-    return pk.finish(int64_t(a.d.n_heads) * a.d.ctx);
+    return pk.finish(int64_t(a.d.n_heads) * a.d.ctx_pad);
 }
 
 Error scoresExtent(const void* p, int64_t* total) noexcept {
     const auto& a = *static_cast<const AttnScoresArgs*>(p);
-    *total = int64_t(a.d.n_heads) * a.d.ctx;
+    *total = int64_t(a.d.n_heads) * a.d.ctx_pad;
     return *total >= 0 ? Error::Success : Error::InvalidValue;
 }
 
-// Thread index -> (head, position) is not a pointer offset, so the chunk start goes in `base`.
+// Thread index -> (head, position) is not a pointer offset, so the chunk start goes in `base`
+// (a multiple of 8: the kernel promises pcuda_aligned8(base)).
 Error scoresChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
     const auto& a = *static_cast<const AttnScoresArgs*>(p);
-    if (!chunkOk(int64_t(a.d.n_heads) * a.d.ctx, begin, length)) return Error::InvalidValue;
+    if (!chunkOk(int64_t(a.d.n_heads) * a.d.ctx_pad, begin, length) || begin % 8) return Error::InvalidValue;
     ArgPacker pk(*out);
     pk.ptr(a.q).ptr(a.k).ptr(a.scores).ptr(a.dims).i32(static_cast<int32_t>(begin)).f32(a.scale);
     return pk.finish(length);
 }
 
-// ---- softmax(x, n, rows) -------------------------------------------------------
+// ---- softmax(x, n, stride, rows) -----------------------------------------------
 
 Error softmaxMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
     const auto& a = *static_cast<const SoftmaxArgs*>(p);
-    if (a.n <= 0 || a.rows < 0 || !fitsIndex(a.rows, a.n)) return Error::InvalidValue;
-    LLM_TRY(check(ctx, a.x, f32Bytes(int64_t(a.rows) * a.n), "x"));
+    if (a.n <= 0 || a.stride < a.n || a.rows < 0 || !fitsIndex(a.rows, a.stride)) return Error::InvalidValue;
+    LLM_TRY(check(ctx, a.x, f32Bytes(int64_t(a.rows) * a.stride), "x"));
     ArgPacker pk(*out);
-    pk.ptr(a.x).i32(a.n).i32(a.rows);
+    pk.ptr(a.x).i32(a.n).i32(a.stride).i32(a.rows);
     return pk.finish(a.rows);
 }
 
@@ -331,7 +336,7 @@ Error softmaxChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out
     const auto& a = *static_cast<const SoftmaxArgs*>(p);
     if (!chunkOk(a.rows, begin, length)) return Error::InvalidValue;
     ArgPacker pk(*out);
-    pk.ptr(a.x + begin * a.n).i32(a.n).i32(static_cast<int32_t>(length));
+    pk.ptr(a.x + begin * a.stride).i32(a.n).i32(a.stride).i32(static_cast<int32_t>(length));
     return pk.finish(length);
 }
 
@@ -340,10 +345,10 @@ Error softmaxChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out
 Error valuesMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
     const auto& a = *static_cast<const AttnValuesArgs*>(p);
     LLM_TRY(checkAttnShape(a.d));
-    LLM_TRY(check(ctx, a.p, f32Bytes(int64_t(a.d.n_heads) * a.d.ctx), "p"));
+    LLM_TRY(check(ctx, a.p, f32Bytes(int64_t(a.d.n_heads) * a.d.ctx_pad), "p"));
     LLM_TRY(check(ctx, a.v, f32Bytes(int64_t(a.d.ctx) * a.d.kv_stride), "v"));
     LLM_TRY(check(ctx, a.out, f32Bytes(int64_t(a.d.n_heads) * a.d.head_dim), "out"));
-    LLM_TRY(check(ctx, a.dims, 5 * sizeof(int), "dims"));
+    LLM_TRY(check(ctx, a.dims, 7 * sizeof(int), "dims"));
     if (!dimsMatch(a.dims, a.d)) return Error::InvalidValue;
     ArgPacker pk(*out);
     pk.ptr(a.p).ptr(a.v).ptr(a.out).ptr(a.dims).i32(0);
@@ -358,10 +363,26 @@ Error valuesExtent(const void* p, int64_t* total) noexcept {
 
 Error valuesChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
     const auto& a = *static_cast<const AttnValuesArgs*>(p);
-    if (!chunkOk(int64_t(a.d.n_heads) * a.d.head_dim, begin, length)) return Error::InvalidValue;
+    if (!chunkOk(int64_t(a.d.n_heads) * a.d.head_dim, begin, length) || begin % 8) return Error::InvalidValue;
     ArgPacker pk(*out);
     pk.ptr(a.p).ptr(a.v).ptr(a.out).ptr(a.dims).i32(static_cast<int32_t>(begin));
     return pk.finish(length);
+}
+
+// ---- kv_append(k, v, kt, vc, dims) ----------------------------------------------
+
+Error kvMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const KvAppendArgs*>(p);
+    LLM_TRY(checkAttnShape(a.d));
+    LLM_TRY(check(ctx, a.k, f32Bytes(a.d.kv_stride), "k"));
+    LLM_TRY(check(ctx, a.v, f32Bytes(a.d.kv_stride), "v"));
+    LLM_TRY(check(ctx, a.kt, f32Bytes(int64_t(a.d.kv_stride) * a.d.k_stride), "kt"));
+    LLM_TRY(check(ctx, a.vc, f32Bytes(int64_t(a.d.ctx) * a.d.kv_stride), "vc"));
+    LLM_TRY(check(ctx, a.dims, 7 * sizeof(int), "dims"));
+    if (!dimsMatch(a.dims, a.d)) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.k).ptr(a.v).ptr(a.kt).ptr(a.vc).ptr(a.dims);
+    return pk.finish(a.d.kv_stride);
 }
 
 // ---- silu_mul(g, u, out, count) ------------------------------------------------
@@ -403,6 +424,7 @@ const pcuda::KernelEntry kEntries[] = {
     {"silu_mul_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(silu_mul_q8x4), &siluQMarshal, &siluQExtent, &siluQChunk},
     {"rms_norm", PCUDA_KERNEL_IMAGE_FIELDS(rms_norm), &rmsMarshal, &rmsExtent, &rmsChunk},
     {"rope", PCUDA_KERNEL_IMAGE_FIELDS(rope), &ropeMarshal},
+    {"kv_append", PCUDA_KERNEL_IMAGE_FIELDS(kv_append), &kvMarshal},
     {"attn_scores", PCUDA_KERNEL_IMAGE_FIELDS(attn_scores), &scoresMarshal, &scoresExtent, &scoresChunk},
     {"softmax", PCUDA_KERNEL_IMAGE_FIELDS(softmax), &softmaxMarshal, &softmaxExtent, &softmaxChunk},
     {"attn_values", PCUDA_KERNEL_IMAGE_FIELDS(attn_values), &valuesMarshal, &valuesExtent, &valuesChunk},

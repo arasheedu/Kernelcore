@@ -9,14 +9,18 @@
 
 namespace llm {
 
-// Attention shape shared by attn_scores and attn_values. Mirrors the device int[5] "dims".
+// Attention shape shared by attn_scores and attn_values. Mirrors the device int[7] "dims".
+// Layouts: K transposed kt[kv_stride][k_stride]; V v[ctx][kv_stride]; scores p[n_heads][ctx_pad].
 struct AttnDims {
     int n_heads = 0;
     int ctx = 0;        // cached positions attended over
-    int head_dim = 0;
-    int kv_stride = 0;  // n_kv_heads * head_dim (one cache row)
+    int head_dim = 0;   // multiple of 8
+    int kv_stride = 0;  // n_kv_heads * head_dim (one V cache row)
     int group = 0;      // n_heads / n_kv_heads (grouped-query attention)
+    int ctx_pad = 0;    // scores row length: ctx rounded up to a multiple of 8
+    int k_stride = 0;   // transposed K row length (cache capacity), >= ctx
 };
+inline int padTo8(int n) { return (n + 7) / 8 * 8; }
 
 // y[rows] = W[rows][k] x[k], Q8 blocks of 32. dims -> device int[2] {rows, k}. k % 32 == 0.
 struct MatvecQ8Args {
@@ -101,7 +105,7 @@ struct RopeArgs {  // in place; count = heads * pairs_per_head
     float  log2_base;
 };
 
-struct AttnScoresArgs {  // scores[n_heads][ctx]; dims -> device int[5] matching d
+struct AttnScoresArgs {  // scores[n_heads][ctx_pad]; dims -> device int[7] matching d
     const float* q;
     const float* k;
     float*       scores;
@@ -110,10 +114,20 @@ struct AttnScoresArgs {  // scores[n_heads][ctx]; dims -> device int[5] matching
     float        scale;
 };
 
-struct SoftmaxArgs {  // in place, rows of n
+struct SoftmaxArgs {  // in place: the first n values of each row; rows are `stride` floats apart
     float* x;
     int    n;
+    int    stride;
     int    rows;
+};
+
+struct KvAppendArgs {  // writes position d.ctx - 1 of kt[kv_stride][k_stride] (K transposed), vc[ctx][kv_stride]
+    const float* k;
+    const float* v;
+    float*       kt;
+    float*       vc;
+    const int*   dims;  // device int[7] matching d
+    AttnDims     d;
 };
 
 struct AttnValuesArgs {  // out[n_heads][head_dim]
@@ -131,8 +145,8 @@ struct SiluMulArgs {
     int          count;
 };
 
-// Registers matvec_q8, matvec_q4, matvec_q4x8, quantize_q8x4, matvec_q4x8_q8, add_rms_norm, silu_mul_q8x4, rms_norm, rope, attn_scores, softmax, attn_values and silu_mul.
-// All but rope opt into chunked launches.
+// Registers matvec_q8, matvec_q4, matvec_q4x8, quantize_q8x4, matvec_q4x8_q8, add_rms_norm, silu_mul_q8x4, rms_norm, rope, kv_append, attn_scores, softmax, attn_values and silu_mul.
+// All but add_rms_norm, rope and kv_append opt into chunked launches.
 pcuda::Error registerKernels() noexcept;
 
 } // namespace llm

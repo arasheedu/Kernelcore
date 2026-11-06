@@ -212,7 +212,7 @@ std::vector<Mat> makeMat(Rng& rng, const std::vector<Allocator*>& allocs, int ro
 
 void buildModels(const Config& c, uint64_t seed, const std::vector<Allocator*>& allocs, std::vector<Model>& out) {
     if (c.hidden % 32 || c.inter % 32 || (c.heads * c.head_dim) % 32 || c.head_dim % 2 || c.heads % c.kv_heads ||
-        c.max_ctx < 1)
+        c.head_dim % 8 || c.max_ctx < 1)
         throw std::invalid_argument("model shapes must be multiples of 32 with heads divisible by kv_heads");
     Rng rng{seed | 1};
     const size_t na = allocs.size();
@@ -230,9 +230,8 @@ void buildModels(const Config& c, uint64_t seed, const std::vector<Allocator*>& 
         auto wd = makeMat(rng, allocs, c.hidden, c.inter, f);
         const auto an = uploadAll(allocs, uniformVector(rng, size_t(c.hidden), 1.0f, 0.1f));
         const auto fn = uploadAll(allocs, uniformVector(rng, size_t(c.hidden), 1.0f, 0.1f));
-        const size_t cache = size_t(c.max_ctx) * size_t(c.kvStride());
-        const auto kc = uploadAll(allocs, uniformVector(rng, cache, 0.0f, 1.0f));
-        const auto vc = uploadAll(allocs, uniformVector(rng, cache, 0.0f, 1.0f));
+        const auto kc = uploadAll(allocs, uniformVector(rng, size_t(c.kStride()) * size_t(c.kvStride()), 0.0f, 1.0f));
+        const auto vc = uploadAll(allocs, uniformVector(rng, size_t(c.max_ctx) * size_t(c.kvStride()), 0.0f, 1.0f));
         for (size_t i = 0; i < na; ++i) {
             Layer& L = out[i].layers[size_t(l)];
             L = Layer{wqkv[i], wo[i], wgu[i], wd[i], an[i], fn[i], kc[i], vc[i]};
@@ -241,7 +240,8 @@ void buildModels(const Config& c, uint64_t seed, const std::vector<Allocator*>& 
     const auto on = uploadAll(allocs, uniformVector(rng, size_t(c.hidden), 1.0f, 0.1f));
     auto head = makeMat(rng, allocs, c.vocab, c.hidden, f);
     const AttnDims d = c.attnDims(c.max_ctx);
-    const auto ad = uploadAll(allocs, std::vector<int>{d.n_heads, d.ctx, d.head_dim, d.kv_stride, d.group});
+    const auto ad = uploadAll(allocs, std::vector<int>{d.n_heads, d.ctx, d.head_dim, d.kv_stride, d.group, d.ctx_pad,
+                                                       d.k_stride});
     for (size_t i = 0; i < na; ++i) {
         out[i].out_norm = on[i];
         out[i].lm_head = head[i];
@@ -266,7 +266,7 @@ Acts allocActs(const Config& c, Allocator& alloc, uint64_t seed) {
     a.q = buf(c.heads * c.head_dim + 2 * c.kvStride());
     a.k = a.q + c.heads * c.head_dim;
     a.v = a.k + c.kvStride();
-    a.scores = buf(c.heads * c.max_ctx);
+    a.scores = buf(c.heads * padTo8(c.max_ctx));
     a.attn = buf(c.heads * c.head_dim);
     a.t = buf(c.hidden);
     a.g = buf(2 * c.inter);
@@ -289,7 +289,6 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
         f();
         if (prof) prof->end(o);
     };
-    const size_t slot = size_t(pos) * size_t(c.kvStride());
     b.setScratch(a.xq, a.xd);
     b.setContext(pos + 1);
     b.copy(a.x, a.x0, c.hidden);
@@ -301,8 +300,7 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
         op(Op::Rope, [&] {
             b.rope(a.q, c.heads, pos);
             b.rope(a.k, c.kv_heads, pos);
-            b.copy(L.k_cache + slot, a.k, c.kvStride());  // append this token's K and V
-            b.copy(L.v_cache + slot, a.v, c.kvStride());
+            b.appendKv(a.k, a.v, L.k_cache, L.v_cache, pos);  // this token's K and V
         });
         op(Op::Attention, [&] {
             b.attnScores(a.q, L.k_cache, a.scores);
@@ -340,7 +338,7 @@ public:
     void setContext(int ctx) override {
         ctx_ = ctx;
         const AttnDims d = m_.cfg.attnDims(ctx);
-        const int dims[5] = {d.n_heads, d.ctx, d.head_dim, d.kv_stride, d.group};
+        const int dims[7] = {d.n_heads, d.ctx, d.head_dim, d.kv_stride, d.group, d.ctx_pad, d.k_stride};
         pcudaCheck(pcudaMemcpy(m_.attn_dims, dims, sizeof dims, pcuda::CopyKind::HostToDevice), "pcudaMemcpy dims");
     }
     void matvec(const Mat& w, const float* x, float* y) override {
@@ -378,13 +376,18 @@ public:
         const RopeArgs a{x, pairs, pos, heads * pairs, std::log2(m_.cfg.rope_base)};
         launch("rope", &a, 0);
     }
+    void appendKv(const float* k, const float* v, float* kt, float* vc, int pos) override {
+        if (pos != ctx_ - 1) throw std::logic_error("appendKv: position must be the last of the context");
+        const KvAppendArgs a{k, v, kt, vc, m_.attn_dims, m_.cfg.attnDims(ctx_)};
+        launch("kv_append", &a, 0);
+    }
     void attnScores(const float* q, const float* k, float* scores) override {
         const AttnScoresArgs a{q, k, scores, m_.attn_dims, m_.cfg.attnDims(ctx_),
                                1.0f / std::sqrt(static_cast<float>(m_.cfg.head_dim))};
         launch("attn_scores", &a, 64);
     }
     void softmax(float* scores) override {
-        const SoftmaxArgs a{scores, ctx_, m_.cfg.heads};
+        const SoftmaxArgs a{scores, ctx_, padTo8(ctx_), m_.cfg.heads};
         launch("softmax", &a, 1);
     }
     void attnValues(const float* p, const float* v, float* out) override {
@@ -450,10 +453,13 @@ public:
         const int pairs = m_.cfg.head_dim / 2;
         ref::rope(x, pairs, pos, heads * pairs, std::log2(m_.cfg.rope_base));
     }
+    void appendKv(const float* k, const float* v, float* kt, float* vc, int pos) override {
+        ref::appendKv(k, v, kt, vc, m_.cfg.kvStride(), m_.cfg.kStride(), pos);
+    }
     void attnScores(const float* q, const float* k, float* scores) override {
         ref::attnScores(q, k, scores, m_.cfg.attnDims(ctx_), 1.0f / std::sqrt(static_cast<float>(m_.cfg.head_dim)));
     }
-    void softmax(float* scores) override { ref::softmax(scores, ctx_, m_.cfg.heads); }
+    void softmax(float* scores) override { ref::softmax(scores, ctx_, padTo8(ctx_), m_.cfg.heads); }
     void attnValues(const float* p, const float* v, float* out) override {
         ref::attnValues(p, v, out, m_.cfg.attnDims(ctx_));
     }

@@ -17,7 +17,7 @@ enum class Codegen : int { Auto = 0, Booth = 1, Native = 2, Simd = 3 };
 
 struct DeviceProperties {
     char     name[128] = {};
-    unsigned worker_count = 0;     // logical processors available to the runtime
+    unsigned worker_count = 0;     // threads in the chunked-launch pool (the launching thread also runs chunks)
     size_t   total_memory = 0;     // physical host memory in bytes
     bool     is_hardware_gpu = false;
     bool     guard_pages = false;  // allocations end against a no-access page

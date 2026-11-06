@@ -873,3 +873,73 @@ Per-token profile at the first position:
 1. **Attention data layout:** store K and V per head with positions contiguous, so the 8 SIMD lanes read adjacent floats. Today `attn_scores` gathers rows that are 1024 floats apart. Saves about 2–4 ms at longer contexts.
 2. **Lane-uniform analysis in `pcuda_mslgen`:** prove at translation time that values like `row / 8` are the same in every lane and `row % 8` equals the lane number. Loads such as `qw[base + w*8 + l]` then become plain contiguous loads with no runtime contiguity check. This is the "warp-uniform" analysis GPU compilers do. Estimated 10–20% on matvec.
 3. **Run a token as one pool job** with barriers between kernels, removing the remaining launch overhead.
+
+## 25. Steps 4–6: lane-affine translation, transposed K, pool sizing (2026-11-06)
+
+**Measuring.** `pcuda_llm_bench --paths simd,cuda` times only the chosen paths. Timing the slow booth and native paths first heats the CPU, and that slowed simd by up to 15% (59.6 vs 50.7 ms for the same build). `compare_llm.ps1` now passes `--paths simd,cuda` by default.
+
+**Step 4: lane-affine values in `pcuda_mslgen`** (candidate 2 from §24).
+- The analysis gives each value one of three shapes:
+  - **Uni**: the same in every lane;
+  - **Aff**: lane `l` holds `b + s*l`, with `b` scalar and `s` a constant;
+  - **Gen**: a full vector.
+- It is an optimistic fixed point; shapes only move down.
+- Uni and Aff values are computed by the scalar C expression on lane 0's values, so they cost nothing per lane.
+- An `aligned` flag records a non-negative multiple of 8. `tid` is aligned because groups start at multiples of 8, and `blockIdx * blockDim` folds to 0.
+- For an aligned Aff value with stride 1 and an aligned divisor `D`:
+  - `x / D` is Uni;
+  - `x % D` is Aff with stride 1.
+- Loads and stores through Aff pointers with stride 1 use `loadc`/`storec`: masked contiguous accesses with no run-time index checks.
+- A vector pointer derived from an Aff pointer demotes it to Gen, because blends keep one scalar base.
+
+The `matvec_q4x8_q8` inner loop became scalar address math, one `vpmaskmovd` and two `vpdpbusd`. Result: 50.7 → 43.7 ms.
+
+**VNNI choice per launch.** `vdp4a` checked `cpuHasAvxVnni()` (a thread-safe static) at every call. The possible fallback call made MSVC spill all live `ymm` registers around each dot product.
+- The generated `group` is now `template <bool kVnni_>`, and the entry point picks the instance once.
+- The inner loop is 12 instructions with no spills.
+- Result: 43.0 → 41.2 ms.
+
+**Pool dispatch.** Workers claim chunks with an atomic counter on the launch's group, with no lock per chunk. One `WakeByAddressAll` per launch wakes sleepers, replacing up to 15 `notify_one` calls. The caller waits on the remaining-count with `WaitOnAddress`. Result: about 1 ms.
+
+**Step 5: transposed K and `pcuda_aligned8`** (candidate 1 from §24).
+- **`pcuda_aligned8(x)`:** a `__device__` identity helper that promises `x >= 0` and `x % 8 == 0`. `pcuda_mslgen` recognizes its exact Booth body (`return p0;`), marks uniform results aligned, and emits `pcuda::simd::aligned8()`. That check faults with `__debugbreak` (contained like any kernel fault) if the promise is broken.
+- **Layouts and dims:**
+  - The K cache is transposed: `kt[kv_stride][k_stride]`.
+  - Score rows are padded to `ctx_pad`, a multiple of 8.
+  - The attention dims grow to 7 ints: `ctx_pad` and `k_stride` are added.
+- **Generated code:**
+  - In `attn_scores`, `h` is Uni, `t` is Aff, `q` is a scalar broadcast, and K is one contiguous load.
+  - In `attn_values`, `h` is Uni and `d` is Aff, so `p` is a scalar broadcast and V is contiguous.
+- **`kv_append`:** a new kernel that writes K transposed and V in one launch. It replaces two copies. Booth allows at most 5 integer/pointer parameters, so it reads `pos = ctx - 1` from the attention dims.
+- CUDA runs the same kernels. Its result moved closer to the reference (1.9e-4 → 5.5e-7), with no change in speed.
+- Result: attention 3.55 → 2.8 ms at position 43; 41.2 → 40.1 ms per token.
+- Chunk boundaries are now multiples of 16 threads, down from 64. Kernels with few threads, such as `silu_mul_q8x4`'s 256, now split over all workers.
+
+**Step 6: pool size.** Longer spinning (200–5000 µs) made decode up to 5× slower, even with `UMWAIT`.
+- **Cause:** oversubscription. Launches are synchronous: the host thread waits while the stream thread runs the launch, with 16 pool threads alongside. That is 18 threads on 16 logical processors, so waiting threads took processors from the threads with work.
+- **Sweep:** pool sizes of 11–12 were fastest. This CPU has 12 performance-core logical processors; busy efficiency cores also slow the shared ring and memory path, and llama.cpp avoids them too.
+- **Default:** P-core logical processors − 1 (11 here), from `GetLogicalProcessorInformationEx` `EfficiencyClass`. The launching thread runs chunks too.
+- **Waiting:** `UMWAIT` (C0.1) replaces `pause` spinning when the CPU has WAITPKG. The 50 µs default stays.
+
+**Results** (`compare_llm.ps1`, two consecutive runs):
+
+| | ms/token | tok/s |
+|---|---|---|
+| simd, step 3 | 46–49 | 20–22 |
+| simd, steps 4–6 | 36.4–36.9 | 27.1–27.5 |
+| Ollama llama.cpp, CPU only (same runs) | 38.2 / 33.9 | 26.2 / 29.5 |
+| CUDA, same kernels | 33.2 | 30.1 |
+
+pcuda's simd path from the same CUDA C sources now matches Ollama on CPU within run-to-run noise. All CPU paths remain bit-identical, and also bit-identical to the C++ reference.
+
+**Remaining time** at position 43:
+- matvec 30–31 ms: lm_head runs at about 80 GB/s, FFN at about 70 GB/s, and the small attention projections at about 55 GB/s;
+- attention 1.8 ms;
+- rope + KV append 1.6 ms;
+- silu 1.0 ms;
+- add+norm 0.5 ms.
+
+**Next candidates:**
+- run a token as one pool job (§24 candidate 3);
+- fuse rope into `kv_append`;
+- vectorize `exp2`/`sin`/`cos` with one shared deterministic implementation for all paths.

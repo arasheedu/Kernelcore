@@ -223,21 +223,22 @@ TEST_CASE(llm_kernels_identical_on_all_paths) {
     }
 
     // Attention, softmax (fmax, varying loops), rms_norm (sqrt), rope (sin/cos).
-    const llm::AttnDims d{6, 77, 64, 128, 3};
+    // ctx_pad 80, k_stride 77: K (transposed, 128 x 77) and V (77 x 128) share one buffer.
+    const llm::AttnDims d{6, 77, 64, 128, 3, 80, 77};
     const auto q = floats(size_t(d.n_heads) * d.head_dim, 6, -1, 1);
     const auto kv = floats(size_t(d.ctx) * d.kv_stride, 7, -1, 1);
-    float *dq = dev(q), *dk = dev(kv), *dsc = dev(std::vector<float>(size_t(d.n_heads) * d.ctx)),
+    float *dq = dev(q), *dk = dev(kv), *dsc = dev(std::vector<float>(size_t(d.n_heads) * d.ctx_pad)),
           *dout = dev(std::vector<float>(size_t(d.n_heads) * d.head_dim));
-    int* dd = dev(std::vector<int>{d.n_heads, d.ctx, d.head_dim, d.kv_stride, d.group});
+    int* dd = dev(std::vector<int>{d.n_heads, d.ctx, d.head_dim, d.kv_stride, d.group, d.ctx_pad, d.k_stride});
     REQUIRE(dq && dk && dsc && dout && dd);
     const llm::AttnScoresArgs sa{dq, dk, dsc, dd, d, 0.125f};
-    sameOnAllPaths("attn_scores", dsc, size_t(d.n_heads) * d.ctx * 4, [&](bool ch) {
+    sameOnAllPaths("attn_scores", dsc, size_t(d.n_heads) * d.ctx_pad * 4, [&](bool ch) {
         return ch ? pcudaLaunchKernelChunked("attn_scores", &sa, 4, 64) : pcudaLaunchKernel("attn_scores", &sa);
     }, true);
     REQUIRE_OK(pcudaSetKernelCodegen(Codegen::Booth));
     REQUIRE_OK(pcudaLaunchKernel("attn_scores", &sa));
-    const auto scores = host(dsc, size_t(d.n_heads) * d.ctx);
-    const llm::SoftmaxArgs sm{dsc, d.ctx, d.n_heads};
+    const auto scores = host(dsc, size_t(d.n_heads) * d.ctx_pad);
+    const llm::SoftmaxArgs sm{dsc, d.ctx, d.ctx_pad, d.n_heads};
     sameOnAllPaths("softmax", dsc, scores.size() * 4, [&](bool) {
         pcudaMemcpy(dsc, scores.data(), scores.size() * 4, CopyKind::HostToDevice);
         return pcudaLaunchKernel("softmax", &sm);

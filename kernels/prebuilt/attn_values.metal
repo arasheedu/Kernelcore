@@ -6,6 +6,15 @@
 #include <metal_stdlib>
 using namespace metal;
 
+int pcuda_aligned8(
+    int p0);
+
+int pcuda_aligned8(
+    int p0)
+{
+    return p0;
+}
+
 kernel void attn_values(
     device float * p0 [[buffer(0)]],
     device float * p1 [[buffer(1)]],
@@ -16,93 +25,103 @@ kernel void attn_values(
     uint3 bid [[threadgroup_position_in_grid]],
     uint3 bdim [[threads_per_threadgroup]])
 {
-    int v5;
-    int v6;
     int v7;
     int v8;
     int v9;
     int v10;
-    device int * v11;
+    int v11;
     int v12;
-    device int * v13;
-    int v14;
-    device int * v15;
-    int v16;
-    device int * v17;
-    int v18;
-    device int * v19;
+    int v13;
+    device int * v14;
+    int v15;
+    device int * v16;
+    int v17;
+    device int * v18;
+    int v19;
     int v20;
-    int v21;
-    bool v22;
+    device int * v21;
+    int v22;
+    device int * v23;
     int v24;
-    int v25;
+    device int * v25;
     int v26;
     int v27;
-    int v28;
-    float v31;
+    bool v28;
+    int v30;
+    int v31;
     int v32;
-    bool v33;
+    int v33;
+    int v34;
     int v35;
-    int v36;
-    device float * v37;
     float v38;
     int v39;
-    int v40;
-    device float * v41;
-    float v42;
-    float v43;
-    float v44;
+    bool v40;
+    int v42;
+    int v43;
+    device float * v44;
+    float v45;
     int v46;
+    int v47;
     device float * v48;
-    v5 = bid.x;
-    v6 = bdim.x;
-    v7 = v5 * v6;
-    v8 = p4 + v7;
-    v9 = tid.x;
-    v10 = v8 + v9;
-    v11 = p3 + (0);
-    v12 = *(v11);
-    v13 = p3 + (1);
-    v14 = *(v13);
-    v15 = p3 + (2);
-    v16 = *(v15);
-    v17 = p3 + (3);
-    v18 = *(v17);
-    v19 = p3 + (4);
-    v20 = *(v19);
-    v21 = v12 * v16;
-    v22 = v10 < v21;
-    if (v22) {
-        v24 = v10 / v16;
-        v25 = v10 % v16;
-        v26 = v24 / v20;
-        v27 = v26 * v16;
-        v28 = v27 + v25;
-        v31 = 0.0f;
-        v32 = 0;
+    float v49;
+    float v50;
+    float v51;
+    int v53;
+    device float * v55;
+    v7 = pcuda_aligned8(p4);
+    v8 = bid.x;
+    v9 = bdim.x;
+    v10 = v8 * v9;
+    v11 = v7 + v10;
+    v12 = tid.x;
+    v13 = v11 + v12;
+    v14 = p3 + (0);
+    v15 = *(v14);
+    v16 = p3 + (1);
+    v17 = *(v16);
+    v18 = p3 + (2);
+    v19 = *(v18);
+    v20 = pcuda_aligned8(v19);
+    v21 = p3 + (3);
+    v22 = *(v21);
+    v23 = p3 + (4);
+    v24 = *(v23);
+    v25 = p3 + (5);
+    v26 = *(v25);
+    v27 = v15 * v20;
+    v28 = v13 < v27;
+    if (v28) {
+        v30 = v13 / v20;
+        v31 = v30 * v20;
+        v32 = v13 - v31;
+        v33 = v30 / v24;
+        v34 = v33 * v20;
+        v35 = v34 + v32;
+        v38 = 0.0f;
+        v39 = 0;
         while (true) {
-            v33 = v32 < v14;
-            if (v33) {
-                v35 = v24 * v14;
-                v36 = v35 + v32;
-                v37 = p0 + (v36);
-                v38 = *(v37);
-                v39 = v32 * v18;
-                v40 = v39 + v28;
-                v41 = p1 + (v40);
-                v42 = *(v41);
-                v43 = v38 * v42;
-                v44 = v31 + v43;
-                v46 = v32 + 1;
-                v31 = v44;
-                v32 = v46;
+            v40 = v39 < v17;
+            if (v40) {
+                v42 = v30 * v26;
+                v43 = v42 + v39;
+                v44 = p0 + (v43);
+                v45 = *(v44);
+                v46 = v39 * v22;
+                v47 = v46 + v35;
+                v48 = p1 + (v47);
+                v49 = *(v48);
+                v50 = v45 * v49;
+                v51 = v38 + v50;
+                v53 = v39 + 1;
+                v38 = v51;
+                v39 = v53;
                 continue;
             } else {
                 break;
             }
         }
-        v48 = p2 + (v10);
-        *(v48) = v31;
+        v55 = p2 + (v13);
+        *(v55) = v38;
     }
     return;
 }

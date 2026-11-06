@@ -11,7 +11,7 @@
 //   generated tokens, each attending over every position so far, logits back on the host.
 //
 //   pcuda_llm_bench [--model 3b|1b] [--weights q4x8q8|q4x8|q4|q8] [--prompt P] [--tokens T] [--budget S]
-//                   [--workers N] [--check]
+//                   [--workers N] [--paths booth,native,simd,cuda,cpp] [--check]
 //
 // Slow paths (booth, c++) time an evenly spaced subset of the T positions so a run stays within
 // --budget seconds per path; the average per-token cost is over the same context range.
@@ -85,7 +85,7 @@ public:
     void setContext(int ctx) override {
         ctx_ = ctx;
         const llm::AttnDims d = m_.cfg.attnDims(ctx);
-        dims_ = {d.n_heads, d.ctx, d.head_dim, d.kv_stride, d.group};
+        dims_ = {d.n_heads, d.ctx, d.head_dim, d.kv_stride, d.group, d.ctx_pad, d.k_stride};
         ck(cudaMemcpyAsync(m_.attn_dims, dims_.data(), sizeof dims_, cudaMemcpyHostToDevice, s_), "dims");
     }
     void matvec(const llm::Mat& w, const float* x, float* y) override {
@@ -116,11 +116,17 @@ public:
         ck(gpu::llm::rope(x, pairs, pos, heads * pairs, std::log2(m_.cfg.rope_base), s_), "rope");
     }
     void attnScores(const float* q, const float* k, float* scores) override {
-        ck(gpu::llm::attnScores(q, k, scores, m_.attn_dims, m_.cfg.heads * ctx_,
+        ck(gpu::llm::attnScores(q, k, scores, m_.attn_dims, m_.cfg.heads * llm::padTo8(ctx_),
                                 1.0f / std::sqrt(static_cast<float>(m_.cfg.head_dim)), s_),
            "attn_scores");
     }
-    void softmax(float* scores) override { ck(gpu::llm::softmax(scores, ctx_, m_.cfg.heads, s_), "softmax"); }
+    void softmax(float* scores) override {
+        ck(gpu::llm::softmax(scores, ctx_, llm::padTo8(ctx_), m_.cfg.heads, s_), "softmax");
+    }
+    void appendKv(const float* k, const float* v, float* kt, float* vc, int pos) override {
+        if (pos != ctx_ - 1) throw std::logic_error("appendKv: position must be the last of the context");
+        ck(gpu::llm::kvAppend(k, v, kt, vc, m_.attn_dims, m_.cfg.kvStride(), s_), "kv_append");
+    }
     void attnValues(const float* p, const float* v, float* out) override {
         ck(gpu::llm::attnValues(p, v, out, m_.attn_dims, m_.cfg.heads * m_.cfg.head_dim, s_), "attn_values");
     }
@@ -137,7 +143,7 @@ private:
     const llm::Model&  m_;
     cudaStream_t       s_;
     int                ctx_;
-    std::array<int, 5> dims_{};
+    std::array<int, 7> dims_{};
     int*               xq_ = nullptr;
     float*             xd_ = nullptr;
 };
@@ -275,6 +281,7 @@ int run(int argc, char** argv) {
     double budget = 20;
     unsigned workers_opt = 0;
     bool check = false;
+    std::string paths_opt = "booth,native,simd,cuda,cpp";
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -288,9 +295,11 @@ int run(int argc, char** argv) {
         else if (a == "--tokens") tokens = std::atoi(next().c_str());
         else if (a == "--budget") budget = std::atof(next().c_str());
         else if (a == "--workers") workers_opt = static_cast<unsigned>(std::atoi(next().c_str()));
+        else if (a == "--paths") paths_opt = next();
         else {
             std::fprintf(stderr, "usage: pcuda_llm_bench [--model 3b|1b] [--weights q4x8q8|q4x8|q4|q8] [--prompt P] "
-                                 "[--tokens T] [--budget S] [--workers N] [--check]\n");
+                                 "[--tokens T] [--budget S] [--workers N] [--paths booth,native,simd,cuda,cpp] "
+                                 "[--check]\n");
             return 2;
         }
     }
@@ -311,7 +320,10 @@ int run(int argc, char** argv) {
     if (pcudaInit() != pcuda::Error::Success) throw std::runtime_error("pcudaInit failed");
     if (llm::registerKernels() != pcuda::Error::Success)
         throw std::runtime_error(std::string("registering LLM kernels: ") + pcudaGetLastErrorDetail());
-    const unsigned workers = workers_opt ? workers_opt : std::max(1u, std::thread::hardware_concurrency());
+    pcuda::DeviceProperties pprops{};
+    if (pcudaGetDeviceProperties(&pprops, 0) != pcuda::Error::Success) throw std::runtime_error("pcuda device properties");
+    // Default: one chunk share per thread that runs chunks (the pool plus the launching thread).
+    const unsigned workers = workers_opt ? workers_opt : pprops.worker_count + 1;
 
     const llm::Weights wf = weights == "q4"       ? llm::Weights::Q4
                             : weights == "q4x8"   ? llm::Weights::Q4X8
@@ -328,8 +340,8 @@ int run(int argc, char** argv) {
     std::printf("Decode: prompt of %d tokens already in the KV cache, then %d generated tokens (positions %d..%d)\n",
                 prompt, tokens, prompt, prompt + tokens - 1);
     std::printf("GPU   : %s, %zu MiB\n", prop.name, prop.totalGlobalMem >> 20);
-    std::printf("CPU   : %u logical processors; pcuda chunked launches with workers = %u\n",
-                std::thread::hardware_concurrency(), workers);
+    std::printf("CPU   : %u logical processors; pcuda pool of %u threads + the launching thread; workers = %u\n",
+                std::thread::hardware_concurrency(), pprops.worker_count, workers);
     std::fflush(stdout);
 
     cudaStream_t stream{};
@@ -390,6 +402,10 @@ int run(int argc, char** argv) {
         const bool ok = pcuda_same && ap.rel < 1e-4 && ap.argmax && ag.rel < 1e-2;
 
         if (!check) {
+            // --paths: time only these. Each path heats the CPU and slows the paths timed after it.
+            auto want = [&](const char* n) {
+                return ("," + paths_opt + ",").find(std::string(",") + n + ",") != std::string::npos;
+            };
             std::vector<Column> cols;
             auto timePcuda = [&](pcuda::Codegen c, const char* name) {
                 pcudaSetKernelCodegen(c);
@@ -408,12 +424,12 @@ int run(int argc, char** argv) {
                 cols.push_back(col);
             };
             std::printf("Timing (slow paths sample evenly spaced positions within a %.0f s budget):\n", budget);
-            timePcuda(pcuda::Codegen::Booth, "pcuda booth");
-            timePcuda(pcuda::Codegen::Native, "pcuda native");
-            timePcuda(pcuda::Codegen::Simd, "pcuda simd");
+            if (want("booth")) timePcuda(pcuda::Codegen::Booth, "pcuda booth");
+            if (want("native")) timePcuda(pcuda::Codegen::Native, "pcuda native");
+            if (want("simd")) timePcuda(pcuda::Codegen::Simd, "pcuda simd");
             pcudaSetKernelCodegen(pcuda::Codegen::Auto);
 
-            {  // CUDA: warm to working clocks, profile one token, then all positions back to back
+            if (want("cuda")) {  // CUDA: warm to working clocks, profile one token, then all positions back to back
                 const auto s = Clock::now();
                 while (msSince(s) < 500) {
                     llm::decodeToken(cuda, cm, cacts, first);
@@ -435,7 +451,7 @@ int run(int argc, char** argv) {
                 std::printf("  timed %-13s %3d tokens: %8s ms/token\n", "cuda", col.timed, fmtMs(col.token_ms).c_str());
                 cols.push_back(col);
             }
-            {
+            if (want("cpp")) {
                 Column col{"c++ 1 thread"};
                 HostProfiler prof;
                 llm::decodeToken(*cpp, pm, hacts, first, &prof);

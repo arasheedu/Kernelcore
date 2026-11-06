@@ -1,10 +1,14 @@
-# Test kernels (Booth-compiled, test-only) and their adapters.
-add_library(pcuda_test_support STATIC test_kernels.cpp harness_main.cpp sysv_test_funcs.asm)
-target_link_libraries(pcuda_test_support PUBLIC pcuda)
-target_include_directories(pcuda_test_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/src")
+# Test kernels (Booth-compiled, test-only) and their adapters. Also used by pcuda_vs_cuda.
+add_library(pcuda_test_kernels STATIC test_kernels.cpp)
+target_link_libraries(pcuda_test_kernels PUBLIC pcuda)
+target_include_directories(pcuda_test_kernels PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 foreach(k oob_write int_div deep_recursion scale_add trig_mix)
-  booth_add_kernel(TARGET pcuda_test_support NAME ${k} SOURCE "${PROJECT_SOURCE_DIR}/kernels/test/${k}.cu")
+  booth_add_kernel(TARGET pcuda_test_kernels NAME ${k} SOURCE "${PROJECT_SOURCE_DIR}/kernels/test/${k}.cu")
 endforeach()
+
+add_library(pcuda_test_support STATIC harness_main.cpp sysv_test_funcs.asm)
+target_link_libraries(pcuda_test_support PUBLIC pcuda_test_kernels)
+target_include_directories(pcuda_test_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/src")
 
 # ASan runtime DLL lives next to cl.exe.
 get_filename_component(_msvc_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)

@@ -345,7 +345,7 @@ struct KernelEntry {
 };
 ```
 
-`CpuBackend` is implemented now. `NvidiaBackend` is a stub behind `-DPCUDA_ENABLE_NVIDIA=ON`, which defaults to OFF, and no CUDA libraries are linked in the CPU build.
+`CpuBackend` is implemented now. `NvidiaBackend` is future work. `-DPCUDA_ENABLE_NVIDIA=ON` (default OFF) currently builds only the side-by-side comparison tool (§19), and no CUDA libraries are linked in the CPU build.
 
 ## 9. Allocation registry and guarded allocator
 
@@ -575,7 +575,7 @@ Environment: Windows 11 x64 (16 logical processors), Visual Studio 2022 17.14 / 
 | 3: end-to-end and faults | Done: `test_vector_add` (7 cases, sizes 1 to 2^24, bit-exact), `test_fault` (6 cases, 1,000 contained out-of-bounds faults, divide-by-zero, 3 consecutive stack overflows) |
 | 4: streams and events | Done: `test_stream` (8 cases) |
 | 5: chunking | Done: `test_chunked_vector_add` (4 cases, 1/2/4/16 workers, bit-exact against serial) |
-| 6: NVIDIA parity | Not started (future milestone). `PCUDA_ENABLE_NVIDIA=ON` fails configuration with an explicit message. |
+| 6: NVIDIA parity | Comparison harness done (§19). `PCUDA_ENABLE_NVIDIA=ON` builds `pcuda_vs_cuda`; an `NvidiaBackend` behind `IBackend` is still not implemented. |
 
 Verified configurations: MSVC RelWithDebInfo; MSVC Debug + AddressSanitizer; `PCUDA_KATH_MODE` = exe, wsl and prebuilt (prebuilt with `kath` unavailable); a source path containing spaces and parentheses. **Not verified:** clang-cl (not installed on the dev machine) and the GitHub Actions workflow (written but never run).
 
@@ -601,3 +601,39 @@ Launch overhead: about 1.2 µs synchronous, about 41 µs chunked (pool wake-up).
 7. **Layout:** `scripts/run_poc.ps1` became `scripts/build.ps1`, which loads the VS environment itself. `build_kath_wsl.sh` became `install_kath_wsl.sh`. Malformed-ELF cases are generated in `test_loader.cpp` instead of committed under `loader_corpus/`. Fuzzing is a seeded mutation test instead of libFuzzer, since there is no clang-cl.
 8. **`/CETCOMPAT:NO`** is set explicitly on all executables, because fault recovery rewrites RSP/RIP.
 9. **Kernel threads:** every launch, including synchronous ones, runs on a runtime-owned thread with an 8 MB stack (the default stream's worker). None run on the caller's thread.
+
+## 19. Side-by-side comparison with CUDA (Phase 6, part 1; 2026-11-06)
+
+**Goal:** run the same `.cu` source on pcuda and on a real NVIDIA GPU, check that the results agree and measure the speed difference. It's a comparison harness, not an `NvidiaBackend`: the GPU path calls the CUDA runtime directly.
+
+**Design**
+- Kernels use the portable index `blockIdx.x * blockDim.x + threadIdx.x`. Under Booth this reduces to `threadIdx.x` (F12), and on the GPU it is the global index. `vector_add`, `scale_add` and `trig_mix` were converted and their prebuilt objects refreshed. The fault-test kernels are unchanged.
+- `gpu/cuda_kernels.cu` `#include`s the same kernel files and launches them with 256-thread blocks. It exposes a plain C++ interface, so `app/compare.cpp` is compiled by `cl` with the project's warnings-as-errors settings.
+- `cmake/NvidiaCompare.cmake`: opt-in via `PCUDA_ENABLE_NVIDIA=ON` (preset `windows-msvc-nvidia`). It reads the `nvcc` version before `enable_language(CUDA)`. For CUDA < 12.4 with MSVC ≥ 19.40 it adds `-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH` and warns. Device code uses default `nvcc` settings: precise `sinf`, FMA contraction on, `CMAKE_CUDA_ARCHITECTURES=native`. It isn't combinable with ASan.
+- `scale_add` and `trig_mix` gained chunk hooks, so all three kernels run on all cores. `test_chunked_vector_add` checks them bit-exactly against serial launches without a GPU.
+- `pcuda_vs_cuda --check` (a ctest, which skips with exit code 77 when no GPU is present) uses the sizes 1, 7, 255, 256, 257, 1000, 4097, 65537 and 2^20+3:
+  - `vector_add`: GPU and pcuda bit-identical.
+  - `scale_add`: at most 2 ULP apart.
+  - `trig_mix`: both within 4e-6 relative error of double precision.
+  - pcuda: chunked results equal serial results.
+- Timing: up to 21 samples after warm-up, with about 1 s budget per cell. Before each GPU measurement the kernel runs for 300 ms. Without that the GPU stays at idle clocks after the multi-second CPU measurements, and `trig_mix` at 4M showed 4.5 ms instead of 0.13 ms.
+
+**Results** (i5-13400F with 16 logical processors, RTX 4060 with 24 SMs, CUDA 12.3, driver 13.3)
+
+| Kernel, 16M elements | C++ /O2 | pcuda 1T | pcuda 16T | CUDA kernel | pcuda + copies | CUDA + copies |
+|---|---|---|---|---|---|---|
+| `vector_add` | 6.2 ms | 47.9 ms | 8.7 ms | 0.80 ms | 18.1 ms | 16.3 ms |
+| `scale_add` | 5.2 ms | 46.8 ms | 8.4 ms | 0.89 ms | 16.4 ms | 10.9 ms |
+| `trig_mix` | 170 ms | 442 ms | 62 ms | 0.54 ms | 67 ms | 10.9 ms |
+
+Findings:
+1. **Kernel only**, the GPU wins by 10–54× for memory-bound kernels. The peak is at 1M elements, where the data fits in the GPU's L2 cache. From 4M up, DRAM bandwidth caps the gain at about 11×. For the compute-bound `trig_mix` the gain is 115–170×.
+2. **End to end**, memory-bound kernels are about even (1.0–1.5×), because PCIe copies dominate. Below about 256K elements pcuda is faster: CUDA launch-and-wait costs 9–16 µs and the copies 50–80 µs. `trig_mix` stays about 6× faster on the GPU.
+3. **Launch overhead:** pcuda about 1 µs synchronous and about 30 µs chunked; CUDA 9–16 µs (WDDM).
+4. **Accuracy:**
+   - `vector_add` is bit-identical.
+   - `scale_add` differs by 1 ULP in about 5% of elements. `nvcc` contracts `x*s+b` into an FMA (one rounding) and Booth rounds twice, so the GPU is slightly closer to the exact result.
+   - `trig_mix` differs by up to 16 ULP; relative error is 8.2e-7 for pcuda and 6.9e-7 for the GPU.
+5. **Booth codegen** costs about 10× against the C++ `/O2` loop on one thread for simple kernels. It keeps every value on the stack and doesn't vectorize. For `trig_mix` the gap is 2.6×, because libm calls dominate. Using all 16 cores brings pcuda close to single-threaded C++ for memory-bound kernels.
+
+**Not done:** an `NvidiaBackend` behind `IBackend` (pcuda API calls dispatched to CUDA). Comparisons of shared memory, atomics or multi-block kernels are also not done, since Booth's CPU backend doesn't support them.

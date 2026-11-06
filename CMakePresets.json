@@ -35,6 +35,12 @@
       "cacheVariables": { "PCUDA_KATH_MODE": "prebuilt" }
     },
     {
+      "name": "windows-msvc-nvidia",
+      "displayName": "MSVC x64 + pcuda_vs_cuda (needs CUDA Toolkit and an NVIDIA GPU)",
+      "inherits": "windows-msvc",
+      "cacheVariables": { "PCUDA_ENABLE_NVIDIA": "ON" }
+    },
+    {
       "name": "windows-clangcl",
       "displayName": "clang-cl x64 RelWithDebInfo",
       "inherits": "base",
@@ -46,6 +52,7 @@
     { "name": "windows-msvc-debug", "configurePreset": "windows-msvc-debug" },
     { "name": "windows-msvc-asan", "configurePreset": "windows-msvc-asan" },
     { "name": "windows-msvc-prebuilt", "configurePreset": "windows-msvc-prebuilt" },
+    { "name": "windows-msvc-nvidia", "configurePreset": "windows-msvc-nvidia" },
     { "name": "windows-clangcl", "configurePreset": "windows-clangcl" }
   ],
   "testPresets": [
@@ -53,6 +60,7 @@
     { "name": "windows-msvc-debug", "configurePreset": "windows-msvc-debug", "output": { "outputOnFailure": true } },
     { "name": "windows-msvc-asan", "configurePreset": "windows-msvc-asan", "output": { "outputOnFailure": true } },
     { "name": "windows-msvc-prebuilt", "configurePreset": "windows-msvc-prebuilt", "output": { "outputOnFailure": true } },
+    { "name": "windows-msvc-nvidia", "configurePreset": "windows-msvc-nvidia", "output": { "outputOnFailure": true } },
     { "name": "windows-clangcl", "configurePreset": "windows-clangcl", "output": { "outputOnFailure": true } }
   ]
 }

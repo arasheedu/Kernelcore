@@ -19,10 +19,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
 option(PCUDA_BUILD_TESTS   "Build tests"                                   ON)
 option(PCUDA_ENABLE_ASAN   "Build with AddressSanitizer (/fsanitize=address)" OFF)
-option(PCUDA_ENABLE_NVIDIA "Reserved for a future NVIDIA backend (not implemented)" OFF)
-if(PCUDA_ENABLE_NVIDIA)
-  message(FATAL_ERROR "PCUDA_ENABLE_NVIDIA: the NVIDIA backend is a future milestone and not implemented")
-endif()
+option(PCUDA_ENABLE_NVIDIA "Build pcuda_vs_cuda: the same kernels on pcuda and on an NVIDIA GPU (needs CUDA Toolkit)" OFF)
 
 # ---- compiler settings -------------------------------------------------------
 add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 UNICODE _UNICODE)
@@ -78,6 +75,11 @@ target_include_directories(pcuda_bench PRIVATE src)
 if(PCUDA_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+# ---- optional: side-by-side comparison with real CUDA ------------------------
+if(PCUDA_ENABLE_NVIDIA)
+  include(cmake/NvidiaCompare.cmake)
 endif()
 
 pcuda_add_refresh_prebuilt_target()

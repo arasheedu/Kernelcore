@@ -1,6 +1,7 @@
 #include "test_kernels.hpp"
 
 #include <array>
+#include <limits>
 
 PCUDA_DECLARE_KERNEL_IMAGE(vector_add);
 PCUDA_DECLARE_KERNEL_IMAGE(oob_write);
@@ -69,12 +70,48 @@ Error trigMix(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept
     return pk.finish(a.count);
 }
 
+// Chunk hooks (same contract as vector_add): offset the pointers to the chunk start and
+// pass count = nthreads = chunk length. Valid because each element is independent.
+bool chunkOk(int count, int64_t begin, int64_t length) noexcept {
+    return begin >= 0 && length > 0 && begin + length <= count && length <= std::numeric_limits<int32_t>::max();
+}
+
+Error scaleAddExtent(const void* p, int64_t* total) noexcept {
+    const auto& a = *static_cast<const ScaleAddArgs*>(p);
+    if (a.count < 0) return Error::InvalidValue;
+    *total = a.count;
+    return Error::Success;
+}
+
+Error scaleAddChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const ScaleAddArgs*>(p);
+    if (!chunkOk(a.count, begin, length)) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.x + begin).ptr(a.out + begin).f32(a.scale).f32(a.bias).i32(static_cast<int32_t>(length));
+    return pk.finish(length);
+}
+
+Error trigMixExtent(const void* p, int64_t* total) noexcept {
+    const auto& a = *static_cast<const TrigMixArgs*>(p);
+    if (a.count < 0) return Error::InvalidValue;
+    *total = a.count;
+    return Error::Success;
+}
+
+Error trigMixChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const TrigMixArgs*>(p);
+    if (!chunkOk(a.count, begin, length)) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.x + begin).ptr(a.out + begin).i32(static_cast<int32_t>(length));
+    return pk.finish(length);
+}
+
 const pcuda::KernelEntry kEntries[] = {
     {"oob_write", PCUDA_KERNEL_IMAGE_FIELDS(oob_write), &oobWrite},
     {"int_div", PCUDA_KERNEL_IMAGE_FIELDS(int_div), &intDiv},
     {"deep_recursion", PCUDA_KERNEL_IMAGE_FIELDS(deep_recursion), &deepRecursion},
-    {"scale_add", PCUDA_KERNEL_IMAGE_FIELDS(scale_add), &scaleAdd},
-    {"trig_mix", PCUDA_KERNEL_IMAGE_FIELDS(trig_mix), &trigMix},
+    {"scale_add", PCUDA_KERNEL_IMAGE_FIELDS(scale_add), &scaleAdd, &scaleAddExtent, &scaleAddChunk},
+    {"trig_mix", PCUDA_KERNEL_IMAGE_FIELDS(trig_mix), &trigMix, &trigMixExtent, &trigMixChunk},
 };
 
 } // namespace

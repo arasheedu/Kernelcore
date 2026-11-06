@@ -25,6 +25,8 @@ Facts verified against real kath 0.6.1 output on 2026-11-06 (Phase 0):
   F9  stack-everything codegen; recursion in __device__ functions supported.             verified
   F10 Windows, Linux and WSL kath produce byte-identical objects.                        verified
   F11 sinf/cosf: argument converted as (x * 1/(2*pi)) * 2*pi in float before the call.   verified (objdump)
+  F12 blockIdx.x is the constant 0 and blockDim.x is nthreads, so the portable index
+      blockIdx.x*blockDim.x+threadIdx.x equals threadIdx.x (same .cu builds with nvcc).  verified (objdump, tests)
 
 Exact command lines:
   kath --cpu <file.cu> -o <file.o>

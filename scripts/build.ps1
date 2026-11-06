@@ -43,6 +43,9 @@ try {
         $dir = Join-Path $root "build\$Preset"
         if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
     }
+    # Native tools write warnings to stderr. When this script's output is captured, Windows
+    # PowerShell turns those lines into errors, so rely on exit codes instead.
+    $ErrorActionPreference = 'Continue'
     cmake --preset $Preset
     if ($LASTEXITCODE -ne 0) { throw "configure failed ($LASTEXITCODE)" }
     cmake --build --preset $Preset
@@ -52,5 +55,6 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "tests failed ($LASTEXITCODE)" }
     }
 } finally {
+    $ErrorActionPreference = 'Stop'
     Pop-Location
 }

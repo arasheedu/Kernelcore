@@ -5,6 +5,9 @@
 
 #include <windows.h>
 
+#include <intrin.h>
+#include <immintrin.h>
+
 #include <cstring>
 #include <format>
 
@@ -128,22 +131,56 @@ void CpuBackend::unloadAll() noexcept {
     images_.clear();
 }
 
+bool CpuBackend::cpuHasAvx2() noexcept {
+    static const bool has = [] {
+        int r[4] = {};
+        __cpuid(r, 0);
+        if (r[0] < 7) return false;
+        __cpuid(r, 1);
+        const bool osxsave = (r[2] & (1 << 27)) != 0, avx = (r[2] & (1 << 28)) != 0;
+        if (!osxsave || !avx) return false;
+        if ((_xgetbv(0) & 0x6) != 0x6) return false;  // OS saves XMM and YMM state
+        __cpuidex(r, 7, 0);
+        return (r[1] & (1 << 5)) != 0;  // AVX2
+    }();
+    return has;
+}
+
+Codegen CpuBackend::resolve(const KernelEntry& entry) const noexcept {
+    const Codegen want = codegen_.load();
+    const NativeKernel* n = entry.native;
+    if (want == Codegen::Booth || !n || !n->scalar) return Codegen::Booth;
+    if ((want == Codegen::Simd || want == Codegen::Auto) && n->simd && cpuHasAvx2()) return Codegen::Simd;
+    return Codegen::Native;
+}
+
 Error CpuBackend::launch(const KernelEntry& entry, const LaunchArgs& args) noexcept {
     try {
         if (args.nthreads == 0) return Error::Success;
-        const BoothImage* img = nullptr;
-        if (Error e = image(entry, &img); e != Error::Success) return e;
-        const InvokeResult r = invokeSysV(img->entry(), args, entry.name, img->base(), img->size());
+        const Codegen path = resolve(entry);
+        InvokeResult r;
+        if (path == Codegen::Booth) {
+            const BoothImage* img = nullptr;
+            if (Error e = image(entry, &img); e != Error::Success) return e;
+            r = invokeSysV(img->entry(), args, entry.name, img->base(), img->size());
+        } else {
+            // The generated function runs under the same thunk (and fault guard) via a bridge.
+            LaunchArgs bridge{};
+            bridge.gpr[0] = reinterpret_cast<uint64_t>(&args);
+            bridge.gpr[1] = reinterpret_cast<uint64_t>(path == Codegen::Simd ? entry.native->simd : entry.native->scalar);
+            bridge.n_gpr = 2;
+            r = invokeSysV(reinterpret_cast<const void*>(&pcuda_sysv_native_bridge), bridge, entry.name, nullptr, 0);
+        }
         if (r.faulted) {
             {
                 std::lock_guard lk(fault_mutex_);
                 last_fault_ = r.fault;
             }
-            detail::setDetail(std::format("kernel '{}' raised exception 0x{:08X} at {} (address 0x{:X})",
-                                          entry.name, r.fault.code,
-                                          r.fault.in_kernel_image ? std::format(".text+0x{:X}", r.fault.code_offset)
-                                                                  : std::string("outside kernel image"),
-                                          r.fault.fault_address));
+            const std::string where = r.fault.in_kernel_image ? std::format(".text+0x{:X}", r.fault.code_offset)
+                                      : path == Codegen::Booth ? std::string("outside kernel image")
+                                                               : std::format("{} code", path == Codegen::Simd ? "simd" : "native");
+            detail::setDetail(std::format("kernel '{}' raised exception 0x{:08X} at {} (address 0x{:X})", entry.name,
+                                          r.fault.code, where, r.fault.fault_address));
             return Error::KernelFault;
         }
         return Error::Success;

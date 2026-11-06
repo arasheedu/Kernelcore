@@ -1,0 +1,78 @@
+; Booth IR
+
+func @matvec_q8(ptr<global, i8> %0, ptr<global, f32> %1, ptr<global, f32> %2, ptr<global, f32> %3, ptr<global, i32> %4) __global__ {
+entry:
+    %5 = block_id.x  ; line 7
+    %6 = block_dim.x  ; line 7
+    %7 = mul i32 %5, %6  ; line 7
+    %8 = thread_id.x  ; line 7
+    %9 = add i32 %7, %8  ; line 7
+    %10 = gep ptr<global, i32>, %4, 0  ; line 8
+    %11 = load i32, %10  ; line 8
+    %12 = gep ptr<global, i32>, %4, 1  ; line 9
+    %13 = load i32, %12  ; line 9
+    %14 = icmp slt i32 %9, %11  ; line 10
+    br_cond %14, if.then, if.end merge if.end  ; line 10
+
+if.then:
+    %16 = sdiv i32 %13, 32  ; line 11
+    br for.cond  ; line 13
+
+if.end:
+    ret void  ; line 19
+
+for.cond:
+    %19 = phi f32 [if.then: 0], [for.inc: %54]
+    %20 = phi i32 [if.then: 0], [for.inc: %24]
+    %21 = icmp slt i32 %20, %16  ; line 13
+    br_cond %21, for.body, for.end merge for.end  ; line 13
+
+for.body:
+    br for.cond  ; line 15
+
+for.inc:
+    %24 = add i32 %20, 1  ; line 13
+    br for.cond  ; line 13
+
+for.end:
+    %26 = gep ptr<global, f32>, %3, %9  ; line 19
+    store f32 %19, %26  ; line 19
+    br if.end  ; line 19
+
+for.cond:
+    %29 = phi f32 [for.body: 0], [for.inc: %45]
+    %30 = phi i32 [for.body: 0], [for.inc: %47]
+    %31 = icmp slt i32 %30, 32  ; line 15
+    br_cond %31, for.body, for.end merge for.end  ; line 15
+
+for.body:
+    %33 = mul i32 %9, %13  ; line 16
+    %34 = mul i32 %20, 32  ; line 16
+    %35 = add i32 %33, %34  ; line 16
+    %36 = add i32 %35, %30  ; line 16
+    %37 = gep ptr<global, i8>, %0, %36  ; line 16
+    %38 = load i8, %37  ; line 16
+    %39 = sitofp i8 %38 to f32  ; line 16
+    %40 = mul i32 %20, 32  ; line 16
+    %41 = add i32 %40, %30  ; line 16
+    %42 = gep ptr<global, f32>, %2, %41  ; line 16
+    %43 = load f32, %42  ; line 16
+    %44 = fmul f32 %39, %43  ; line 16
+    %45 = fadd f32 %29, %44  ; line 16
+    br for.inc  ; line 16
+
+for.inc:
+    %47 = add i32 %30, 1  ; line 15
+    br for.cond  ; line 15
+
+for.end:
+    %49 = mul i32 %9, %16  ; line 17
+    %50 = add i32 %49, %20  ; line 17
+    %51 = gep ptr<global, f32>, %1, %50  ; line 17
+    %52 = load f32, %51  ; line 17
+    %53 = fmul f32 %29, %52  ; line 17
+    %54 = fadd f32 %19, %53  ; line 17
+    br for.inc  ; line 17
+}
+
+; 1 functions, 0 globals, 56 instructions

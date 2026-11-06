@@ -1,0 +1,21 @@
+; Booth IR
+
+func @int_div(ptr<global, i32> %0, ptr<global, i32> %1, i32 %2, i32 %3) __global__ {
+entry:
+    %4 = thread_id.x  ; line 4
+    %5 = icmp slt i32 %4, %3  ; line 5
+    br_cond %5, if.then, if.end merge if.end  ; line 5
+
+if.then:
+    %7 = gep ptr<global, i32>, %1, %4  ; line 5
+    %8 = gep ptr<global, i32>, %0, %4  ; line 5
+    %9 = load i32, %8  ; line 5
+    %10 = sdiv i32 %9, %2  ; line 5
+    store i32 %10, %7  ; line 5
+    br if.end  ; line 5
+
+if.end:
+    ret void  ; line 5
+}
+
+; 1 functions, 0 globals, 14 instructions

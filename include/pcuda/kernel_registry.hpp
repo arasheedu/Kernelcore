@@ -29,12 +29,22 @@ public:
     virtual Error checkDeviceRange(const void* ptr, size_t bytes, const char* what) const noexcept = 0;
 };
 
+// Native code paths generated from Booth's IR (tools/mslgen.cpp): Win64 functions that run
+// all args.nthreads threads of one launch with Booth's semantics.
+using NativeKernelFn = void (*)(const LaunchArgs* args);
+struct NativeKernel {
+    NativeKernelFn scalar = nullptr;  // one thread at a time
+    NativeKernelFn simd = nullptr;    // 8 threads per AVX2 register; null if not translatable
+    const char*    note = nullptr;    // why simd is unavailable, if it is
+};
+
 struct KernelEntry {
     const char*          name = nullptr;          // exact symbol name in the Booth object
     const unsigned char* image = nullptr;         // embedded ELF bytes
     size_t               image_size = 0;
     const char*          image_sha256 = nullptr;  // lowercase hex, checked before loading
     const char*          provenance = nullptr;    // how the object was produced (exe/wsl/prebuilt)
+    const NativeKernel*  native = nullptr;        // optional native/simd paths
 
     // Validate typed arguments and fill LaunchArgs (including nthreads).
     Error (*marshal)(const void* typed_args, const LaunchContext& ctx, LaunchArgs* out) noexcept = nullptr;
@@ -85,8 +95,10 @@ private:
     extern "C" const unsigned char pcuda_kimg_##kname[];                   \
     extern "C" const std::size_t   pcuda_kimg_##kname##_size;              \
     extern "C" const char          pcuda_kimg_##kname##_sha256[];          \
-    extern "C" const char          pcuda_kimg_##kname##_provenance[]
+    extern "C" const char          pcuda_kimg_##kname##_provenance[];      \
+    extern "C" const pcuda::NativeKernel pcuda_knat_##kname
 
 #define PCUDA_KERNEL_IMAGE_FIELDS(kname)                                    \
     pcuda_kimg_##kname, pcuda_kimg_##kname##_size,                          \
-    pcuda_kimg_##kname##_sha256, pcuda_kimg_##kname##_provenance
+    pcuda_kimg_##kname##_sha256, pcuda_kimg_##kname##_provenance,           \
+    &pcuda_knat_##kname

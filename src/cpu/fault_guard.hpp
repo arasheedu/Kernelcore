@@ -46,3 +46,4 @@ InvokeResult invokeSysV(const void* entry, const LaunchArgs& args, const char* k
 extern "C" int pcuda_sysv_invoke(const void* entry, const uint64_t* gpr6, const uint64_t* xmm8,
                                  void** anchor_slot);
 extern "C" void pcuda_sysv_recover();
+extern "C" void pcuda_sysv_native_bridge();  // src/cpu/sysv_shims.asm

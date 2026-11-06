@@ -575,7 +575,7 @@ Environment: Windows 11 x64 (16 logical processors), Visual Studio 2022 17.14 / 
 | 3: end-to-end and faults | Done: `test_vector_add` (7 cases, sizes 1 to 2^24, bit-exact), `test_fault` (6 cases, 1,000 contained out-of-bounds faults, divide-by-zero, 3 consecutive stack overflows) |
 | 4: streams and events | Done: `test_stream` (8 cases) |
 | 5: chunking | Done: `test_chunked_vector_add` (4 cases, 1/2/4/16 workers, bit-exact against serial) |
-| 6: NVIDIA parity | Comparison harness done (§19). `PCUDA_ENABLE_NVIDIA=ON` builds `pcuda_vs_cuda`; an `NvidiaBackend` behind `IBackend` is still not implemented. |
+| 6: NVIDIA parity | Comparison harness done (§19); LLM decode benchmark done (§20). Faster code paths and Ollama comparison: §21. `PCUDA_ENABLE_NVIDIA=ON` builds `pcuda_vs_cuda`; an `NvidiaBackend` behind `IBackend` is still not implemented. |
 
 Verified configurations: MSVC RelWithDebInfo; MSVC Debug + AddressSanitizer; `PCUDA_KATH_MODE` = exe, wsl and prebuilt (prebuilt with `kath` unavailable); a source path containing spaces and parentheses. **Not verified:** clang-cl (not installed on the dev machine) and the GitHub Actions workflow (written but never run).
 
@@ -637,3 +637,134 @@ Findings:
 5. **Booth codegen** costs about 10× against the C++ `/O2` loop on one thread for simple kernels. It keeps every value on the stack and doesn't vectorize. For `trig_mix` the gap is 2.6×, because libm calls dominate. Using all 16 cores brings pcuda close to single-threaded C++ for memory-bound kernels.
 
 **Not done:** an `NvidiaBackend` behind `IBackend` (pcuda API calls dispatched to CUDA). Comparisons of shared memory, atomics or multi-block kernels are also not done, since Booth's CPU backend doesn't support them.
+
+## 20. LLM decode benchmark (Phase 6, part 2; 2026-11-06)
+
+**Question:** how would LLM inference (token generation) run on pcuda versus CUDA?
+
+**Why not reuse llama.cpp's CUDA backend:** of the 71 `.cu` files in `ggml-cuda` (in the local llama.cpp fork):
+- 32–34 use `__shared__` and `__syncthreads`;
+- 12 use warp shuffles;
+- 48 use `half`;
+- 48 are templated;
+- 6 call cuBLAS.
+
+Booth's CPU backend supports none of these. `__shared__` with `__syncthreads` even compiles but gives wrong results, because the threads run one after another. So step 1 builds the decode step from kernels written in the subset both compilers accept.
+
+**Design**
+- `kernels/llm/`: seven kernels.
+  - `matvec_q8` (int8 blocks of 32 with a float scale each; split arrays, since Booth has no `half`), `rms_norm`, `rope`, `attn_scores`, `softmax`, `attn_values`, `silu_mul`. The residual add is `vector_add`.
+  - One thread per output, no early `return`, `exp2f` instead of `expf`.
+  - Sizes come in through a device `int` array, because of Booth's limit of 5 integer parameters.
+  - Chunked launches pass the first thread index in a `base` parameter where an index doesn't map to a pointer offset (attention).
+- `llm/`: pcuda adapters (`llm_kernels.cpp`), a plain C++ reference (`llm_reference.cpp`), and a synthetic model and decode step (`llm_model.cpp`).
+  - The model has Llama 3.2 1B/3B shapes and deterministic random Q8 weights, and is built once into both pcuda and CUDA memory.
+  - The C++ reference reads pcuda's weights directly.
+  - Simplifications: the KV cache is pre-filled and not appended to, and there is no embedding lookup.
+  - The adapters check, as with all pcuda kernels, every buffer against live allocations and that the device `dims` array matches the validated sizes.
+- `test_llm_kernels` (CPU-only, runs in CI) has 5 cases:
+  - `matvec_q8`, both attention kernels and `silu_mul` are bit-identical to C++, and chunked results equal serial ones.
+  - `rms_norm` and `softmax` are within 1e-6, and `rope` within 1e-3 (F11 lowering).
+  - Argument validation.
+  - A whole tiny-model token agrees with C++ (pcuda and pcuda-chunked are bit-identical).
+- `pcuda_llm_bench` (NVIDIA build): a per-operation breakdown per token for C++ 1T, pcuda 1T, pcuda NT and CUDA, plus tokens/s, weight bandwidth, and logits agreement with the C++ reference. `--check` (a tiny model) runs as a ctest.
+- `scripts/ollama_reference.ps1`: real llama.cpp decode speed through Ollama's API, with the GPU on and off.
+
+**Results** (Llama 3.2 3B shapes: 3.21 B parameters, 3.61 GB of Q8 per token, 512 cached positions)
+
+| ms per token | C++ /O2 1T | pcuda 1T | pcuda 16T | CUDA (same kernels) |
+|---|---|---|---|---|
+| matvec attention (q, k, v, o) | 269 | 5,004 | 489 | 34.5 |
+| matvec FFN (gate, up, down) | 802 | 15,181 | 1,370 | 57.3 |
+| matvec lm_head | 137 | 3,246 | 220 | 6.5 |
+| attention (scores, softmax, values) | 135 | 627 | 71 | 2.7 |
+| rms_norm, rope, silu_mul, add | 2 | 16 | 11 | 10 |
+| **total** | **1,344** | **24,074** | **2,161** | **111** |
+| tokens/s | 0.74 | 0.04 | 0.46 | 9.0 |
+
+The real-world reference is Ollama 0.40.6 with `llama3.2` (3B, Q4_K_M, 2.02 GB): **107 tok/s on the GPU (216 GB/s) and 27.5 tok/s CPU-only (55 GB/s)**.
+
+**Findings**
+1. With the same source, CUDA is about 20× faster than pcuda on 16 threads per token.
+2. pcuda on 16 threads is slower than plain C++ on one thread. Booth's code is about 18× slower per thread: it keeps every value on the stack and doesn't vectorize. Matrix-vector products are 95% of the token time.
+3. Against real llama.cpp, pcuda reaches 1.7 GB/s of weight traffic versus 55 GB/s for ggml-cpu (33×). Scaled to the 2.02 GB Q4_K_M model, pcuda would manage under 1 tok/s versus 27.5.
+4. The same-source CUDA kernels reach 32.6 GB/s, 15% of the RTX 4060's bandwidth, against llama.cpp's 216 GB/s:
+   - One thread per row makes neighbouring threads read addresses `k` bytes apart, so loads aren't coalesced.
+   - `rms_norm` runs on a single GPU thread, taking 9.5 ms per token.
+   The Booth subset rules out the fix: warp-per-row reductions need shuffles or shared memory.
+5. Logits agree with the C++ reference to 2.4e-6 (pcuda) and 2.6e-6 (CUDA, FMA contraction), with the same top-5 tokens.
+
+**Step 2 (not started):** a `ggml-pcuda` backend in the llama.cpp fork that runs these kernels for the supported ops and leaves the rest to ggml-cpu. Given finding 3, it would make llama.cpp slower than its own CPU backend. Its value is to show integration, not speed.
+
+## 21. Faster CPU code paths and a like-for-like comparison with Ollama (2026-11-06)
+
+**Goal:** make pcuda's CPU execution fast without giving up Booth as the CUDA compiler, and compare token generation like for like with `ollama run llama3.2`.
+
+**Diagnosis.** Booth's front end and optimizer produce clean SSA (`kath --ir`). Only the x86 back end is weak: it has no register allocator and sends every value through the stack. That makes it about 18× slower per thread than the same loop in C++. Booth's Metal back end prints the same optimized IR as structured C (F13).
+
+**Design**
+- **Three code paths per kernel**, all built from the one `.cu` file (`booth_add_kernel`):
+  - `booth`: the `--cpu` object, as before.
+  - `native`: `--metal` and `--ir` → `tools/mslgen.cpp` → C++ compiled by MSVC `/O2`.
+  - `simd`: the same, translated to AVX2 with 8 CUDA threads per register.
+  Prebuilt mode commits `.metal` and `.ir` with SHA-256 files, bound to the source hash like the `.o` files, so builds without `kath` get all three paths.
+- **`pcuda_mslgen`:**
+  - Parses the Metal text for structure and the IR for semantics.
+  - Fixes the two upstream Metal bugs: the sin/cos turns convention (F14) and lost byte signedness (F15).
+  - Qualifies math calls through a `metal_stdlib` stand-in that reproduces the exact x86 operations (F16).
+  - Fails the build on an IR operation it can't reproduce exactly.
+- **SIMD translator:**
+  - A recursive-descent parser for Booth's statement forms.
+  - A fixed-point uniform/varying analysis: a value is varying if computed from varying values, or assigned under divergent control and observed outside that region.
+  - Masked `if` and loop execution, with blends only where a partial-mask value escapes.
+  - Varying pointers are kept as a uniform base plus a lane index.
+  - Loads and stores touch only active lanes: masked loads/stores when contiguous, hardware gathers when strided, aligned-word gathers for bytes, and per-lane order for scattered stores.
+  - Division and transcendentals run lane by lane, so faults and results match the scalar code.
+  - Kernels it can't translate (helper calls, unsigned IR ops, non-canonical loops) fall back to `native`.
+- **Runtime:**
+  - `KernelEntry::native` points at the generated functions.
+  - `pcudaSetKernelCodegen`, `pcudaGetKernelCodegenFor` and `PCUDA_CODEGEN` select the path. `auto` picks simd, then native, then booth, and checks AVX2 support via CPUID.
+  - Native code runs under the same `pcuda_sysv_invoke` thunk through a small System V → Win64 bridge (`pcuda_sysv_native_bridge`). Fault containment, stack-overflow recovery and register checks are therefore unchanged. Faults report "native code" or "simd code" instead of a `.text` offset.
+- **Pool:**
+  - Chunked launches split into up to `workers × 4` chunks (`PCUDA_CHUNKS_PER_WORKER`).
+  - Pool threads and the waiting caller spin 50 µs before sleeping (`PCUDA_POOL_SPIN_US`).
+  - The caller runs chunks of its own launch.
+  - A single-chunk launch runs inline.
+  - Only as many sleepers are woken as there are extra chunks.
+  - The chunk group is shared-owned by its jobs, which fixes a latent use-after-free when the caller returns as soon as the count reaches zero.
+- **4-bit weights:** `matvec_q4`, using the ggml Q4_0 nibble layout with an f32 scale (5 bits per weight). For Llama 3.2 3B shapes that is 2.01 GB per token, against 2.02 GB for Ollama's Q4_K_M file.
+- **Decode benchmark:**
+  - Real autoregressive steps: K/V appended at each position, attention over `pos + 1` positions, the device `dims` rewritten per token.
+  - Prompt length and token count are taken from Ollama.
+  - The CUDA path copies the logits back to the host every token.
+  - `scripts/compare_llm.ps1` runs Ollama (GPU and CPU-only) and the bench, and prints one table.
+
+**Verification**
+- `test_codegen`: every kernel produces bit-identical bytes on booth, native and simd, serial and chunked, at sizes 1, 7, 8, 9, 63, 1000, 4097 and partial row groups. Faults are contained on every path.
+- The kernel-running suites also run as `<suite>_booth/_native/_simd`.
+- Pass rates: 25/25 in the MSVC, prebuilt-only (fresh) and ASan (fresh) builds; 27/27 in the NVIDIA build.
+- All pcuda paths give bit-identical logits for the 3B model.
+
+**Results** (i5-13400F with 16 logical CPUs, RTX 4060; Llama 3.2 3B shapes, Q4; prompt 43, 128 tokens)
+
+| Run | ms/token | tok/s | weights GB/s |
+|---|---|---|---|
+| pcuda booth path, 16 threads | 1,766 | 0.57 | 1.1 |
+| pcuda native path, 16 threads | 216 | 4.6 | 9.3 |
+| pcuda simd path, 16 threads | 156 | 6.4 | 12.9 |
+| CUDA, same kernels | 65 | 15.4 | 30.9 |
+| plain C++, 1 thread | 1,195 | 0.84 | 1.7 |
+| Ollama llama.cpp, CPU only | 35 | 28.7 | 58 |
+| Ollama llama.cpp, GPU | 9.3 | 107 | 216 |
+
+Pool changes alone (`pcuda_bench`, vector_add):
+- Single-chunk chunked launch overhead: 38 µs → 1.4 µs.
+- 256K elements with 16 workers: 114 → 92 µs.
+- 4M elements with 4 workers: 2.36 → 1.18 ms.
+
+**Findings**
+1. The Metal route recovers what Booth's x86 back end loses: 8× (native) and 11× (simd) per token on the same Booth IR, bit-identical.
+2. The same source on the GPU is still 2.4× faster than simd. Real llama.cpp is another 4.5× faster on the CPU and 7× on the GPU. The remaining gap is algorithmic: llama.cpp uses integer dot products on quantized activations, and warp-cooperative, coalesced loads. Neither can be expressed in the one-thread-per-row kernel subset Booth's CPU backend accepts.
+3. SIMD is limited by the per-row accumulation chain and strided gathers (8 rows per register), not by memory bandwidth (12.9 of about 60 GB/s).
+
+**Next steps (not done):** interleave two 8-lane groups per call to hide add latency; carry kernels with `__shared__` and barriers (not supported by Booth's CPU backend).

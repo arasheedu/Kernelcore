@@ -83,6 +83,8 @@ struct Runtime {
     bool     guard_pages = true;
     size_t   stack_bytes = 8 * kMiB;
     unsigned hw_threads = 1;
+    unsigned chunks_per_worker = 4;  // chunked launches: chunks = workers * this (load balance)
+    unsigned pool_spin_us = 50;      // pool threads spin this long before sleeping
     int      current_device = 0;
 
     AllocationRegistry               registry;
@@ -103,6 +105,11 @@ struct Runtime {
     std::mutex fault_mutex;
     FaultInfo  last_fault{};
     bool       has_fault = false;
+
+    // Kernel code generation path; kept across device resets. Set from PCUDA_CODEGEN at first
+    // init unless pcudaSetKernelCodegen ran earlier.
+    std::atomic<Codegen> codegen{Codegen::Auto};
+    std::atomic<bool>    codegen_set{false};
 };
 
 // Intentionally leaked: no thread joins or frees run from static destructors.
@@ -264,8 +271,20 @@ private:
 Error startDevice(Runtime& r) {
     r.guard_pages = envInt("PCUDA_GUARD_PAGES", 1, 0, 1) != 0;
     r.stack_bytes = static_cast<size_t>(envInt("PCUDA_KERNEL_STACK_MB", 8, 1, 1024)) * kMiB;
-    r.hw_threads = std::max(1u, std::thread::hardware_concurrency());
+    // Threads in the chunked-launch pool. A launch's `workers` argument sets the chunk count.
+    r.hw_threads = static_cast<unsigned>(
+        envInt("PCUDA_POOL_THREADS", std::max(1u, std::thread::hardware_concurrency()), 1, 1024));
+    r.chunks_per_worker = static_cast<unsigned>(envInt("PCUDA_CHUNKS_PER_WORKER", 4, 1, 64));
+    r.pool_spin_us = static_cast<unsigned>(envInt("PCUDA_POOL_SPIN_US", 50, 0, 10000));
+    if (!r.codegen_set.load()) {
+        const std::string cg = envString("PCUDA_CODEGEN");
+        if (cg == "booth") r.codegen.store(Codegen::Booth);
+        else if (cg == "native") r.codegen.store(Codegen::Native);
+        else if (cg == "simd") r.codegen.store(Codegen::Simd);
+        else r.codegen.store(Codegen::Auto);
+    }
     r.backend = std::make_unique<cpu::CpuBackend>(r.registry, r.guard_pages);
+    r.backend->setCodegen(r.codegen.load());
     r.default_stream = std::make_unique<Stream>(r.stack_bytes, L"pcuda default stream");
     r.poisoned.store(false);
     {
@@ -367,7 +386,9 @@ Error launchCommon(const char* name, const void* typed_args, pcudaStream_t strea
         }
         int64_t total = 0;
         if (Error e = entry->extent(typed_args, &total); e != Error::Success) return e;
-        const std::vector<ChunkSpec> chunks = planChunks(total, workers, min_chunk);
+        // Several chunks per worker: fast cores pick up the work slow (efficiency) cores would
+        // otherwise finish last. Results don't depend on the split (chunks are disjoint).
+        const std::vector<ChunkSpec> chunks = planChunks(total, workers * r.chunks_per_worker, min_chunk);
         if (!chunksCoverExactly(chunks, total)) {
             setDetail("internal: chunk plan does not cover the launch exactly");
             return Error::InternalError;
@@ -379,7 +400,7 @@ Error launchCommon(const char* name, const void* typed_args, pcudaStream_t strea
                 return e;
         {
             std::lock_guard lk(r.pool_mutex);
-            if (!r.pool) r.pool = std::make_unique<WorkerPool>(r.hw_threads, r.stack_bytes);
+            if (!r.pool) r.pool = std::make_unique<WorkerPool>(r.hw_threads, r.stack_bytes, r.pool_spin_us);
         }
         WorkerPool* pool = r.pool.get();
         task = [entry, per_chunk = std::move(per_chunk), pool]() -> Error {
@@ -807,6 +828,55 @@ Error pcudaStreamWaitEvent(pcudaStream_t, pcudaEvent_t) noexcept {
         setDetail("cross-stream waits are not implemented in this POC");
         return Error::UnsupportedOperation;
     });
+}
+
+// ================================================================ code generation path
+
+Error pcudaSetKernelCodegen(Codegen codegen) noexcept {
+    return api("pcudaSetKernelCodegen", [&] {
+        const int c = static_cast<int>(codegen);
+        if (c < 0 || c > 3) {
+            setDetail("codegen must be Auto, Booth, Native or Simd");
+            return Error::InvalidValue;
+        }
+        Runtime& r = R();
+        std::shared_lock life(r.lifecycle);
+        r.codegen.store(codegen);
+        r.codegen_set.store(true);
+        if (r.backend) r.backend->setCodegen(codegen);
+        return Error::Success;
+    });
+}
+
+Error pcudaGetKernelCodegen(Codegen* codegen) noexcept {
+    return api("pcudaGetKernelCodegen", [&] {
+        if (!codegen) return Error::InvalidValue;
+        *codegen = R().codegen.load();
+        return Error::Success;
+    });
+}
+
+Error pcudaGetKernelCodegenFor(const char* name, Codegen* used) noexcept {
+    return api("pcudaGetKernelCodegenFor", [&] {
+        if (!used) return Error::InvalidValue;
+        Runtime& r = R();
+        std::shared_lock life(r.lifecycle);
+        if (Error e = requireInit(r); e != Error::Success) return e;
+        const KernelEntry* entry = nullptr;
+        if (Error e = findKernel(r, name, &entry); e != Error::Success) return e;
+        *used = r.backend->resolve(*entry);
+        return Error::Success;
+    });
+}
+
+const char* pcudaCodegenName(Codegen codegen) noexcept {
+    switch (codegen) {
+    case Codegen::Auto: return "auto";
+    case Codegen::Booth: return "booth";
+    case Codegen::Native: return "native";
+    case Codegen::Simd: return "simd";
+    }
+    return "?";
 }
 
 // ================================================================ diagnostics

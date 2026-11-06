@@ -5,7 +5,10 @@
 #include <windows.h>
 #include <process.h>
 
+#include <immintrin.h>
+
 #include <algorithm>
+#include <chrono>
 #include <format>
 #include <stdexcept>
 
@@ -156,14 +159,30 @@ bool Stream::idle() {
 // ---------------------------------------------------------------- WorkerPool
 
 struct WorkerPool::Group {
-    std::mutex              mutex;
-    std::condition_variable cv;
-    size_t                   remaining = 0;
+    std::mutex               mutex;
+    std::condition_variable  cv;
+    std::atomic<size_t>      remaining{0};
     std::vector<Error>       results;
     std::vector<std::string> details;
 };
 
-WorkerPool::WorkerPool(unsigned threads, size_t stack_bytes) {
+namespace {
+
+// Spins with `pause` until pred() or `us` microseconds pass. Returns pred().
+template <class Pred>
+bool spinFor(unsigned us, Pred pred) {
+    if (us == 0) return pred();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(us);
+    for (unsigned i = 0;; ++i) {
+        if (pred()) return true;
+        _mm_pause();
+        if ((i & 63) == 63 && std::chrono::steady_clock::now() >= deadline) return pred();
+    }
+}
+
+} // namespace
+
+WorkerPool::WorkerPool(unsigned threads, size_t stack_bytes, unsigned spin_us) : spin_us_(spin_us) {
     threads = std::max(1u, threads);
     try {
         for (unsigned i = 0; i < threads; ++i)
@@ -188,41 +207,75 @@ WorkerPool::~WorkerPool() {
     for (void* t : threads_) joinThread(t);
 }
 
+bool WorkerPool::takeJob(Job& out, const Group* only) {
+    for (auto it = jobs_.begin(); it != jobs_.end(); ++it) {
+        if (only && it->group.get() != only) continue;
+        out = *it;
+        jobs_.erase(it);
+        pending_.store(jobs_.size(), std::memory_order_release);
+        return true;
+    }
+    return false;
+}
+
+void WorkerPool::execute(const Job& job) {
+    const Error e = runTask(*job.task);
+    std::string why = detailFor(e);
+    // The job owns a reference to the group, so it stays alive while this thread signals it,
+    // even if the caller has already seen remaining == 0 and returned.
+    std::lock_guard lk(job.group->mutex);
+    job.group->results[job.index] = e;
+    job.group->details[job.index] = std::move(why);
+    job.group->remaining.fetch_sub(1, std::memory_order_acq_rel);
+    job.group->cv.notify_all();
+}
+
 void WorkerPool::loop() {
     for (;;) {
+        spinFor(spin_us_, [&] { return pending_.load(std::memory_order_acquire) != 0 || stopping_.load(); });
         Job job;
         {
             std::unique_lock lk(mutex_);
-            cv_.wait(lk, [&] { return stopping_ || !jobs_.empty(); });
-            if (jobs_.empty()) return;
-            job = jobs_.front();
-            jobs_.pop_front();
+            cv_.wait(lk, [&] { return stopping_.load() || !jobs_.empty(); });
+            if (!takeJob(job, nullptr)) return;  // stopping and drained
         }
-        const Error e = runTask(*job.task);
-        std::string why = detailFor(e);
-        {
-            std::lock_guard lk(job.group->mutex);
-            job.group->results[job.index] = e;
-            job.group->details[job.index] = std::move(why);
-            --job.group->remaining;
-        }
-        job.group->cv.notify_all();
+        execute(job);
     }
 }
 
 Error WorkerPool::run(std::vector<Stream::Task>& tasks) {
     if (tasks.empty()) return Error::Success;
-    Group g;
-    g.remaining = tasks.size();
+    if (tasks.size() == 1) {  // nothing to share: run inline, wake nobody
+        const Error e = runTask(tasks[0]);
+        if (e != Error::Success) detail::setDetail(std::format("chunk 0: {}", detailFor(e)));
+        return e;
+    }
+    auto gp = std::make_shared<Group>();
+    Group& g = *gp;
+    g.remaining.store(tasks.size());
     g.results.assign(tasks.size(), Error::Success);
     g.details.assign(tasks.size(), std::string());
     {
         std::lock_guard lk(mutex_);
-        for (size_t i = 0; i < tasks.size(); ++i) jobs_.push_back(Job{&tasks[i], &g, i});
+        for (size_t i = 0; i < tasks.size(); ++i) jobs_.push_back(Job{&tasks[i], gp, i});
+        pending_.store(jobs_.size(), std::memory_order_release);
     }
-    cv_.notify_all();
-    std::unique_lock lk(g.mutex);
-    g.cv.wait(lk, [&] { return g.remaining == 0; });
+    // The caller takes one chunk itself; wake only as many sleepers as there are other chunks.
+    const size_t wake = std::min(tasks.size() - 1, threads_.size());
+    for (size_t i = 0; i < wake; ++i) cv_.notify_one();
+    // The caller works on its own launch too, then waits for chunks still running elsewhere.
+    for (;;) {
+        Job job;
+        {
+            std::lock_guard lk(mutex_);
+            if (!takeJob(job, &g)) break;
+        }
+        execute(job);
+    }
+    if (!spinFor(spin_us_, [&] { return g.remaining.load(std::memory_order_acquire) == 0; })) {
+        std::unique_lock lk(g.mutex);
+        g.cv.wait(lk, [&] { return g.remaining.load(std::memory_order_acquire) == 0; });
+    }
     for (size_t i = 0; i < g.results.size(); ++i) {
         if (g.results[i] != Error::Success) {
             detail::setDetail(std::format("chunk {}: {}", i, g.details[i]));

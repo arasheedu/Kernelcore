@@ -42,7 +42,7 @@ message(STATUS "pcuda_vs_cuda: nvcc ${PCUDA_NVCC_VERSION}, architectures ${CMAKE
 
 # Device code: default nvcc settings (-O3, precise sinf/cosf, FMA contraction on), as a
 # typical CUDA build would use. The kernel sources are #included from kernels/.
-add_library(pcuda_gpu_kernels STATIC gpu/cuda_kernels.cu)
+add_library(pcuda_gpu_kernels STATIC gpu/cuda_kernels.cu gpu/cuda_llm.cu)
 target_include_directories(pcuda_gpu_kernels PUBLIC gpu PRIVATE "${PROJECT_SOURCE_DIR}")
 target_link_libraries(pcuda_gpu_kernels PUBLIC CUDA::cudart_static)
 set_property(TARGET pcuda_gpu_kernels PROPERTY CUDA_RUNTIME_LIBRARY Static)
@@ -51,6 +51,9 @@ set_property(SOURCE gpu/cuda_kernels.cu APPEND PROPERTY OBJECT_DEPENDS
   "${PROJECT_SOURCE_DIR}/kernels/vector_add.cu"
   "${PROJECT_SOURCE_DIR}/kernels/test/scale_add.cu"
   "${PROJECT_SOURCE_DIR}/kernels/test/trig_mix.cu")
+foreach(k matvec_q8 matvec_q4 rms_norm rope attn_scores softmax attn_values silu_mul)
+  set_property(SOURCE gpu/cuda_llm.cu APPEND PROPERTY OBJECT_DEPENDS "${PROJECT_SOURCE_DIR}/kernels/llm/${k}.cu")
+endforeach()
 
 add_executable(pcuda_vs_cuda app/compare.cpp)
 target_link_libraries(pcuda_vs_cuda PRIVATE pcuda pcuda_test_kernels pcuda_gpu_kernels)
@@ -59,3 +62,10 @@ set_property(TARGET pcuda_vs_cuda PROPERTY LINKER_LANGUAGE CXX)
 # Correctness-only run on small sizes. Exit code 77 (no usable GPU) marks the test skipped.
 add_test(NAME pcuda_vs_cuda_check COMMAND pcuda_vs_cuda --check)
 set_tests_properties(pcuda_vs_cuda_check PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+
+# One LLM decode step (Llama 3.2 shapes) on pcuda, on the GPU and in plain C++.
+add_executable(pcuda_llm_bench app/llm_bench.cpp)
+target_link_libraries(pcuda_llm_bench PRIVATE pcuda pcuda_llm pcuda_gpu_kernels)
+set_property(TARGET pcuda_llm_bench PROPERTY LINKER_LANGUAGE CXX)
+add_test(NAME pcuda_llm_bench_check COMMAND pcuda_llm_bench --check)
+set_tests_properties(pcuda_llm_bench_check PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)

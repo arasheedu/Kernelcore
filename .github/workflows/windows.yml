@@ -41,7 +41,7 @@ jobs:
         shell: pwsh
         run: |
           $bad = 0
-          foreach ($o in Get-ChildItem kernels/prebuilt/*.o) {
+          foreach ($o in Get-ChildItem kernels/prebuilt/* -Include *.o, *.metal, *.ir) {
             $fresh = "build/windows-msvc/kernels/$($o.Name)"
             if ((Get-FileHash $fresh).Hash -ne (Get-FileHash $o).Hash) { Write-Error "$($o.Name) is stale"; $bad++ }
           }

@@ -31,3 +31,19 @@ Facts verified against real kath 0.6.1 output on 2026-11-06 (Phase 0):
 Exact command lines:
   kath --cpu <file.cu> -o <file.o>
   pcuda_objcheck <file.o> --kernel <name>
+
+Metal backend (--metal) and IR (--ir), used by the native/simd code paths (tools/mslgen.cpp):
+  F13 --metal prints the optimized IR as structured C: three-address statements, while(true) loops
+      with if/continue/break, one kernel function plus any helper functions. Metal variable vN and
+      parameter pN are IR values %N, so the two outputs can be matched line for line.  verified
+  F14 IR sin/cos take their argument in turns (x / 2pi). --cpu multiplies back by 2pi before calling
+      sinf/cosf; --metal passes turns straight to Metal's radians-based sin/cos (upstream bug).
+                                                                                         verified (--ir, objdump)
+  F15 --metal declares every byte as signed `char` and converts with a plain cast, so zext and sext
+      (and uitofp/sitofp) print identically; the IR keeps the difference (upstream bug).  verified (matvec_q4)
+  F16 inline float ops in --cpu code: fmax(a,b) = maxss a,b (b on NaN or equality); sqrt = sqrtss.
+                                                                                         verified (objdump)
+Exact command lines for the native paths:
+  kath --metal <file.cu> -o <file.metal>
+  kath --ir <file.cu> > <file.ir>
+  pcuda_mslgen --metal <file.metal> --ir <file.ir> --kernel <name> --native <n.cpp> --simd <s.cpp>

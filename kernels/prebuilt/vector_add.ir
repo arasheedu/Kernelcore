@@ -1,0 +1,27 @@
+; Booth IR
+
+func @vector_add(ptr<global, f32> %0, ptr<global, f32> %1, ptr<global, f32> %2, i32 %3) __global__ {
+entry:
+    %4 = block_id.x  ; line 6
+    %5 = block_dim.x  ; line 6
+    %6 = mul i32 %4, %5  ; line 6
+    %7 = thread_id.x  ; line 6
+    %8 = add i32 %6, %7  ; line 6
+    %9 = icmp slt i32 %8, %3  ; line 7
+    br_cond %9, if.then, if.end merge if.end  ; line 7
+
+if.then:
+    %11 = gep ptr<global, f32>, %2, %8  ; line 7
+    %12 = gep ptr<global, f32>, %0, %8  ; line 7
+    %13 = load f32, %12  ; line 7
+    %14 = gep ptr<global, f32>, %1, %8  ; line 7
+    %15 = load f32, %14  ; line 7
+    %16 = fadd f32 %13, %15  ; line 7
+    store f32 %16, %11  ; line 7
+    br if.end  ; line 7
+
+if.end:
+    ret void  ; line 7
+}
+
+; 1 functions, 0 globals, 20 instructions

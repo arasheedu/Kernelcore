@@ -1,0 +1,97 @@
+; Booth IR
+
+func @softmax(ptr<global, f32> %0, i32 %1, i32 %2) __global__ {
+entry:
+    %3 = block_id.x  ; line 4
+    %4 = block_dim.x  ; line 4
+    %5 = mul i32 %3, %4  ; line 4
+    %6 = thread_id.x  ; line 4
+    %7 = add i32 %5, %6  ; line 4
+    %8 = icmp slt i32 %7, %2  ; line 5
+    br_cond %8, if.then, if.end merge if.end  ; line 5
+
+if.then:
+    %10 = mul i32 %7, %1  ; line 6
+    %11 = gep ptr<global, f32>, %0, %10  ; line 6
+    %12 = load f32, %11  ; line 6
+    br for.cond  ; line 7
+
+if.end:
+    ret void  ; line 15
+
+for.cond:
+    %15 = phi f32 [if.then: %12], [for.inc: %23]
+    %16 = phi i32 [if.then: 1], [for.inc: %25]
+    %17 = icmp slt i32 %16, %1  ; line 7
+    br_cond %17, for.body, for.end merge for.end  ; line 7
+
+for.body:
+    %19 = mul i32 %7, %1  ; line 7
+    %20 = add i32 %19, %16  ; line 7
+    %21 = gep ptr<global, f32>, %0, %20  ; line 7
+    %22 = load f32, %21  ; line 7
+    %23 = fmax %15 %22  ; line 7
+    br for.inc  ; line 7
+
+for.inc:
+    %25 = add i32 %16, 1  ; line 7
+    br for.cond  ; line 7
+
+for.end:
+    br for.cond  ; line 9
+
+for.cond:
+    %28 = phi f32 [for.end: 0], [for.inc: %43]
+    %29 = phi i32 [for.end: 0], [for.inc: %45]
+    %30 = icmp slt i32 %29, %1  ; line 9
+    br_cond %30, for.body, for.end merge for.end  ; line 9
+
+for.body:
+    %32 = mul i32 %7, %1  ; line 10
+    %33 = add i32 %32, %29  ; line 10
+    %34 = gep ptr<global, f32>, %0, %33  ; line 10
+    %35 = load f32, %34  ; line 10
+    %36 = fsub f32 %35, %15  ; line 10
+    %37 = fmul f32 %36, 1.44269504  ; line 10
+    %38 = exp2 %37  ; line 10
+    %39 = mul i32 %7, %1  ; line 11
+    %40 = add i32 %39, %29  ; line 11
+    %41 = gep ptr<global, f32>, %0, %40  ; line 11
+    store f32 %38, %41  ; line 11
+    %43 = fadd f32 %28, %38  ; line 12
+    br for.inc  ; line 12
+
+for.inc:
+    %45 = add i32 %29, 1  ; line 9
+    br for.cond  ; line 9
+
+for.end:
+    %47 = fdiv f32 1, %28  ; line 14
+    br for.cond  ; line 15
+
+for.cond:
+    %49 = phi i32 [for.end: 0], [for.inc: %62]
+    %50 = icmp slt i32 %49, %1  ; line 15
+    br_cond %50, for.body, for.end merge for.end  ; line 15
+
+for.body:
+    %52 = mul i32 %7, %1  ; line 15
+    %53 = add i32 %52, %49  ; line 15
+    %54 = gep ptr<global, f32>, %0, %53  ; line 15
+    %55 = mul i32 %7, %1  ; line 15
+    %56 = add i32 %55, %49  ; line 15
+    %57 = gep ptr<global, f32>, %0, %56  ; line 15
+    %58 = load f32, %57  ; line 15
+    %59 = fmul f32 %58, %47  ; line 15
+    store f32 %59, %54  ; line 15
+    br for.inc  ; line 15
+
+for.inc:
+    %62 = add i32 %49, 1  ; line 15
+    br for.cond  ; line 15
+
+for.end:
+    br if.end  ; line 15
+}
+
+; 1 functions, 0 globals, 65 instructions

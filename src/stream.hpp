@@ -6,6 +6,7 @@
 
 #include <pcuda/error.hpp>
 
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -64,31 +65,39 @@ private:
 };
 
 // Fixed pool of worker threads for chunked launches.
+//
+// Latency: workers and the waiting caller spin for `spin_us` (with pause) before blocking on
+// a condition variable, so back-to-back launches don't pay a thread wake-up each time.
+// The calling thread also runs chunks of its own launch instead of only waiting.
 class WorkerPool {
 public:
-    WorkerPool(unsigned threads, size_t stack_bytes);
+    WorkerPool(unsigned threads, size_t stack_bytes, unsigned spin_us = 50);
     ~WorkerPool();
     WorkerPool(const WorkerPool&) = delete;
     WorkerPool& operator=(const WorkerPool&) = delete;
 
     unsigned size() const noexcept { return static_cast<unsigned>(threads_.size()); }
-    // Runs all tasks (concurrently, up to pool size) and waits. Returns the error of the
-    // lowest-index failing task, so results are deterministic.
+    // Runs all tasks (concurrently: pool threads plus the caller) and waits. Returns the error
+    // of the lowest-index failing task, so results are deterministic.
     Error run(std::vector<Stream::Task>& tasks);
 
 private:
     struct Group;
     struct Job {
-        Stream::Task* task;
-        Group*        group;
-        size_t        index;
+        Stream::Task*          task;
+        std::shared_ptr<Group> group;  // keeps the group alive until the last job has signalled
+        size_t                 index;
     };
     void loop();
+    bool takeJob(Job& out, const Group* only);  // under mutex_
+    static void execute(const Job& job);
 
     std::mutex              mutex_;
     std::condition_variable cv_;
     std::deque<Job>         jobs_;
-    bool                    stopping_ = false;
+    std::atomic<size_t>     pending_{0};  // jobs_.size(), readable without the lock
+    std::atomic<bool>       stopping_{false};
+    unsigned                spin_us_;
     std::vector<void*>      threads_;
 };
 

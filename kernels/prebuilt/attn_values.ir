@@ -1,0 +1,65 @@
+; Booth IR
+
+func @attn_values(ptr<global, f32> %0, ptr<global, f32> %1, ptr<global, f32> %2, ptr<global, i32> %3, i32 %4) __global__ {
+entry:
+    %5 = block_id.x  ; line 5
+    %6 = block_dim.x  ; line 5
+    %7 = mul i32 %5, %6  ; line 5
+    %8 = add i32 %4, %7  ; line 5
+    %9 = thread_id.x  ; line 5
+    %10 = add i32 %8, %9  ; line 5
+    %11 = gep ptr<global, i32>, %3, 0  ; line 6
+    %12 = load i32, %11  ; line 6
+    %13 = gep ptr<global, i32>, %3, 1  ; line 7
+    %14 = load i32, %13  ; line 7
+    %15 = gep ptr<global, i32>, %3, 2  ; line 8
+    %16 = load i32, %15  ; line 8
+    %17 = gep ptr<global, i32>, %3, 3  ; line 9
+    %18 = load i32, %17  ; line 9
+    %19 = gep ptr<global, i32>, %3, 4  ; line 10
+    %20 = load i32, %19  ; line 10
+    %21 = mul i32 %12, %16  ; line 11
+    %22 = icmp slt i32 %10, %21  ; line 11
+    br_cond %22, if.then, if.end merge if.end  ; line 11
+
+if.then:
+    %24 = sdiv i32 %10, %16  ; line 12
+    %25 = srem i32 %10, %16  ; line 13
+    %26 = sdiv i32 %24, %20  ; line 14
+    %27 = mul i32 %26, %16  ; line 14
+    %28 = add i32 %27, %25  ; line 14
+    br for.cond  ; line 16
+
+if.end:
+    ret void  ; line 17
+
+for.cond:
+    %31 = phi f32 [if.then: 0], [for.inc: %44]
+    %32 = phi i32 [if.then: 0], [for.inc: %46]
+    %33 = icmp slt i32 %32, %14  ; line 16
+    br_cond %33, for.body, for.end merge for.end  ; line 16
+
+for.body:
+    %35 = mul i32 %24, %14  ; line 16
+    %36 = add i32 %35, %32  ; line 16
+    %37 = gep ptr<global, f32>, %0, %36  ; line 16
+    %38 = load f32, %37  ; line 16
+    %39 = mul i32 %32, %18  ; line 16
+    %40 = add i32 %39, %28  ; line 16
+    %41 = gep ptr<global, f32>, %1, %40  ; line 16
+    %42 = load f32, %41  ; line 16
+    %43 = fmul f32 %38, %42  ; line 16
+    %44 = fadd f32 %31, %43  ; line 16
+    br for.inc  ; line 16
+
+for.inc:
+    %46 = add i32 %32, 1  ; line 16
+    br for.cond  ; line 16
+
+for.end:
+    %48 = gep ptr<global, f32>, %2, %10  ; line 17
+    store f32 %31, %48  ; line 17
+    br if.end  ; line 17
+}
+
+; 1 functions, 0 globals, 51 instructions

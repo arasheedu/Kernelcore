@@ -1,0 +1,26 @@
+; Booth IR
+
+func @scale_add(ptr<global, f32> %0, ptr<global, f32> %1, f32 %2, f32 %3, i32 %4) __global__ {
+entry:
+    %5 = block_id.x  ; line 5
+    %6 = block_dim.x  ; line 5
+    %7 = mul i32 %5, %6  ; line 5
+    %8 = thread_id.x  ; line 5
+    %9 = add i32 %7, %8  ; line 5
+    %10 = icmp slt i32 %9, %4  ; line 6
+    br_cond %10, if.then, if.end merge if.end  ; line 6
+
+if.then:
+    %12 = gep ptr<global, f32>, %1, %9  ; line 6
+    %13 = gep ptr<global, f32>, %0, %9  ; line 6
+    %14 = load f32, %13  ; line 6
+    %15 = fmul f32 %14, %2  ; line 6
+    %16 = fadd f32 %15, %3  ; line 6
+    store f32 %16, %12  ; line 6
+    br if.end  ; line 6
+
+if.end:
+    ret void  ; line 6
+}
+
+; 1 functions, 0 globals, 20 instructions

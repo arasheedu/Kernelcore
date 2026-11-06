@@ -5,6 +5,7 @@
 
 #include <pcuda/backend.hpp>
 
+#include <atomic>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -29,6 +30,12 @@ public:
 
     const FaultInfo& lastFault() const noexcept { return last_fault_; }
 
+    // Code generation path (see pcuda::Codegen). resolve() applies Auto and per-kernel fallbacks.
+    void    setCodegen(Codegen c) noexcept { codegen_.store(c); }
+    Codegen codegen() const noexcept { return codegen_.load(); }
+    Codegen resolve(const KernelEntry& entry) const noexcept;
+    static bool cpuHasAvx2() noexcept;
+
 private:
     struct Slot {
         std::unique_ptr<BoothImage> image;
@@ -41,6 +48,7 @@ private:
     std::map<std::string, Slot> images_;
     std::mutex                  fault_mutex_;
     FaultInfo                   last_fault_{};
+    std::atomic<Codegen>        codegen_{Codegen::Auto};
 };
 
 // Copies with SEH protection so an unreadable/unwritable host pointer becomes an error.

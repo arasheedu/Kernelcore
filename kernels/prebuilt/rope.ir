@@ -1,0 +1,53 @@
+; Booth IR
+
+func @rope(ptr<global, f32> %0, i32 %1, i32 %2, i32 %3, f32 %4) __global__ {
+entry:
+    %5 = block_id.x  ; line 6
+    %6 = block_dim.x  ; line 6
+    %7 = mul i32 %5, %6  ; line 6
+    %8 = thread_id.x  ; line 6
+    %9 = add i32 %7, %8  ; line 6
+    %10 = icmp slt i32 %9, %3  ; line 7
+    br_cond %10, if.then, if.end merge if.end  ; line 7
+
+if.then:
+    %12 = srem i32 %9, %1  ; line 8
+    %13 = sitofp i32 %2 to f32  ; line 9
+    %14 = sitofp i32 %12 to f32  ; line 9
+    %15 = fsub f32 0, %14  ; line 9
+    %16 = sitofp i32 %1 to f32  ; line 9
+    %17 = fdiv f32 %15, %16  ; line 9
+    %18 = fmul f32 %17, %4  ; line 9
+    %19 = exp2 %18  ; line 9
+    %20 = fmul f32 %13, %19  ; line 9
+    %21 = fmul f32 %20, 0.159154943  ; line 10
+    %22 = cos %21  ; line 10
+    %23 = fmul f32 %20, 0.159154943  ; line 11
+    %24 = sin %23  ; line 11
+    %25 = mul i32 2, %9  ; line 12
+    %26 = gep ptr<global, f32>, %0, %25  ; line 12
+    %27 = load f32, %26  ; line 12
+    %28 = mul i32 2, %9  ; line 13
+    %29 = add i32 %28, 1  ; line 13
+    %30 = gep ptr<global, f32>, %0, %29  ; line 13
+    %31 = load f32, %30  ; line 13
+    %32 = mul i32 2, %9  ; line 14
+    %33 = gep ptr<global, f32>, %0, %32  ; line 14
+    %34 = fmul f32 %27, %22  ; line 14
+    %35 = fmul f32 %31, %24  ; line 14
+    %36 = fsub f32 %34, %35  ; line 14
+    store f32 %36, %33  ; line 14
+    %38 = mul i32 2, %9  ; line 15
+    %39 = add i32 %38, 1  ; line 15
+    %40 = gep ptr<global, f32>, %0, %39  ; line 15
+    %41 = fmul f32 %27, %24  ; line 15
+    %42 = fmul f32 %31, %22  ; line 15
+    %43 = fadd f32 %41, %42  ; line 15
+    store f32 %43, %40  ; line 15
+    br if.end  ; line 15
+
+if.end:
+    ret void  ; line 15
+}
+
+; 1 functions, 0 globals, 47 instructions

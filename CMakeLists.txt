@@ -41,6 +41,8 @@ endif()
 
 # ---- build-time object checker (same parser as the runtime) -------------------
 add_executable(pcuda_objcheck tools/objcheck.cpp src/cpu/booth_elf.cpp)
+# Build-time translator for the native code paths (Booth --metal/--ir -> C++).
+add_executable(pcuda_mslgen tools/mslgen.cpp)
 
 include(cmake/BoothKernel.cmake)
 
@@ -62,6 +64,14 @@ add_library(pcuda STATIC
 target_include_directories(pcuda PUBLIC include PRIVATE src)
 target_link_libraries(pcuda PUBLIC bcrypt)
 booth_add_kernel(TARGET pcuda NAME vector_add SOURCE kernels/vector_add.cu)
+
+# ---- LLM decode kernels: synthetic Llama decode step (tests, pcuda_llm_bench) --
+add_library(pcuda_llm STATIC llm/llm_kernels.cpp llm/llm_model.cpp llm/llm_reference.cpp)
+target_include_directories(pcuda_llm PUBLIC llm)
+target_link_libraries(pcuda_llm PUBLIC pcuda)
+foreach(k matvec_q8 matvec_q4 rms_norm rope attn_scores softmax attn_values silu_mul)
+  booth_add_kernel(TARGET pcuda_llm NAME ${k} SOURCE kernels/llm/${k}.cu)
+endforeach()
 
 # ---- applications ------------------------------------------------------------
 add_executable(pcuda_poc app/main.cpp)

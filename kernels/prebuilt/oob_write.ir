@@ -1,0 +1,19 @@
+; Booth IR
+
+func @oob_write(ptr<global, f32> %0, i32 %1) __global__ {
+entry:
+    %2 = thread_id.x  ; line 4
+    %3 = icmp slt i32 %2, %1  ; line 5
+    br_cond %3, if.then, if.end merge if.end  ; line 5
+
+if.then:
+    %5 = add i32 %2, %1  ; line 5
+    %6 = gep ptr<global, f32>, %0, %5  ; line 5
+    store f32 1, %6  ; line 5
+    br if.end  ; line 5
+
+if.end:
+    ret void  ; line 5
+}
+
+; 1 functions, 0 globals, 10 instructions

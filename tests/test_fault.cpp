@@ -17,6 +17,8 @@ using pcuda::Error;
 TEST_CASE(out_of_bounds_write_is_contained_1000_times) {
     RuntimeFixture fx;
     REQUIRE(fx.ok);
+    pcuda::Codegen used{};
+    REQUIRE_OK(pcudaGetKernelCodegenFor("oob_write", &used));
     pcuda::DeviceProperties props{};
     REQUIRE_OK(pcudaGetDeviceProperties(&props, 0));
     for (int round = 0; round < 1000; ++round) {
@@ -39,7 +41,7 @@ TEST_CASE(out_of_bounds_write_is_contained_1000_times) {
         if (round == 0) {
             CHECK(f.code == EXCEPTION_ACCESS_VIOLATION);
             CHECK(f.access_type == 1);  // write
-            CHECK(f.in_kernel_image);
+            CHECK(f.in_kernel_image == (used == pcuda::Codegen::Booth));  // native paths run outside the image
             CHECK(std::strcmp(f.kernel, "oob_write") == 0);
             if (props.guard_pages)  // first byte past the allocation faults
                 CHECK(f.fault_address == reinterpret_cast<uint64_t>(out + 1024));
@@ -76,7 +78,9 @@ TEST_CASE(integer_divide_by_zero_is_contained) {
     pcuda::FaultInfo f{};
     CHECK_OK(pcudaGetLastFault(&f));
     CHECK(f.code == EXCEPTION_INT_DIVIDE_BY_ZERO);
-    CHECK(f.in_kernel_image);
+    pcuda::Codegen used{};
+    CHECK_OK(pcudaGetKernelCodegenFor("int_div", &used));
+    CHECK(f.in_kernel_image == (used == pcuda::Codegen::Booth));
     CHECK_OK(pcudaDeviceReset());
 }
 

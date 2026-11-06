@@ -9,3 +9,5 @@ CMakeLists.txt text eol=lf
 *.o        binary
 *.zip      binary
 *.exe      binary
+*.metal    binary
+*.ir       binary

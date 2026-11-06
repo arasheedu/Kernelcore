@@ -129,18 +129,56 @@ function(booth_add_kernel)
   target_sources(${BK_TARGET} PRIVATE "${cpp}")
   set_property(GLOBAL APPEND PROPERTY PCUDA_KERNELS "${BK_NAME}")
   set_property(GLOBAL PROPERTY PCUDA_KERNEL_OBJ_${BK_NAME} "${obj}")
+
+  # Native code paths: Booth's --metal output (+ --ir for exact semantics) -> pcuda_mslgen ->
+  # C++ compiled by MSVC. <name>_native.cpp runs one thread at a time; <name>_simd.cpp runs
+  # 8 threads per AVX2 register (or is a stub when the kernel cannot be translated).
+  set(msl "${work}/${BK_NAME}.metal")
+  set(ir "${work}/${BK_NAME}.ir")
+  set(ncpp "${work}/${BK_NAME}_native.cpp")
+  set(scpp "${work}/${BK_NAME}_simd.cpp")
+  set(mdeps "${src}" "${PCUDA_CMAKE_DIR}/KathCompile.cmake")
+  if(PCUDA_KATH_RESOLVED STREQUAL "prebuilt")
+    foreach(a metal ir)
+      list(APPEND mdeps "${PCUDA_PREBUILT_DIR}/${BK_NAME}.${a}" "${PCUDA_PREBUILT_DIR}/${BK_NAME}.${a}.sha256")
+    endforeach()
+    list(APPEND mdeps "${PCUDA_PREBUILT_DIR}/${BK_NAME}.cu.sha256")
+  elseif(PCUDA_KATH_RESOLVED STREQUAL "exe")
+    list(APPEND mdeps "${KATH_EXECUTABLE}")
+  endif()
+  add_custom_command(
+    OUTPUT "${msl}" "${ir}" "${ncpp}" "${scpp}"
+    COMMAND "${CMAKE_COMMAND}"
+            "-DMODE=${PCUDA_KATH_RESOLVED}" "-DKATH=${KATH_EXECUTABLE}" "-DWSL_KATH=${BOOTH_WSL_KATH_PATH}"
+            "-DSOURCE=${src}" "-DOUTPUT=${msl}" "-DOUTPUT_IR=${ir}" "-DEMIT=metal" "-DNAME=${BK_NAME}"
+            "-DWORK_DIR=${work}" "-DPREBUILT_DIR=${PCUDA_PREBUILT_DIR}" "-DBOOTH_VERSION=${BOOTH_VERSION}"
+            -P "${PCUDA_CMAKE_DIR}/KathCompile.cmake"
+    COMMAND $<TARGET_FILE:pcuda_mslgen> --metal "${msl}" --ir "${ir}" --kernel "${BK_NAME}"
+            --native "${ncpp}" --simd "${scpp}"
+    DEPENDS ${mdeps} pcuda_mslgen
+    COMMENT "Booth kernel ${BK_NAME} (${PCUDA_KATH_RESOLVED}): --metal/--ir -> native and simd C++"
+    VERBATIM)
+  target_sources(${BK_TARGET} PRIVATE "${ncpp}" "${scpp}")
+  set_source_files_properties("${ncpp}" "${scpp}" TARGET_DIRECTORY ${BK_TARGET} PROPERTIES
+    INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/src/cpu/msl;${PROJECT_SOURCE_DIR}/include")
+  set_source_files_properties("${ncpp}" TARGET_DIRECTORY ${BK_TARGET} PROPERTIES COMPILE_OPTIONS "/wd5030;/wd5222")
+  set_source_files_properties("${scpp}" TARGET_DIRECTORY ${BK_TARGET} PROPERTIES COMPILE_OPTIONS "/wd5030;/wd5222;/arch:AVX2")
+  set_property(GLOBAL PROPERTY PCUDA_KERNEL_MSL_${BK_NAME} "${msl}")
+  set_property(GLOBAL PROPERTY PCUDA_KERNEL_IR_${BK_NAME} "${ir}")
 endfunction()
 
-# Target refresh_prebuilt: copy freshly compiled objects (exe/wsl mode) into kernels/prebuilt.
+# Target refresh_prebuilt: copy freshly compiled kath output (exe/wsl mode) into kernels/prebuilt.
 function(pcuda_add_refresh_prebuilt_target)
   get_property(names GLOBAL PROPERTY PCUDA_KERNELS)
   set(cmds "")
   set(objs "")
   foreach(n IN LISTS names)
     get_property(o GLOBAL PROPERTY PCUDA_KERNEL_OBJ_${n})
-    list(APPEND objs "${o}")
-    list(APPEND cmds COMMAND "${CMAKE_COMMAND}" "-DOBJ=${o}" "-DNAME=${n}" "-DDEST=${PCUDA_PREBUILT_DIR}"
-                             -P "${PCUDA_CMAKE_DIR}/RefreshPrebuilt.cmake")
+    get_property(msl GLOBAL PROPERTY PCUDA_KERNEL_MSL_${n})
+    get_property(ir GLOBAL PROPERTY PCUDA_KERNEL_IR_${n})
+    list(APPEND objs "${o}" "${msl}" "${ir}")
+    list(APPEND cmds COMMAND "${CMAKE_COMMAND}" "-DOBJ=${o}" "-DMSL=${msl}" "-DIR=${ir}" "-DNAME=${n}"
+                             "-DDEST=${PCUDA_PREBUILT_DIR}" -P "${PCUDA_CMAKE_DIR}/RefreshPrebuilt.cmake")
   endforeach()
   add_custom_target(refresh_prebuilt ${cmds} DEPENDS ${objs}
     COMMENT "Refreshing kernels/prebuilt from kath output" VERBATIM)

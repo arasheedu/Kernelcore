@@ -1,0 +1,35 @@
+// pcuda stand-in for <metal_stdlib>: lets Booth's --metal output compile as ordinary C++
+// for the CPU (the "native" code path). Every function reproduces what Booth's own x86
+// backend does for the same IR operation, so native results are bit-identical:
+//   sin/cos  Booth IR takes the argument in turns (x / 2pi); x86 computes sinf(t * 2pi) in float
+//   exp2/log2 CRT exp2f/log2f (the same functions Booth's x86 code calls through pcuda shims)
+//   sqrt      sqrtss (correctly rounded)
+//   fmax(a,b) maxss a, b: a > b ? a : b (returns b on NaN or equality)
+// pcuda_mslgen qualifies the math calls in Booth's output as metal::name(...), so the CRT
+// overloads from <math.h> cannot make them ambiguous.
+#pragma once
+
+#include <math.h>
+
+#define kernel
+#define device
+#define constant
+#define threadgroup
+
+namespace metal {
+
+struct uint3 {
+    unsigned x, y, z;
+};
+
+constexpr float kTwoPi = 6.28318548f;  // 0x40C90FDB, the constant Booth's x86 backend uses
+
+inline float sin(float turns) { return ::sinf(turns * kTwoPi); }
+inline float cos(float turns) { return ::cosf(turns * kTwoPi); }
+inline float exp2(float x) { return ::exp2f(x); }
+inline float log2(float x) { return ::log2f(x); }
+inline float sqrt(float x) { return ::sqrtf(x); }
+inline float fmax(float a, float b) { return a > b ? a : b; }
+inline float fmin(float a, float b) { return a < b ? a : b; }
+
+} // namespace metal

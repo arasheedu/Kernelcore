@@ -49,6 +49,30 @@ can't use them, so pcuda handles them itself:
 - **Guard pages**: every allocation ends against a no-access page, so an overrun faults at the first
   byte past the end.
 
+## Code paths: booth, native and simd
+
+Booth's front end and optimizer produce good SSA IR (`kath --ir`), but its x86 back end has no register
+allocator: every value goes through the stack. The same IR also comes out of Booth's Metal back end as
+plain structured C. So each kernel is built three ways from the one `.cu` file:
+
+| Path | Built from | Runs as |
+|---|---|---|
+| `booth` | `kath --cpu` object | Booth's x86 code, through the System V thunk |
+| `native` | `kath --metal` + `kath --ir` → `pcuda_mslgen` → MSVC `/O2` | one CUDA thread at a time |
+| `simd` | the same, translated to AVX2 | 8 CUDA threads per 256-bit register, like a GPU warp |
+
+- `tools/mslgen.cpp` reads the Metal text for structure and the IR for exact semantics. The Metal
+  output loses byte signedness and prints `sin`/`cos` in turns without converting back. The generator
+  fixes both from the IR, and fails the build on an IR operation it can't reproduce exactly.
+- `simd` keeps values that are the same in every lane (loop counters, `x[j]` loads) scalar. It
+  masks divergent `if`s and loops, and touches memory only in active lanes. A kernel it can't translate
+  (for example one calling a helper function) uses `native`.
+- All three paths are bit-identical for race-free kernels (`test_codegen`, and every kernel test runs
+  on each path). Native and simd code runs under the same thunk and fault guard, so out-of-bounds
+  accesses, divide-by-zero and stack overflow are contained the same way.
+- Choose with `pcudaSetKernelCodegen(pcuda::Codegen::...)` or `PCUDA_CODEGEN=auto|booth|native|simd`.
+  `auto` (default) picks simd, then native, then booth.
+
 ## Getting kernel objects (`-DPCUDA_KATH_MODE=`)
 
 | Mode | Source | When |
@@ -119,7 +143,8 @@ CUDA 12.3 and older reject MSVC 19.40+ (VS 2022 17.10 and later). The build then
 `-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH` and prints a warning.
 CUDA 12.4 or newer doesn't need it.
 
-Results on an i5-13400F (16 logical processors) and RTX 4060, 16M elements:
+Results on an i5-13400F (16 logical processors) and RTX 4060, 16M elements, measured on the `booth`
+code path before the native and simd paths existed (`PCUDA_CODEGEN=booth` reproduces them):
 
 | Kernel | C++ /O2 | pcuda, 16 threads | CUDA kernel | pcuda + copies | CUDA + copies |
 |---|---|---|---|---|---|
@@ -137,12 +162,56 @@ Results on an i5-13400F (16 logical processors) and RTX 4060, 16M elements:
 - Booth's code on one thread is about 10× slower than the C++ loop for simple kernels: it keeps every
   value on the stack and doesn't vectorize.
 
+### LLM decode vs Ollama (`pcuda_llm_bench`, `scripts\compare_llm.ps1`)
+
+`kernels/llm/` holds the kernels of a Llama decode step: 4-bit and 8-bit matrix-vector, RMS norm,
+RoPE, attention scores, softmax, attention values and SwiGLU. They use the subset Booth supports: one
+thread per output, no shared memory, no warp intrinsics. `pcuda_llm_bench` builds a model with
+Llama 3.2 shapes and random weights and generates tokens on every pcuda path, on CUDA and in plain C++.
+`compare_llm.ps1` runs Ollama's `llama3.2` first and matches it:
+
+- the same shapes (Llama 3.2 3B);
+- the same weight bytes per token: Q4 2.01 GB here, against Ollama's Q4_K_M file of 2.02 GB;
+- the same prompt length, taken from Ollama's own count;
+- the same 128 generated tokens, each appending K/V and attending over the whole context;
+- logits back on the host every token.
+
+```powershell
+.\scripts\build.ps1 -Preset windows-msvc-nvidia
+.\scripts\compare_llm.ps1                       # needs Ollama running with llama3.2 pulled
+```
+
+Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generated):
+
+| Run | ms/token | tokens/s | weights GB/s |
+|---|---|---|---|
+| pcuda, `booth` path (Booth's x86 code), 16 threads | 1,766 | 0.57 | 1.1 |
+| pcuda, `native` path, 16 threads | 216 | 4.6 | 9.3 |
+| pcuda, `simd` path, 16 threads | 156 | 6.4 | 12.9 |
+| CUDA, same kernels (nvcc) | 65 | 15.4 | 30.9 |
+| plain C++ `/O2`, 1 thread | 1,195 | 0.84 | 1.7 |
+| Ollama llama.cpp, CPU only | 35 | 28.7 | 58 |
+| Ollama llama.cpp, GPU | 9.3 | 107 | 216 |
+
+- Compiling Booth's IR with MSVC instead of using Booth's x86 back end makes the same kernels 8× faster
+  (`native`). Running 8 CUDA threads per AVX2 register makes them 11× faster (`simd`). All three
+  pcuda paths give bit-identical logits, within 4e-7 of the C++ reference.
+- Same source on the GPU is still 2.4× faster than `simd`. Real llama.cpp is 4.5× faster again on
+  this CPU and 7× on the GPU. Its kernels use techniques this kernel subset can't express: integer
+  dot products on quantized activations, and warp-cooperative, coalesced loads.
+- Slow paths time an evenly spaced subset of the 128 positions (the "tokens timed" column in the
+  bench output), so the average covers the same context range.
+
 ## Runtime settings (environment variables)
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `PCUDA_GUARD_PAGES` | `1` | `0` uses `_aligned_malloc` instead of guard-page allocations |
 | `PCUDA_KERNEL_STACK_MB` | `8` | Stack reserve for stream and worker threads (1–1024) |
+| `PCUDA_CODEGEN` | `auto` | Kernel code path: `auto`, `booth`, `native` or `simd` (see Code paths) |
+| `PCUDA_POOL_THREADS` | logical CPUs | Threads in the chunked-launch pool (1–1024) |
+| `PCUDA_CHUNKS_PER_WORKER` | `4` | A chunked launch with `workers = N` is split into up to N × this many chunks, so fast cores pick up the slow (efficiency) cores' share |
+| `PCUDA_POOL_SPIN_US` | `50` | Pool threads and the waiting caller spin this long before sleeping, so back-to-back launches skip the thread wake-up |
 | `PCUDA_ALLOW_EMULATION` | unset | `1` lets the runtime start under x64 emulation on ARM64 (unsupported) |
 
 ## Limits and known issues
@@ -152,5 +221,8 @@ Results on an i5-13400F (16 logical processors) and RTX 4060, 16M elements:
 - Processes under an Arbitrary Code Guard policy get `Error::DynamicCodeBlocked`.
 - Host funcs (`pcudaLaunchHostFunc`) must not call pcuda APIs. Doing so returns `UnsupportedOperation`.
 - `pcudaStreamWaitEvent` (cross-stream waits) is not implemented.
+- The `simd` path runs 8 CUDA threads in lock step instead of one after another. Kernels that
+  communicate between threads through memory without synchronization (a data race in CUDA too) can
+  give different results on it.
 - ThreadSanitizer isn't available on Windows. Chunk disjointness is checked by the runtime on every
   chunked launch and by tests.

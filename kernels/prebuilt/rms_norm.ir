@@ -1,0 +1,78 @@
+; Booth IR
+
+func @rms_norm(ptr<global, f32> %0, ptr<global, f32> %1, ptr<global, f32> %2, i32 %3, i32 %4, f32 %5) __global__ {
+entry:
+    %6 = block_id.x  ; line 4
+    %7 = block_dim.x  ; line 4
+    %8 = mul i32 %6, %7  ; line 4
+    %9 = thread_id.x  ; line 4
+    %10 = add i32 %8, %9  ; line 4
+    %11 = icmp slt i32 %10, %4  ; line 5
+    br_cond %11, if.then, if.end merge if.end  ; line 5
+
+if.then:
+    br for.cond  ; line 7
+
+if.end:
+    ret void  ; line 9
+
+for.cond:
+    %15 = phi f32 [if.then: 0], [for.inc: %28]
+    %16 = phi i32 [if.then: 0], [for.inc: %30]
+    %17 = icmp slt i32 %16, %3  ; line 7
+    br_cond %17, for.body, for.end merge for.end  ; line 7
+
+for.body:
+    %19 = mul i32 %10, %3  ; line 7
+    %20 = add i32 %19, %16  ; line 7
+    %21 = gep ptr<global, f32>, %0, %20  ; line 7
+    %22 = load f32, %21  ; line 7
+    %23 = mul i32 %10, %3  ; line 7
+    %24 = add i32 %23, %16  ; line 7
+    %25 = gep ptr<global, f32>, %0, %24  ; line 7
+    %26 = load f32, %25  ; line 7
+    %27 = fmul f32 %22, %26  ; line 7
+    %28 = fadd f32 %15, %27  ; line 7
+    br for.inc  ; line 7
+
+for.inc:
+    %30 = add i32 %16, 1  ; line 7
+    br for.cond  ; line 7
+
+for.end:
+    %32 = sitofp i32 %3 to f32  ; line 8
+    %33 = fdiv f32 %15, %32  ; line 8
+    %34 = fadd f32 %33, %5  ; line 8
+    %35 = sqrt %34  ; line 8
+    %36 = fdiv f32 1, %35  ; line 8
+    br for.cond  ; line 9
+
+for.cond:
+    %38 = phi i32 [for.end: 0], [for.inc: %54]
+    %39 = icmp slt i32 %38, %3  ; line 9
+    br_cond %39, for.body, for.end merge for.end  ; line 9
+
+for.body:
+    %41 = mul i32 %10, %3  ; line 9
+    %42 = add i32 %41, %38  ; line 9
+    %43 = gep ptr<global, f32>, %2, %42  ; line 9
+    %44 = mul i32 %10, %3  ; line 9
+    %45 = add i32 %44, %38  ; line 9
+    %46 = gep ptr<global, f32>, %0, %45  ; line 9
+    %47 = load f32, %46  ; line 9
+    %48 = fmul f32 %47, %36  ; line 9
+    %49 = gep ptr<global, f32>, %1, %38  ; line 9
+    %50 = load f32, %49  ; line 9
+    %51 = fmul f32 %48, %50  ; line 9
+    store f32 %51, %43  ; line 9
+    br for.inc  ; line 9
+
+for.inc:
+    %54 = add i32 %38, 1  ; line 9
+    br for.cond  ; line 9
+
+for.end:
+    br if.end  ; line 9
+}
+
+; 1 functions, 0 globals, 57 instructions

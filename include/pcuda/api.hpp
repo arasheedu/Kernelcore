@@ -50,6 +50,14 @@ pcuda::Error pcudaEventSynchronize(pcudaEvent_t event) noexcept;
 pcuda::Error pcudaEventQuery(pcudaEvent_t event) noexcept;         // Success or NotReady
 pcuda::Error pcudaStreamWaitEvent(pcudaStream_t stream, pcudaEvent_t event) noexcept; // UnsupportedOperation in POC
 
+// ---- code generation path ---------------------------------------------------
+// Process-wide; applies to launches made after the call. Default: env PCUDA_CODEGEN, else Auto.
+pcuda::Error pcudaSetKernelCodegen(pcuda::Codegen codegen) noexcept;
+pcuda::Error pcudaGetKernelCodegen(pcuda::Codegen* codegen) noexcept;
+// The path a launch of `name` would take now (resolves Auto and per-kernel fallbacks).
+pcuda::Error pcudaGetKernelCodegenFor(const char* name, pcuda::Codegen* used) noexcept;
+const char*  pcudaCodegenName(pcuda::Codegen codegen) noexcept;
+
 // ---- diagnostics -----------------------------------------------------------
 pcuda::Error pcudaGetLastFault(pcuda::FaultInfo* info) noexcept;
 const char*  pcudaGetErrorString(pcuda::Error error) noexcept;

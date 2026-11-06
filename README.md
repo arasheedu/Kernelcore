@@ -219,10 +219,12 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
 | pcuda, `simd` path, `q4x8` + 8-bit activations, AVX-VNNI (`q4x8q8`) | 51–56 | 18–19.5 | 36–39 |
 | pcuda, `simd` path, `q4x8q8` + fused launches | 46–49 | 20–22 | 41–44 |
 | pcuda, `simd` path, + affine lanes, transposed K, pool on P-cores | 36–37 | 27.1–27.9 | 54–56 |
-| pcuda, `simd` path, + **each token as one graph** (default) | **33.1–34.0** | **29.4–30.2** | **59–61** |
+| pcuda, `simd` path, + each token as one graph | 33.1–34.0 | 29.4–30.2 | 59–61 |
+| pcuda, `simd` path, + software prefetch, parallel norm (default) | **31.8–33.2** | **30.1–31.4** | **60–63** |
 | CUDA, same kernels (nvcc) | 65 | 15.4 | 30.9 |
 | CUDA, same kernels, `q4x8` (coalesced) | 39 | 25.7 | 51.5 |
 | CUDA, same kernels, `q4x8q8` (`__dp4a`), transposed K, CUDA graphs | 33 | 30.2 | 60.7 |
+| CUDA, same kernels, + parallel norm | 20.4 | 49.0 | 98.3 |
 | plain C++ `/O2`, 1 thread | 1,195 | 0.84 | 1.7 |
 | Ollama llama.cpp, CPU only (7 runs) | 34–38 | 26.2–29.5 | 53–60 |
 | Ollama llama.cpp, GPU | 9.3 | 107 | 216 |
@@ -264,6 +266,13 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
     thread: 11 threads here. With 16 threads plus the launching and host threads, waiting workers
     took processors from the threads with work, and busy efficiency cores slowed the rest. 12
     threads in all ran 10–15% faster than 18.
+- The generator then added software prefetch: a prefetch 2 KB ahead of every contiguous load inside a
+  loop, because the hardware prefetcher stops at 4 KB pages. That saves about 1–1.5 ms per token.
+  Residual add + RMS norm + 8-bit quantization now runs as two parallel kernels (`add_sumsq`,
+  `norm_q8x4`) instead of a one-thread kernel plus a separate quantize, and rope covers q and k in one
+  launch. That helps pcuda little, since graphs already made those steps cheap. It helps CUDA a lot:
+  its one-thread norm had cost 13 ms per token, so CUDA went from 33 to 20 ms. Against Ollama:
+  30.7 vs 28.3 tok/s.
 - Each token now runs as one pcuda graph: about 450 launches recorded, then run as one pool job,
   instead of a stream hand-off and pool wake-up per launch. That saves about 4 ms per token
   (37.5 → 33.6 ms in alternating runs, `--graphs on|off`). In two runs against Ollama, pcuda was
@@ -284,6 +293,7 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
 | `PCUDA_CODEGEN` | `auto` | Kernel code path: `auto`, `booth`, `native` or `simd` (see Code paths) |
 | `PCUDA_POOL_THREADS` | P-core logical CPUs − 1 | Threads in the chunked-launch pool (1–1024); the launching thread runs chunks too. On non-hybrid CPUs: all logical CPUs − 1 |
 | `PCUDA_CHUNKS_PER_WORKER` | `4` | A chunked launch with `workers = N` is split into up to N × this many chunks, so fast cores pick up the slow (efficiency) cores' share |
+| `PCUDA_PREFETCH_BYTES` | `2048` | How far ahead the simd path prefetches streaming loads (0 = off; 1.5–8 KB measured the same) |
 | `PCUDA_POOL_SPIN_US` | `50` | Pool and stream threads, and a waiting caller, wait this long (in `UMWAIT` if the CPU has WAITPKG, else spinning) before sleeping, so back-to-back launches skip the thread wake-up. Longer was slower here |
 | `PCUDA_ALLOW_EMULATION` | unset | `1` lets the runtime start under x64 emulation on ARM64 (unsupported) |
 

@@ -13,6 +13,8 @@
 #include "kernels/llm/matvec_q4x8_q8.cu"
 #include "kernels/llm/add_rms_norm.cu"
 #include "kernels/llm/silu_mul_q8x4.cu"
+#include "kernels/llm/add_sumsq.cu"
+#include "kernels/llm/norm_q8x4.cu"
 #include "kernels/llm/rms_norm.cu"
 #include "kernels/llm/rope.cu"
 #include "kernels/llm/attn_scores.cu"
@@ -64,6 +66,18 @@ cudaError_t matvecQ4x8Q8(const int* qw, const int* xq, const float* xd, float* y
 
 cudaError_t addRmsNorm(float* x, const float* t, const float* w, float* y, int n, float eps, cudaStream_t s) {
     add_rms_norm<<<1, 1, 0, s>>>(x, t, w, y, n, eps);
+    return cudaGetLastError();
+}
+
+cudaError_t addSumsq(float* x, const float* t, int* q, int nb, cudaStream_t s) {
+    if (nb <= 0) return cudaSuccess;
+    add_sumsq<<<blocksFor(nb), kBlockSize, 0, s>>>(x, t, q, nb, 0);
+    return cudaGetLastError();
+}
+
+cudaError_t normQ8x4(const float* x, const float* w, int* q, int nb, float eps, cudaStream_t s) {
+    if (nb <= 0) return cudaSuccess;
+    norm_q8x4<<<blocksFor(nb), kBlockSize, 0, s>>>(x, w, q, nb, 0, eps);
     return cudaGetLastError();
 }
 

@@ -209,6 +209,23 @@ TEST_CASE(llm_kernels_identical_on_all_paths) {
         }, true);
     }
 
+    {  // parallel residual add + RMS norm + quantize across paths (chunked too)
+        const int nb = 37;
+        const auto x = floats(size_t(nb) * 32, 15, -2, 2), t = floats(size_t(nb) * 32, 16, -2, 2),
+                   w = floats(size_t(nb) * 32, 17, 0.9f, 1.1f);
+        float *dx = dev(x), *dt = dev(t), *dw = dev(w);
+        int* dq = dev(std::vector<int>(size_t(llm::scratchInts(nb))));
+        REQUIRE(dx && dt && dw && dq);
+        const llm::AddSumsqArgs s{dx, dt, dq, nb};
+        const llm::NormQ8Args n{dx, dw, dq, nb, 1e-5f};
+        sameOnAllPaths("add_sumsq + norm_q8x4", dq, size_t(llm::scratchInts(nb)) * 4, [&](bool ch) {
+            pcudaMemcpy(dx, x.data(), x.size() * 4, CopyKind::HostToDevice);  // x is updated in place
+            const Error e = ch ? pcudaLaunchKernelChunked("add_sumsq", &s, 4, 16) : pcudaLaunchKernel("add_sumsq", &s);
+            if (e != Error::Success) return e;
+            return ch ? pcudaLaunchKernelChunked("norm_q8x4", &n, 4, 16) : pcudaLaunchKernel("norm_q8x4", &n);
+        }, true);
+    }
+
     {  // fused SwiGLU + quantize across paths (chunked too)
         const int count = 77;
         const auto g = floats(size_t(count) * 32, 13, -6, 6), u = floats(size_t(count) * 32, 14, -2, 2);

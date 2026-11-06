@@ -227,6 +227,43 @@ TEST_CASE(fused_kernels_equal_unfused_sequences) {
     CHECK(hostCopy(dxq, xq.size()) == xq);
 }
 
+TEST_CASE(parallel_norm_quant_matches_reference_and_chunks) {
+    LlmFixture fx;
+    REQUIRE(fx.ok);
+    const int nb = 96;  // the 3B hidden size, 3072
+    const auto x = randomFloats(size_t(nb) * 32, 51, -2, 2), t = randomFloats(size_t(nb) * 32, 52, -2, 2);
+    const auto w = randomFloats(size_t(nb) * 32, 53, 0.9f, 1.1f);
+    std::vector<float> rx = x;
+    std::vector<int> rq(size_t(llm::scratchInts(nb)), 0);
+    llm::ref::addSumsq(rx.data(), t.data(), rq.data(), nb);
+    llm::ref::normQ8x4(rx.data(), w.data(), rq.data(), nb, 1e-5f);
+    for (bool chunked : {false, true}) {
+        auto* dx = devCopy(x);
+        auto* dt = devCopy(t);
+        auto* dw = devCopy(w);
+        auto* dq = devCopy(std::vector<int>(rq.size(), 0));
+        REQUIRE(dx && dt && dw && dq);
+        const llm::AddSumsqArgs s{dx, dt, dq, nb};
+        const llm::NormQ8Args n{dx, dw, dq, nb, 1e-5f};
+        CHECK_OK(chunked ? pcudaLaunchKernelChunked("add_sumsq", &s, workers(), 16) : pcudaLaunchKernel("add_sumsq", &s));
+        CHECK_OK(chunked ? pcudaLaunchKernelChunked("norm_q8x4", &n, workers(), 16) : pcudaLaunchKernel("norm_q8x4", &n));
+        CHECK(bitEqual(hostCopy(dx, rx.size()), rx));
+        CHECK(hostCopy(dq, rq.size()) == rq);  // words, scales and partial sums, bit for bit
+    }
+    // Close to the unfused float path: quantizing the plain RMS norm gives the same bytes but for
+    // rare rounding ties (the sum of squares is added in a different order).
+    std::vector<float> ax = x, y(x.size());
+    llm::ref::add(ax.data(), t.data(), nb * 32);
+    llm::ref::rmsNorm(ax.data(), w.data(), y.data(), nb * 32, 1, 1e-5f);
+    std::vector<int> q2(size_t(nb) * 8);
+    std::vector<float> d2(size_t(nb) * 2);
+    llm::ref::quantizeQ8x4(y.data(), q2.data(), d2.data(), nb);
+    int same = 0;
+    for (int i = 0; i < nb * 8; ++i) same += q2[size_t(i)] == rq[size_t(i)];
+    CHECK(same >= nb * 8 * 95 / 100);
+}
+
+
 TEST_CASE(attention_kernels_match_reference_and_chunk) {
     LlmFixture fx;
     REQUIRE(fx.ok);

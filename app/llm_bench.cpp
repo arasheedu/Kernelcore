@@ -79,10 +79,8 @@ class CudaBackend final : public llm::Backend {
 public:
     CudaBackend(const llm::Model& m, cudaStream_t s) : m_(m), s_(s), ctx_(m.cfg.max_ctx) {}
 
-    void setScratch(int* xq, float* xd) override {
-        xq_ = xq;
-        xd_ = xd;
-    }
+    void setScratch(int* q) override { xq_ = q; }
+    float* scales(int nb) const { return llm::scratchScales(xq_, nb); }
 
     void setContext(int ctx) override {
         ctx_ = ctx;
@@ -92,8 +90,8 @@ public:
     }
     void matvec(const llm::Mat& w, const float* x, float* y) override {
         if (w.format == llm::Weights::Q4X8Q8) {
-            ck(gpu::llm::quantizeQ8x4(x, xq_, xd_, w.k / 32, s_), "quantize_q8x4");
-            ck(gpu::llm::matvecQ4x8Q8(static_cast<const int*>(w.q), xq_, xd_, y, w.dims, w.rows, s_), "matvec_q4x8_q8");
+            ck(gpu::llm::quantizeQ8x4(x, xq_, scales(w.k / 32), w.k / 32, s_), "quantize_q8x4");
+            matvecQuantized(w, y);
         } else if (w.format == llm::Weights::Q4X8)
             ck(gpu::llm::matvecQ4x8(static_cast<const uint8_t*>(w.q), w.s, x, y, w.dims, w.rows, s_), "matvec_q4x8");
         else if (w.format == llm::Weights::Q4)
@@ -108,10 +106,16 @@ public:
         ck(gpu::llm::addRmsNorm(x, t, w, y, m_.cfg.hidden, m_.cfg.eps, s_), "add_rms_norm");
     }
     void siluMulQuant(const float* g, const float* u, int n) override {
-        ck(gpu::llm::siluMulQ8x4(g, u, xq_, xd_, n / 32, s_), "silu_mul_q8x4");
+        ck(gpu::llm::siluMulQ8x4(g, u, xq_, scales(n / 32), n / 32, s_), "silu_mul_q8x4");
     }
     void matvecQuantized(const llm::Mat& w, float* y) override {
-        ck(gpu::llm::matvecQ4x8Q8(static_cast<const int*>(w.q), xq_, xd_, y, w.dims, w.rows, s_), "matvec_q4x8_q8");
+        ck(gpu::llm::matvecQ4x8Q8(static_cast<const int*>(w.q), xq_, scales(w.k / 32), y, w.dims, w.rows, s_),
+           "matvec_q4x8_q8");
+    }
+    void addRmsNormQuant(float* x, const float* t, const float* w) override {
+        const int nb = m_.cfg.hidden / 32;
+        ck(gpu::llm::addSumsq(x, t, xq_, nb, s_), "add_sumsq");
+        ck(gpu::llm::normQ8x4(x, w, xq_, nb, m_.cfg.eps, s_), "norm_q8x4");
     }
     void rope(float* x, int heads, int pos) override {
         const int pairs = m_.cfg.head_dim / 2;
@@ -178,7 +182,6 @@ private:
     int                ctx_;
     std::array<int, 7> dims_{};
     int*               xq_ = nullptr;
-    float*             xd_ = nullptr;
 };
 
 // ---- profilers ----------------------------------------------------------------

@@ -977,3 +977,33 @@ pcuda's simd path from the same CUDA C sources now matches Ollama on CPU within 
 - graph decode bit-identical to direct launches.
 
 Stability: 150 repeated runs of the pool and stream tests, plus AddressSanitizer.
+
+## 27. Step 8: prefetch, parallel norm + quantize, one rope launch (2026-11-06)
+
+**Software prefetch.** `pcuda_mslgen` emits `prefetchAhead(p)` before every stride-1 affine load inside a loop: an `_mm_prefetch` some distance past the address.
+- **Why:** the hardware streamer stops at 4 KB page boundaries, and each thread streams its weight rows sequentially.
+- **Sweep:** 0 / 256 / 512 / 1 K / 1.5 K / 2 K / 3 K / 4 K / 8 K bytes ahead. 1.5–8 KB all gave 32.2–32.9 ms, against 33.6–33.8 ms with prefetch off.
+- **Default:** 2 KB, with `PCUDA_PREFETCH_BYTES` to override. A prefetch never faults, so reading ahead past a buffer's end is safe.
+
+**Parallel norm + quantize.**
+- **Before:** `add_rms_norm` ran on one thread, followed by a separate `quantize_q8x4` launch.
+- **Now:** two chunkable kernels.
+  - `add_sumsq`: one thread per block of 32 does `x += t` and writes the block's sum of squares.
+  - `norm_q8x4`: every thread adds the per-block sums in the same order, then normalizes its block and quantizes it into the 8-bit scratch.
+- **Scratch layout:** Booth's 5-parameter limit led to one int buffer per call: `[nb*8 words | nb*2 scales | nb partial sums]`. Every producer and consumer finds the scales right after the words for its `nb` (`llm::scratchInts`, `llm::scratchScales`).
+- **Matrix inputs:** the qkv, gate/up and lm_head matvecs read the scratch directly. Only the input of the attention-output matvec is still quantized separately, now in chunks.
+- **Summation order:** the sum of squares is now added per block, then across blocks. The C++ reference (`ref::addSumsq`, `ref::normQ8x4`) uses the same order, so all CPU paths stay bit-identical to it. Against the old order, the quantized bytes differ only on rare rounding ties (tested: at least 95% identical).
+
+**Rope:** q and k are adjacent in the qkv buffer and use the same formula, so one launch covers `heads + kv_heads` heads.
+
+**Results:**
+- **Repeated runs:** simd 31.8–33.2 ms (30.1–31.4 tok/s). The prefetch gives most of it. The parallel norm saves at most about 0.5 ms for pcuda, because graphs had already made the serial steps cheap.
+- **CUDA, same kernels:** 33 → 20.4 ms. Its one-thread `add_rms_norm` had cost 13 ms per token.
+- **`compare_llm.ps1`:**
+
+| | ms/token | tok/s |
+|---|---|---|
+| pcuda simd | 32.5 | 30.7 |
+| Ollama CPU | 35.3 | 28.3 |
+| CUDA, same kernels | 20.4 | 49.0 |
+| Ollama GPU | 9.3 | 107.7 |

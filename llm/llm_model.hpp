@@ -123,8 +123,7 @@ struct Acts {
     float *q = nullptr, *k = nullptr, *v = nullptr;  // one buffer: k = q + heads*head_dim, v = k + kv_stride
     float *t = nullptr, *h = nullptr, *logits = nullptr;
     float *g = nullptr, *u = nullptr;  // one buffer: u = g + inter
-    int*   xq = nullptr;  // 8-bit activations for Q4X8Q8: [max k / 32][8] packed words
-    float* xd = nullptr;  // [max k / 32][2] {scale, sum}
+    int*   xq = nullptr;  // 8-bit activation scratch for Q4X8Q8 (llm::scratchInts(max k / 32) ints)
 };
 
 // Builds the same deterministic model (same seed -> same bytes) into each allocator.
@@ -147,7 +146,7 @@ class Backend {
 public:
     virtual ~Backend() = default;
     // Scratch for 8-bit activations (Q4X8Q8 weights): set once per token by decodeToken.
-    virtual void setScratch(int* xq, float* xd) = 0;
+    virtual void setScratch(int* q) = 0;
     // Attention for the next launches covers positions [0, ctx): rewrites the device dims.
     virtual void setContext(int ctx) = 0;
     virtual void matvec(const Mat& w, const float* x, float* y) = 0;
@@ -156,6 +155,9 @@ public:
     // Q4X8Q8 only: SwiGLU straight into the activation scratch, then a matvec that uses it.
     virtual void siluMulQuant(const float* g, const float* u, int n) = 0;
     virtual void matvecQuantized(const Mat& w, float* y) = 0;
+    // Q4X8Q8 only: x += t, then RMS norm with weight w quantized straight into the scratch
+    // (parallel: add_sumsq + norm_q8x4). The next matvecQuantized uses it.
+    virtual void addRmsNormQuant(float* x, const float* t, const float* w) = 0;
     virtual void rope(float* x, int heads, int pos) = 0;
     virtual void appendKv(const float* k, const float* v, float* kt, float* vc, int pos) = 0;
     virtual void attnScores(const float* q, const float* k, float* scores) = 0;

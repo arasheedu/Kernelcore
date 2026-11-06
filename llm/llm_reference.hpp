@@ -24,6 +24,9 @@ void rmsNorm(const float* x, const float* w, float* y, int n, int rows, float ep
 // Fused kernels: the same results as the unfused sequences.
 void addRmsNorm(float* x, const float* t, const float* w, float* y, int n, float eps);  // add, then rmsNorm
 void siluMulQ8x4(const float* g, const float* u, int* xq, float* xd, int count);          // siluMul, then quantizeQ8x4
+// Parallel RMS norm + quantization (add_sumsq, norm_q8x4); q is the scratch of llm::scratchInts(nb).
+void addSumsq(float* x, const float* t, int* q, int nb);
+void normQ8x4(const float* x, const float* w, int* q, int nb, float eps);
 void rope(float* x, int pairs_per_head, int pos, int count, float log2_base);
 // Layouts as in AttnDims: kt[kv_stride][k_stride] (K transposed), v[ctx][kv_stride],
 // scores/p[n_heads][ctx_pad] (entries t >= ctx untouched).

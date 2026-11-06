@@ -15,6 +15,8 @@ PCUDA_DECLARE_KERNEL_IMAGE(quantize_q8x4);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8_q8);
 PCUDA_DECLARE_KERNEL_IMAGE(add_rms_norm);
 PCUDA_DECLARE_KERNEL_IMAGE(silu_mul_q8x4);
+PCUDA_DECLARE_KERNEL_IMAGE(add_sumsq);
+PCUDA_DECLARE_KERNEL_IMAGE(norm_q8x4);
 PCUDA_DECLARE_KERNEL_IMAGE(rms_norm);
 PCUDA_DECLARE_KERNEL_IMAGE(rope);
 PCUDA_DECLARE_KERNEL_IMAGE(kv_append);
@@ -385,6 +387,54 @@ Error kvMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexce
     return pk.finish(a.d.kv_stride);
 }
 
+// ---- add_sumsq(x, t, q, nb, base) / norm_q8x4(x, w, q, nb, base, eps) ------------
+
+Error checkScratch(const LaunchContext& ctx, const float* a, const float* b, const int* q, int nb, const char* bn) {
+    if (nb <= 0 || !fitsIndex(nb, 32)) return Error::InvalidValue;
+    LLM_TRY(check(ctx, a, f32Bytes(int64_t(nb) * 32), "x"));
+    LLM_TRY(check(ctx, b, f32Bytes(int64_t(nb) * 32), bn));
+    return check(ctx, q, size_t(scratchInts(nb)) * sizeof(int), "q");
+}
+
+Error sumsqMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const AddSumsqArgs*>(p);
+    LLM_TRY(checkScratch(ctx, a.x, a.t, a.q, a.nb, "t"));
+    ArgPacker pk(*out);
+    pk.ptr(a.x).ptr(a.t).ptr(a.q).i32(a.nb).i32(0);
+    return pk.finish(a.nb);
+}
+Error sumsqExtent(const void* p, int64_t* total) noexcept {
+    *total = static_cast<const AddSumsqArgs*>(p)->nb;
+    return *total >= 0 ? Error::Success : Error::InvalidValue;
+}
+// Blocks are found from `base` (the scratch regions have different strides), not by offsetting.
+Error sumsqChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const AddSumsqArgs*>(p);
+    if (!chunkOk(a.nb, begin, length)) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.x).ptr(a.t).ptr(a.q).i32(a.nb).i32(static_cast<int32_t>(begin));
+    return pk.finish(length);
+}
+
+Error normQMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const NormQ8Args*>(p);
+    LLM_TRY(checkScratch(ctx, a.x, a.w, a.q, a.nb, "w"));
+    ArgPacker pk(*out);
+    pk.ptr(a.x).ptr(a.w).ptr(a.q).i32(a.nb).i32(0).f32(a.eps);
+    return pk.finish(a.nb);
+}
+Error normQExtent(const void* p, int64_t* total) noexcept {
+    *total = static_cast<const NormQ8Args*>(p)->nb;
+    return *total >= 0 ? Error::Success : Error::InvalidValue;
+}
+Error normQChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const NormQ8Args*>(p);
+    if (!chunkOk(a.nb, begin, length)) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.x).ptr(a.w).ptr(a.q).i32(a.nb).i32(static_cast<int32_t>(begin)).f32(a.eps);
+    return pk.finish(length);
+}
+
 // ---- silu_mul(g, u, out, count) ------------------------------------------------
 
 Error siluMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
@@ -422,6 +472,8 @@ const pcuda::KernelEntry kEntries[] = {
     {"matvec_q4x8_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8_q8), &q4q8Marshal, &q4q8Extent, &q4q8Chunk},
     {"add_rms_norm", PCUDA_KERNEL_IMAGE_FIELDS(add_rms_norm), &addRmsMarshal},
     {"silu_mul_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(silu_mul_q8x4), &siluQMarshal, &siluQExtent, &siluQChunk},
+    {"add_sumsq", PCUDA_KERNEL_IMAGE_FIELDS(add_sumsq), &sumsqMarshal, &sumsqExtent, &sumsqChunk},
+    {"norm_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(norm_q8x4), &normQMarshal, &normQExtent, &normQChunk},
     {"rms_norm", PCUDA_KERNEL_IMAGE_FIELDS(rms_norm), &rmsMarshal, &rmsExtent, &rmsChunk},
     {"rope", PCUDA_KERNEL_IMAGE_FIELDS(rope), &ropeMarshal},
     {"kv_append", PCUDA_KERNEL_IMAGE_FIELDS(kv_append), &kvMarshal},

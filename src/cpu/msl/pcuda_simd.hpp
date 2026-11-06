@@ -11,6 +11,7 @@
 #include <intrin.h>
 
 #include <cstdint>
+#include <cstdlib>
 
 #include <math.h>
 
@@ -296,6 +297,22 @@ inline void store(VPtr<char> p, VI v, VI m) {
 inline int aligned8(int x) {
     if (x < 0 || (x & 7) != 0) __debugbreak();
     return x;
+}
+
+// Software prefetch for streaming loads (emitted before contiguous loads in loops). A prefetch
+// never faults, so reading ahead of the end of a buffer is harmless. Distance: 2 KB (measured:
+// 1.5-8 KB all ~3-4% faster LLM decode); PCUDA_PREFETCH_BYTES overrides it (0 = off).
+inline const int kPrefetchBytes = [] {
+    char* v = nullptr;
+    size_t len = 0;
+    int r = 2048;
+    if (_dupenv_s(&v, &len, "PCUDA_PREFETCH_BYTES") == 0 && v) r = std::atoi(v);
+    free(v);
+    return r;
+}();
+template <class T>
+inline void prefetchAhead(const T* p) {
+    if (kPrefetchBytes) _mm_prefetch(reinterpret_cast<const char*>(p) + kPrefetchBytes, _MM_HINT_T0);
 }
 
 // ---- affine values: lane l holds b + s*l, kept as the scalar b while s is a compile-time constant ----

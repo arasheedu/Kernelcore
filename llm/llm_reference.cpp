@@ -249,3 +249,30 @@ void siluMulQ8x4(const float* g, const float* u, int* xq, float* xd, int count) 
 }
 
 } // namespace llm::ref
+
+namespace llm::ref {
+
+void addSumsq(float* x, const float* t, int* q, int nb) {
+    float* ss = reinterpret_cast<float*>(q + nb * 10);
+    for (int b = 0; b < nb; ++b) {
+        float s = 0.0f;
+        for (int i = 0; i < 32; ++i) {
+            const float v = x[b * 32 + i] + t[b * 32 + i];
+            x[b * 32 + i] = v;
+            s += v * v;
+        }
+        ss[b] = s;
+    }
+}
+
+void normQ8x4(const float* x, const float* w, int* q, int nb, float eps) {
+    const float* ss = reinterpret_cast<const float*>(q + nb * 10);
+    float tot = 0.0f;
+    for (int j = 0; j < nb; ++j) tot += ss[j];
+    const float r = 1.0f / std::sqrt(tot / static_cast<float>(nb * 32) + eps);
+    std::vector<float> h(size_t(nb) * 32);
+    for (size_t i = 0; i < h.size(); ++i) h[i] = x[i] * r * w[i];
+    quantizeQ8x4(h.data(), q, reinterpret_cast<float*>(q + nb * 8), nb);
+}
+
+} // namespace llm::ref

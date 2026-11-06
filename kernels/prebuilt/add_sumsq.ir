@@ -1,0 +1,57 @@
+; Booth IR
+
+func @add_sumsq(ptr<global, f32> %0, ptr<global, f32> %1, ptr<global, i32> %2, i32 %3, i32 %4) __global__ {
+entry:
+    %5 = block_id.x  ; line 8
+    %6 = block_dim.x  ; line 8
+    %7 = mul i32 %5, %6  ; line 8
+    %8 = add i32 %4, %7  ; line 8
+    %9 = thread_id.x  ; line 8
+    %10 = add i32 %8, %9  ; line 8
+    %11 = icmp slt i32 %10, %3  ; line 9
+    br_cond %11, if.then, if.end merge if.end  ; line 9
+
+if.then:
+    %13 = mul i32 %3, 10  ; line 10
+    %14 = gep ptr<global, i32>, %2, %13  ; line 10
+    %15 = bitcast ptr<global, i32> %14 to ptr<global, f32>  ; line 10
+    br for.cond  ; line 12
+
+if.end:
+    ret void  ; line 17
+
+for.cond:
+    %18 = phi f32 [if.then: 0], [for.inc: %36]
+    %19 = phi i32 [if.then: 0], [for.inc: %38]
+    %20 = icmp slt i32 %19, 32  ; line 12
+    br_cond %20, for.body, for.end merge for.end  ; line 12
+
+for.body:
+    %22 = mul i32 %10, 32  ; line 13
+    %23 = add i32 %22, %19  ; line 13
+    %24 = gep ptr<global, f32>, %0, %23  ; line 13
+    %25 = load f32, %24  ; line 13
+    %26 = mul i32 %10, 32  ; line 13
+    %27 = add i32 %26, %19  ; line 13
+    %28 = gep ptr<global, f32>, %1, %27  ; line 13
+    %29 = load f32, %28  ; line 13
+    %30 = fadd f32 %25, %29  ; line 13
+    %31 = mul i32 %10, 32  ; line 14
+    %32 = add i32 %31, %19  ; line 14
+    %33 = gep ptr<global, f32>, %0, %32  ; line 14
+    store f32 %30, %33  ; line 14
+    %35 = fmul f32 %30, %30  ; line 15
+    %36 = fadd f32 %18, %35  ; line 15
+    br for.inc  ; line 15
+
+for.inc:
+    %38 = add i32 %19, 1  ; line 12
+    br for.cond  ; line 12
+
+for.end:
+    %40 = gep ptr<global, f32>, %15, %10  ; line 17
+    store f32 %18, %40  ; line 17
+    br if.end  ; line 17
+}
+
+; 1 functions, 0 globals, 43 instructions

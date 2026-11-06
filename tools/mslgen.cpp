@@ -977,6 +977,11 @@ private:
     void emitStmt(const Stmt& s) {
         switch (s.kind) {
         case Stmt::Assign: {
+            // Contiguous loads inside loops stream through memory: prefetch ahead of them
+            // (the hardware prefetcher stops at 4 KB page boundaries).
+            if (loop_depth_ > 0 && s.e.kind == Expr::Load)
+                if (auto it = aff_.find(s.e.args[0]); it != aff_.end() && it->second == 1)
+                    line("prefetchAhead(" + s.e.args[0] + ");");
             if (!varying_.count(s.lhs)) {
                 line(s.lhs + " = " + sexpr(s) + ";");
             } else if (blend_.count(s.lhs) && mask_ != "m0_") {
@@ -1049,6 +1054,11 @@ private:
             break;
         }
         case Stmt::Loop: {
+            ++loop_depth_;
+            struct LoopDepth {
+                int& d;
+                ~LoopDepth() { --d; }
+            } depth_guard{loop_depth_};
             if (!varying_.count(s.cond)) {
                 line("while (true) {");
                 ++indent_;
@@ -1158,7 +1168,7 @@ private:
     std::set<std::string>              blend_;
     std::map<std::string, std::string> ptr_base_;
     std::string                        out_, mask_;
-    int                                indent_ = 0, mask_id_ = 0;
+    int                                indent_ = 0, mask_id_ = 0, loop_depth_ = 0;
 };
 
 int run(int argc, char** argv) {

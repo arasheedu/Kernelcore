@@ -274,8 +274,7 @@ Acts allocActs(const Config& c, Allocator& alloc, uint64_t seed) {
     a.h = buf(c.inter);
     a.logits = buf(c.vocab);
     const int maxk = std::max({c.hidden, c.inter, c.heads * c.head_dim});
-    a.xq = reinterpret_cast<int*>(buf(maxk / 32 * 8));
-    a.xd = buf(maxk / 32 * 2);
+    a.xq = reinterpret_cast<int*>(buf(scratchInts(maxk / 32)));
     return a;
 }
 
@@ -289,7 +288,7 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
         f();
         if (prof) prof->end(o);
     };
-    b.setScratch(a.xq, a.xd);
+    b.setScratch(a.xq);
     b.setContext(pos + 1);
     b.copy(a.x, a.x0, c.hidden);
     b.beginToken(prof != nullptr);
@@ -297,10 +296,12 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
     op(Op::RmsNorm, [&] { b.rmsNorm(a.x, m.layers[0].attn_norm, a.xn); });
     for (size_t l = 0; l < m.layers.size(); ++l) {
         const Layer& L = m.layers[l];
-        op(Op::MatvecAttn, [&] { b.matvec(L.wqkv, a.xn, a.q); });  // q, k and v in one launch
+        op(Op::MatvecAttn, [&] {  // q, k and v in one launch
+            if (q8 && l > 0) b.matvecQuantized(L.wqkv, a.q);  // input quantized by the last norm
+            else b.matvec(L.wqkv, a.xn, a.q);
+        });
         op(Op::Rope, [&] {
-            b.rope(a.q, c.heads, pos);
-            b.rope(a.k, c.kv_heads, pos);
+            b.rope(a.q, c.heads + c.kv_heads, pos);  // q and k are adjacent: one launch
             b.appendKv(a.k, a.v, L.k_cache, L.v_cache, pos);  // this token's K and V
         });
         op(Op::Attention, [&] {
@@ -309,8 +310,13 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
             b.attnValues(a.scores, L.v_cache, a.attn);
         });
         op(Op::MatvecAttn, [&] { b.matvec(L.wo, a.attn, a.t); });
-        op(Op::Add, [&] { b.addRmsNorm(a.x, a.t, L.ffn_norm, a.xn); });
-        op(Op::MatvecFfn, [&] { b.matvec(L.wgu, a.xn, a.g); });  // gate and up in one launch
+        if (q8) {
+            op(Op::Add, [&] { b.addRmsNormQuant(a.x, a.t, L.ffn_norm); });
+            op(Op::MatvecFfn, [&] { b.matvecQuantized(L.wgu, a.g); });  // gate and up in one launch
+        } else {
+            op(Op::Add, [&] { b.addRmsNorm(a.x, a.t, L.ffn_norm, a.xn); });
+            op(Op::MatvecFfn, [&] { b.matvec(L.wgu, a.xn, a.g); });
+        }
         if (q8) {
             op(Op::SiluMul, [&] { b.siluMulQuant(a.g, a.u, c.inter); });
             op(Op::MatvecFfn, [&] { b.matvecQuantized(L.wd, a.t); });
@@ -319,9 +325,13 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
             op(Op::MatvecFfn, [&] { b.matvec(L.wd, a.h, a.t); });
         }
         const float* next_norm = l + 1 < m.layers.size() ? m.layers[l + 1].attn_norm : m.out_norm;
-        op(Op::Add, [&] { b.addRmsNorm(a.x, a.t, next_norm, a.xn); });
+        if (q8) op(Op::Add, [&] { b.addRmsNormQuant(a.x, a.t, next_norm); });
+        else op(Op::Add, [&] { b.addRmsNorm(a.x, a.t, next_norm, a.xn); });
     }
-    op(Op::MatvecLmHead, [&] { b.matvec(m.lm_head, a.xn, a.logits); });
+    op(Op::MatvecLmHead, [&] {
+        if (q8) b.matvecQuantized(m.lm_head, a.logits);
+        else b.matvec(m.lm_head, a.xn, a.logits);
+    });
     b.endToken();
 }
 
@@ -341,10 +351,7 @@ public:
         if (pcudaStreamEndCapture(nullptr, &g) == pcuda::Error::Success) pcudaGraphDestroy(g);
     }
 
-    void setScratch(int* xq, float* xd) override {
-        xq_ = xq;
-        xd_ = xd;
-    }
+    void setScratch(int* q) override { xq_ = q; }
     void setContext(int ctx) override {
         ctx_ = ctx;
         const AttnDims d = m_.cfg.attnDims(ctx);
@@ -353,10 +360,9 @@ public:
     }
     void matvec(const Mat& w, const float* x, float* y) override {
         if (w.format == Weights::Q4X8Q8) {
-            const QuantizeArgs qa{x, xq_, xd_, w.k / 32};
-            launch("quantize_q8x4", &qa, 0);
-            const MatvecQ4Q8Args a{static_cast<const int*>(w.q), xq_, xd_, y, w.dims, w.rows, w.k};
-            launch("matvec_q4x8_q8", &a, 16);
+            const QuantizeArgs qa{x, xq_, scratchScales(xq_, w.k / 32), w.k / 32};
+            launch("quantize_q8x4", &qa, 16);
+            matvecQuantized(w, y);
         } else if (w.format == Weights::Q4 || w.format == Weights::Q4X8) {
             const MatvecQ4Args a{static_cast<const uint8_t*>(w.q), w.s, x, y, w.dims, w.rows, w.k};
             launch(w.format == Weights::Q4 ? "matvec_q4" : "matvec_q4x8", &a, 16);
@@ -374,12 +380,19 @@ public:
         launch("add_rms_norm", &a, 0);
     }
     void siluMulQuant(const float* g, const float* u, int n) override {
-        const SiluMulQ8Args a{g, u, xq_, xd_, n / 32};
+        const SiluMulQ8Args a{g, u, xq_, scratchScales(xq_, n / 32), n / 32};
         launch("silu_mul_q8x4", &a, 16);
     }
     void matvecQuantized(const Mat& w, float* y) override {
-        const MatvecQ4Q8Args a{static_cast<const int*>(w.q), xq_, xd_, y, w.dims, w.rows, w.k};
+        const MatvecQ4Q8Args a{static_cast<const int*>(w.q), xq_, scratchScales(xq_, w.k / 32), y, w.dims, w.rows, w.k};
         launch("matvec_q4x8_q8", &a, 16);
+    }
+    void addRmsNormQuant(float* x, const float* t, const float* w) override {
+        const int nb = m_.cfg.hidden / 32;
+        const AddSumsqArgs s{x, t, xq_, nb};
+        launch("add_sumsq", &s, 16);
+        const NormQ8Args n{x, w, xq_, nb, m_.cfg.eps};
+        launch("norm_q8x4", &n, 16);
     }
     void rope(float* x, int heads, int pos) override {
         const int pairs = m_.cfg.head_dim / 2;
@@ -451,22 +464,18 @@ private:
     bool         capturing_ = false;
     int          ctx_;
     int*         xq_ = nullptr;
-    float*       xd_ = nullptr;
 };
 
 class CppBackend final : public Backend {
 public:
     explicit CppBackend(const Model& m) : m_(m), ctx_(m.cfg.max_ctx) {}
 
-    void setScratch(int* xq, float* xd) override {
-        xq_ = xq;
-        xd_ = xd;
-    }
+    void setScratch(int* q) override { xq_ = q; }
     void setContext(int ctx) override { ctx_ = ctx; }
     void matvec(const Mat& w, const float* x, float* y) override {
         if (w.format == Weights::Q4X8Q8) {
-            ref::quantizeQ8x4(x, xq_, xd_, w.k / 32);
-            ref::matvecQ4x8Q8(static_cast<const int*>(w.q), xq_, xd_, y, w.rows, w.k);
+            ref::quantizeQ8x4(x, xq_, scratchScales(xq_, w.k / 32), w.k / 32);
+            matvecQuantized(w, y);
         } else if (w.format == Weights::Q4X8) ref::matvecQ4x8(static_cast<const uint8_t*>(w.q), w.s, x, y, w.rows, w.k);
         else if (w.format == Weights::Q4) ref::matvecQ4(static_cast<const uint8_t*>(w.q), w.s, x, y, w.rows, w.k);
         else ref::matvecQ8(static_cast<const int8_t*>(w.q), w.s, x, y, w.rows, w.k);
@@ -477,9 +486,15 @@ public:
     void addRmsNorm(float* x, const float* t, const float* w, float* y) override {
         ref::addRmsNorm(x, t, w, y, m_.cfg.hidden, m_.cfg.eps);
     }
-    void siluMulQuant(const float* g, const float* u, int n) override { ref::siluMulQ8x4(g, u, xq_, xd_, n / 32); }
+    void siluMulQuant(const float* g, const float* u, int n) override {
+        ref::siluMulQ8x4(g, u, xq_, scratchScales(xq_, n / 32), n / 32);
+    }
+    void addRmsNormQuant(float* x, const float* t, const float* w) override {
+        ref::addSumsq(x, t, xq_, m_.cfg.hidden / 32);
+        ref::normQ8x4(x, w, xq_, m_.cfg.hidden / 32, m_.cfg.eps);
+    }
     void matvecQuantized(const Mat& w, float* y) override {
-        ref::matvecQ4x8Q8(static_cast<const int*>(w.q), xq_, xd_, y, w.rows, w.k);
+        ref::matvecQ4x8Q8(static_cast<const int*>(w.q), xq_, scratchScales(xq_, w.k / 32), y, w.rows, w.k);
     }
     void rope(float* x, int heads, int pos) override {
         const int pairs = m_.cfg.head_dim / 2;
@@ -504,7 +519,6 @@ private:
     const Model& m_;
     int          ctx_;
     int*         xq_ = nullptr;
-    float*       xd_ = nullptr;
 };
 
 } // namespace

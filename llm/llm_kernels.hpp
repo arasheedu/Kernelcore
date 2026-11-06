@@ -79,6 +79,28 @@ struct AddRmsNormArgs {
     float        eps;
 };
 
+// 8-bit activation scratch for nb blocks of 32 values, one int buffer:
+//   [nb * 8] packed words | [nb * 2] floats {scale, sum} | [nb] floats (RMS-norm partial sums)
+inline int    scratchInts(int nb) { return nb * 11; }
+inline float* scratchScales(int* q, int nb) { return reinterpret_cast<float*>(q + nb * 8); }
+
+// Parallel residual add + RMS norm + 8-bit quantization, in two launches (both chunkable):
+//   add_sumsq:  x += t; per-block sums of squares into the scratch
+//   norm_q8x4:  y = x / sqrt(mean(x^2) + eps) * w, quantized into the scratch (y not stored)
+struct AddSumsqArgs {
+    float*       x;  // [nb * 32]
+    const float* t;
+    int*         q;  // scratchInts(nb)
+    int          nb;
+};
+struct NormQ8Args {
+    const float* x;
+    const float* w;
+    int*         q;
+    int          nb;
+    float        eps;
+};
+
 // Fused SwiGLU + 8-bit quantization (kernels/llm/silu_mul_q8x4.cu): count blocks of 32.
 struct SiluMulQ8Args {
     const float* g;
@@ -145,7 +167,7 @@ struct SiluMulArgs {
     int          count;
 };
 
-// Registers matvec_q8, matvec_q4, matvec_q4x8, quantize_q8x4, matvec_q4x8_q8, add_rms_norm, silu_mul_q8x4, rms_norm, rope, kv_append, attn_scores, softmax, attn_values and silu_mul.
+// Registers matvec_q8, matvec_q4, matvec_q4x8, quantize_q8x4, matvec_q4x8_q8, add_rms_norm, silu_mul_q8x4, add_sumsq, norm_q8x4, rms_norm, rope, kv_append, attn_scores, softmax, attn_values and silu_mul.
 // All but add_rms_norm, rope and kv_append opt into chunked launches.
 pcuda::Error registerKernels() noexcept;
 

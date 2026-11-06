@@ -21,6 +21,8 @@ cudaError_t matvecQ4x8Q8(const int* qw, const int* xq, const float* xd, float* y
 cudaError_t rmsNorm(const float* x, const float* w, float* y, int n, int rows, float eps, cudaStream_t s);
 cudaError_t addRmsNorm(float* x, const float* t, const float* w, float* y, int n, float eps, cudaStream_t s);
 cudaError_t siluMulQ8x4(const float* g, const float* u, int* xq, float* xd, int count, cudaStream_t s);
+cudaError_t addSumsq(float* x, const float* t, int* q, int nb, cudaStream_t s);
+cudaError_t normQ8x4(const float* x, const float* w, int* q, int nb, float eps, cudaStream_t s);
 cudaError_t rope(float* x, int pairs_per_head, int pos, int count, float log2_base, cudaStream_t s);
 cudaError_t attnScores(const float* q, const float* k, float* scores, const int* dims, int total, float scale,
                        cudaStream_t s);

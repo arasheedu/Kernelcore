@@ -1,0 +1,48 @@
+name: windows
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # Main gate: no kath, no network beyond checkout. Kernels come from kernels/prebuilt.
+  win-msvc:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test (prebuilt kernels)
+        shell: pwsh
+        run: ./scripts/build.ps1 -Preset windows-msvc-prebuilt
+      - name: Demo
+        shell: pwsh
+        run: ./build/windows-msvc-prebuilt/pcuda_poc.exe
+
+  win-msvc-asan:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test with AddressSanitizer
+        shell: pwsh
+        # third_party/ is not committed, so auto mode falls through to kernels/prebuilt.
+        run: ./scripts/build.ps1 -Preset windows-msvc-asan -Fresh
+
+  # Fresh compile with the pinned kath.exe; prebuilt objects must match byte for byte.
+  win-kath:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned kath and check toolchain
+        shell: pwsh
+        run: ./scripts/bootstrap.ps1 -FetchKath
+      - name: Build and test (kath exe)
+        shell: pwsh
+        run: ./scripts/build.ps1 -Preset windows-msvc
+      - name: Prebuilt objects are up to date
+        shell: pwsh
+        run: |
+          $bad = 0
+          foreach ($o in Get-ChildItem kernels/prebuilt/*.o) {
+            $fresh = "build/windows-msvc/kernels/$($o.Name)"
+            if ((Get-FileHash $fresh).Hash -ne (Get-FileHash $o).Hash) { Write-Error "$($o.Name) is stale"; $bad++ }
+          }
+          if ($bad) { exit 1 }

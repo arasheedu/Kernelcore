@@ -1,0 +1,603 @@
+# CUDA CPU Runtime POC (Windows x64): Booth CPU Backend + PantheonSim-Inspired Runtime
+
+**Status:** Revision 2 (Windows-native), **implemented on 2026-11-06**: POC 0.1 and 0.2 build and pass all tests on Windows 11 x64 with MSVC 14.44. §18 records the results and where the implementation departs from this text. Revision 1 (Linux/WSL) is kept as `cuda_cpu_poc_plan.v1-linux.md`. The rationale for every change is in `cuda_cpu_poc_plan_review.md`.  
+**Target:** A small, testable proof of concept, not a full CUDA replacement  
+**Primary platform:** Windows 11 / Windows 10 22H2+, x64, native (no WSL needed at runtime)  
+**Toolchain:** Visual Studio 2022 Build Tools (MSVC v143, `ml64`) **or** LLVM `clang-cl` ≥ 17 with the MSVC STL; CMake ≥ 3.26; Ninja (recommended) or the VS generator  
+**Primary language:** C++20 host runtime, x64 MASM for the ABI thunk, CUDA C kernel source  
+**Compiler backend:** Booth `kath --cpu` (build-time tool only)  
+**Runtime design reference:** PantheonSim / VirtualGPU architecture
+
+---
+
+## 1. Objective
+
+Build a small runtime that accepts a deliberately limited subset of CUDA-style code, compiles CUDA kernel source to x86-64 machine code with Booth, and executes that code **natively on Windows** through a PantheonSim-inspired host runtime.
+
+The POC must demonstrate:
+
+1. A CUDA `.cu` kernel compiles with Booth's CPU backend without an NVIDIA GPU.
+2. A Windows host application can discover a CPU device, allocate device-style memory, copy data, launch a registered kernel, synchronize, and retrieve results.
+3. A Booth-generated System V object runs correctly inside a Win64 process, through a validated loader and an ABI thunk.
+4. A faulting kernel is **contained**: it reports an error and does not crash the process silently.
+5. A backend boundary that could later host a native NVIDIA CUDA backend.
+6. Optionally, a chunked 1-D experiment over N CPU workers, documented as host-side decomposition only.
+
+**Success means functional proof, robustness and clean architecture. GPU-equivalent performance and full CUDA compatibility are not goals.**
+
+## 2. Upstream facts this plan depends on
+
+Verified against Booth `master` on 2026-11-06. **Phase 0 re-verifies every row against the pinned commit; any mismatch is a stop-and-replan event.**
+
+| ID | Fact | Source | Consequence |
+|---|---|---|---|
+| F1 | `--cpu` writes **ELF64 relocatable** objects only. There is no COFF/PE output. | `src/cpu/cpu_elf.c` | Windows linkers can't consume it, so the runtime loads it itself (§7). |
+| F2 | Sections: NULL, `.text`, `.rela.text`, `.shstrtab`, `.symtab`, `.strtab`. No `.data`, `.rodata`, `.bss` or `.eh_frame`. | `cpu_elf.c` | The loader is small: one code section. |
+| F3 | The only relocation type is `R_X86_64_PLT32` (addend −4), used for external calls. | `cpu_elf.c` | The loader supports this one type and rejects everything else. |
+| F4 | Possible externals: `sinf`, `cosf`, `exp2f`, `log2f`. | `cpu_emit.c` | Resolve only from an allowlist of System V shims (§7.4). |
+| F5 | Calling convention is **System V AMD64**. `rsi`, `rdi` and `xmm6–15` are not preserved. No red zone is used. The stack is aligned to 16 before calls. | `cpu_emit.c` | A MASM thunk is required (§7.3). |
+| F6 | Hidden trailing `nthreads` is compared as a **64-bit** value. | `cpu_emit.c` | Pass every integer argument as a sign-extended 64-bit value. Never declare it as `int`. |
+| F7 | Only the **first** `__global__` function in a file is emitted. The symbol is the unmangled source name, `STB_GLOBAL STT_FUNC`. | `cpu_elf.c` | One kernel per `.cu` file. Look up by exact name. |
+| F8 | `threadIdx.x` runs from 0 to `nthreads`−1. `blockIdx` = 0, `gridDim` = 1, `blockDim` = `nthreads`. | `cpu_emit.c` | Single block per call. The chunking contract follows from this (§11). |
+| F9 | Codegen is correctness-first with no register allocator and everything on the stack. `tl.load` masks aren't honoured. | `docs/features.md` | Frames are large. Workers need big stacks. Set `nthreads` exactly. |
+| F10 | Booth builds with plain C99 `make`. Release notes mention Linux/macOS/Windows binaries with `SHA256SUMS`. | README, releases | There are several ways to obtain `kath` (§13.2). |
+
+## 3. Non-goals for POC 0.1
+
+- Full CUDA Runtime/Driver API or ABI compatibility; no `libcudart` replacement.
+- Running PTX, cubins, fatbins or arbitrary precompiled CUDA binaries.
+- Translating `kernel<<<grid, block>>>` launch syntax.
+- Multi-dimensional grid/block semantics, `__shared__`, `__syncthreads`, warp intrinsics, cooperative groups, device-side launch.
+- A general-purpose ELF loader. The loader accepts **only** Booth's documented subset (F1–F4) and rejects everything else.
+- Linking Booth objects with `link.exe`/`lld-link` or converting them with `objcopy`. This was rejected because it doesn't fix the ABI (F5) and lets CRT shadow-space writes corrupt the kernel's stack (see the review).
+- 32-bit Windows and ARM64 Windows. On ARM64, x64 emulation isn't a supported execution path for this POC; the runtime returns `UnsupportedOperation`.
+
+## 4. Architecture
+
+```text
+   kernels/vector_add.cu  (one __global__ per file, LF line endings)
+              |
+              |  build time: kath --cpu   (exe | wsl | prebuilt; see 13.2)
+              v
+   vector_add.o  (ELF64, System V)  --->  pcuda_objcheck (build-time validator)
+              |
+              |  CMake embeds the bytes and SHA-256 into a generated .cpp
+              v
++------------------------------------------------------------+
+|                 POC Host Application (.exe)                |
+|   typed kernel adapters  ->  pcuda* runtime API            |
++-----------------------------+------------------------------+
+                              v
++------------------------------------------------------------+
+|                      Runtime Core                          |
+|  DeviceManager | AllocationRegistry | Error + sticky state |
+|  Stream/Event  | Launch validation  | Diagnostics          |
++-----------------------------+------------------------------+
+                              v
++------------------------------------------------------------+
+|                       Backend API                          |
++--------------+------------------------------+--------------+
+               v                              v
+          CpuBackend                    NvidiaBackend (stub)
+               |
+   +-----------+-------------------------------------------+
+   | BoothImageLoader  (ELF subset -> VirtualAlloc, W^X)   |
+   | SysV shim table   (sinf/cosf/exp2f/log2f, near code)  |
+   | pcuda_sysv_invoke (MASM Win64 -> SysV thunk)          |
+   | KernelFaultGuard  (vectored exception handler)        |
+   | WorkerPool        (8 MB stacks, optional chunking)    |
+   +-------------------------------------------------------+
+```
+
+### Design rules
+
+1. Runtime core doesn't include Booth compiler internals or NVIDIA headers.
+2. **All System V/ELF knowledge lives in `src/cpu/booth_image.*`, `src/cpu/sysv_invoke.asm` and `src/cpu/sysv_shims.asm`.** Nothing else knows the kernel is not native Win64.
+3. Kernel code is **never** called through a C++ function pointer. It is called only through `pcuda_sysv_invoke`.
+4. Every operation returns an explicit `pcuda::Error`. There is no silent success and no silent fallback to a different implementation.
+5. Untrusted input (object bytes, user pointers, sizes) is bounds-checked before use, with overflow-safe arithmetic.
+6. Memory ownership is tracked by the runtime, never inferred from pointer values.
+7. No exceptions cross the `pcuda*` API boundary or the thunk. Every API entry point is `noexcept` and catches internally.
+
+## 5. Repository layout
+
+```text
+cuda-cpu-poc/
+├── CMakeLists.txt
+├── CMakePresets.json               # windows-msvc, windows-clangcl, *-asan
+├── .gitattributes                  # *.cu *.cmake *.sh eol=lf; *.asm *.ps1 eol=crlf; *.o binary
+├── README.md
+├── BOOTH_PIN.txt                   # tag, commit, kath.exe SHA-256, verified facts F1–F10
+├── cmake/
+│   ├── BoothKernel.cmake           # booth_add_kernel(): compile → validate → embed
+│   └── EmbedBinary.cmake
+├── kernels/
+│   ├── vector_add.cu
+│   └── prebuilt/                   # vector_add.o + vector_add.o.sha256 (committed fallback)
+├── include/pcuda/
+│   ├── api.hpp  types.hpp  error.hpp  backend.hpp  kernel_registry.hpp
+├── src/
+│   ├── runtime.cpp  device_manager.cpp  allocation_registry.cpp
+│   ├── stream.cpp   event.cpp           kernel_registry.cpp
+│   └── cpu/
+│       ├── cpu_backend.cpp
+│       ├── booth_image.hpp/.cpp    # ELF subset loader
+│       ├── sysv_invoke.asm         # Win64 → SysV thunk + recovery label
+│       ├── sysv_shims.asm          # SysV → Win64 libm shims
+│       ├── fault_guard.cpp         # vectored exception handler
+│       ├── guarded_alloc.cpp       # VirtualAlloc + guard page
+│       └── worker_pool.cpp
+├── adapters/
+│   └── vector_add_adapter.cpp
+├── tools/
+│   └── objcheck.cpp                # pcuda_objcheck: same parser as runtime, CLI
+├── app/
+│   └── main.cpp
+├── tests/
+│   ├── harness.hpp                 # tiny in-repo test harness; no network fetches
+│   ├── test_memory.cpp  test_loader.cpp  test_thunk_abi.cpp
+│   ├── test_vector_add.cpp  test_fault.cpp  test_stream.cpp
+│   ├── test_chunked_vector_add.cpp
+│   └── loader_corpus/              # malformed ELF files: truncated, bad reloc, bad machine, ...
+└── scripts/
+    ├── bootstrap.ps1               # checks toolchain, fetches/validates kath, prints a report
+    ├── build_kath_wsl.sh           # fallback: build pinned kath inside WSL
+    └── run_poc.ps1
+```
+
+## 6. Runtime API for POC 0.1
+
+The `pcuda*` names avoid collisions with CRT macros (`malloc`/`free` under `_CRTDBG_MAP_ALLOC`) and with NVIDIA headers.
+
+```cpp
+namespace pcuda {
+
+enum class Error : int {
+    Success = 0,
+    NotInitialized,
+    InvalidValue,
+    InvalidDevice,
+    OutOfMemory,
+    InvalidPointer,          // not a live registered allocation / range out of bounds
+    UnsupportedOperation,
+    InvalidKernelImage,      // loader/validator rejected the object
+    DynamicCodeBlocked,      // process mitigation (ACG) forbids executable memory
+    LaunchFailure,           // launch rejected before execution
+    KernelFault,             // access violation / divide-by-zero inside kernel (sticky)
+    ContextPoisoned,         // any call after a sticky fault, until pcudaDeviceReset
+    NotReady
+};
+
+enum class CopyKind { HostToDevice, DeviceToHost, DeviceToDevice, HostToHost };
+
+struct DeviceProperties {
+    char     name[128];          // e.g. "pcuda CPU backend (Booth x86-64)"
+    unsigned worker_count;
+    size_t   total_memory;       // GlobalMemoryStatusEx ullTotalPhys
+    bool     is_hardware_gpu;    // always false for CPU backend
+};
+
+struct FaultInfo {               // filled after KernelFault
+    unsigned long exception_code;// EXCEPTION_ACCESS_VIOLATION, ...
+    uintptr_t     fault_address; // data address for AV
+    uintptr_t     code_offset;   // RIP offset inside kernel .text
+    char          kernel[64];
+};
+
+} // namespace pcuda
+
+extern "C++" {
+pcuda::Error pcudaInit() noexcept;
+pcuda::Error pcudaShutdown() noexcept;            // explicit; never rely on static dtors
+pcuda::Error pcudaGetDeviceCount(int* count) noexcept;
+pcuda::Error pcudaGetDeviceProperties(pcuda::DeviceProperties*, int device) noexcept;
+pcuda::Error pcudaSetDevice(int device) noexcept;
+pcuda::Error pcudaMalloc(void** ptr, size_t bytes) noexcept;
+pcuda::Error pcudaFree(void* ptr) noexcept;
+pcuda::Error pcudaMemcpy(void* dst, const void* src, size_t bytes, pcuda::CopyKind) noexcept;
+pcuda::Error pcudaDeviceSynchronize() noexcept;
+pcuda::Error pcudaDeviceReset() noexcept;         // clears ContextPoisoned, frees everything
+pcuda::Error pcudaGetLastFault(pcuda::FaultInfo*) noexcept;
+const char*  pcudaGetErrorString(pcuda::Error) noexcept;
+const char*  pcudaGetLastErrorDetail() noexcept;  // thread-local diagnostic text
+}
+```
+
+### Semantics (all specified, none left to the implementation)
+
+- One logical CPU device (`0`). Any other index returns `InvalidDevice`.
+- Calling any API before `pcudaInit`, or after `pcudaShutdown`, returns `NotInitialized`. `pcudaInit` and `pcudaShutdown` themselves are idempotent.
+- `pcudaMalloc(p, 0)` returns `InvalidValue`. `bytes` is rounded up with overflow checks, and an overflow returns `OutOfMemory`.
+- `pcudaFree(nullptr)` returns `Success` (no-op). Unknown, interior and double-freed pointers return `InvalidPointer`.
+- `pcudaMemcpy` with `bytes == 0` returns `Success` without touching pointers. Each device operand's `[ptr, ptr+bytes)` range must lie inside one live allocation (interior pointers allowed). `DeviceToDevice` uses `memmove` semantics. `HostToHost` validates only for null.
+- After a `KernelFault`, work-creating calls (malloc, memcpy, memset, launch, stream/event create and record) and synchronize calls return `ContextPoisoned`. Release calls (`pcudaFree`, stream/event destroy), queries, `pcudaGetLastFault`, `pcudaDeviceReset` and `pcudaShutdown` still work, so callers can clean up. An async fault is first reported as `KernelFault` by the stream's synchronize, then `ContextPoisoned`.
+- `pcudaGetLastErrorDetail()` holds text from the most recent pcuda call on that thread. Every call resets it.
+- Host funcs must not call pcuda APIs. Calls from runtime worker threads return `UnsupportedOperation` instead of risking a shutdown deadlock.
+- The device is reported as a CPU backend and never as an NVIDIA GPU.
+
+## 7. Executing Booth objects on Windows
+
+### 7.1 Kernel source contract
+
+```cpp
+// kernels/vector_add.cu  — exactly one __global__ per file (F7)
+extern "C" __global__ void vector_add(const float* a, const float* b,
+                                      float* out, int count)
+{
+    const int i = threadIdx.x;      // blockIdx.x == 0 on CPU backend (F8)
+    if (i < count) out[i] = a[i] + b[i];
+}
+```
+
+Contract enforced by `pcuda_objcheck` and review:
+- At most **5** declared integer/pointer parameters (+ hidden `nthreads` = 6 GPRs) and at most **8** float parameters. No struct-by-value parameters.
+- No `__shared__`, `__syncthreads`, atomics or warp intrinsics.
+- Phase 0 confirms whether Booth accepts `extern "C"`. If it doesn't, drop it; Booth doesn't mangle names (F7).
+
+### 7.2 `BoothImageLoader` (`src/cpu/booth_image.cpp`)
+
+Input: a `std::span<const std::byte>` (embedded bytes). Output: `BoothImage` with `.text` mapped and the kernel entry resolved, or `InvalidKernelImage` with a precise reason.
+
+Validation, in order. All offset+size checks use overflow-safe helpers.
+1. `size ≥ sizeof(Elf64_Ehdr)`. `EI_MAG0..3` = `\x7fELF`, `EI_CLASS = ELFCLASS64`, `EI_DATA = ELFDATA2LSB`, `e_type = ET_REL`, `e_machine = EM_X86_64 (62)`, `e_shentsize = 64`.
+2. The section header table lies inside the buffer. `e_shstrndx` is valid. Every section's `[sh_offset, sh_offset+sh_size)` lies inside the buffer (except `SHT_NOBITS`).
+3. The section set ⊆ {NULL, `.text`, `.rela.text`, `.shstrtab`, `.symtab`, `.strtab`}. Anything else is rejected, which flags a Booth version drift.
+4. The symbol table's `sh_entsize = 24`. Every `st_name` is NUL-terminated inside `.strtab`.
+5. Every relocation in `.rela.text` has type `R_X86_64_PLT32 (4)`, `r_offset + 4 ≤ text_size`, a valid symbol index, and an undefined symbol whose name is in the shim allowlist (§7.4).
+6. Exactly one defined `STB_GLOBAL STT_FUNC` symbol whose name equals the expected kernel name and whose `st_value < text_size`.
+
+Mapping:
+1. `VirtualAlloc(MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE)` one block: `[ .text | pad to 16 | shim jump table ]`. Everything is within ±2 GB, so `rel32` always reaches it.
+2. Copy `.text`. Build the jump table: for each used external, a 14-byte stub `jmp qword ptr [rip+0]; dq <address of SysV shim>`.
+3. Apply relocations: `value = S + A − P` where S is the stub address. Check that it fits in `int32` before writing (it always will, but check anyway).
+4. `VirtualProtect(PAGE_EXECUTE_READ)`, then `FlushInstructionCache`. The memory is **never** writable and executable at the same time.
+5. If `VirtualProtect` fails with `ERROR_DYNAMIC_CODE_BLOCKED` (Arbitrary Code Guard policy), return `DynamicCodeBlocked` with a diagnostic. Don't retry and don't fall back.
+6. Register the `[base, base+size)` range with `KernelFaultGuard`.
+7. Unload: unregister, then `VirtualFree(MEM_RELEASE)`. This is only allowed when no launch is in flight (ref-counted).
+
+The same parser builds `tools/objcheck.cpp` (`pcuda_objcheck <obj> --kernel <name>`). It runs at **build time**, so a bad object fails the build and never reaches runtime. ELF objects carry no parameter signature, so the argument-count limit is enforced by `ArgPacker` when arguments are marshalled, not by objcheck.
+
+### 7.3 `pcuda_sysv_invoke` — Win64 → System V thunk (`src/cpu/sysv_invoke.asm`)
+
+```cpp
+// C++ declaration
+extern "C" int pcuda_sysv_invoke(const void* entry,          // rcx
+                                 const uint64_t gpr[6],       // rdx: rdi,rsi,rdx,rcx,r8,r9
+                                 const double   xmm[8],       // r8 : xmm0..xmm7 (low lane)
+                                 void**         anchor_slot); // r9 : recovery anchor (thread-local)
+// returns 0 = kernel returned normally, 1 = recovered from fault
+```
+
+Requirements, each with a test in `test_thunk_abi.cpp`:
+- Written as a MASM `PROC FRAME` with `.pushreg`, `.savexmm128` and `.allocstack`, so the thunk has valid Win64 unwind data.
+- Saves and restores every Win64 non-volatile register: `rbx, rbp, rdi, rsi, r12–r15, xmm6–xmm15`. `rdi`/`rsi`/`xmm6–15` matter because Booth clobbers them (F5).
+- Stack: 8 pushes plus `sub rsp, 168` gives `rsp ≡ 0 (mod 16)` before `call`, as System V requires. `movaps` saves are aligned.
+- Stores the post-prologue `rsp` in `*anchor_slot` before calling the kernel.
+- Loads `rdi, rsi, rdx, rcx, r8, r9` from `gpr[]` and `xmm0–7` from `xmm[]`, then `call` the entry.
+- Has a second label, `pcuda_sysv_recover`, **inside the same PROC after the prologue**. It sets `eax = 1` and jumps to the shared epilogue. The fault guard resumes execution there (§7.5).
+- Clears the direction flag (`cld`) before the call. MXCSR and the x87 control word are saved and restored, so a kernel can't leak FP-mode changes.
+
+**Argument marshalling** (`adapters/*`): every integer is **sign-extended to `int64_t`** before being stored in `gpr[]`. This fixes C1/F6 for `nthreads` and protects against Booth loading full 64-bit registers for `int` parameters. Pointers are stored as `uint64_t`. Floats are stored in the low 32 bits of the `xmm` lane as raw bits with `std::bit_cast`, not converted to double.
+
+### 7.4 System V → Win64 libm shims (`src/cpu/sysv_shims.asm`)
+
+For each of `sinf, cosf, exp2f, log2f`:
+
+```asm
+pcuda_sysv_sinf PROC FRAME
+    sub  rsp, 40          ; 32-byte shadow space + realign (SysV caller left rsp ≡ 8 mod 16 at entry)
+    .allocstack 40
+    .endprolog
+    call sinf             ; Win64 CRT; arg/return already in xmm0 in both ABIs
+    add  rsp, 40
+    ret
+pcuda_sysv_sinf ENDP
+```
+
+- Win64 callees preserve a superset of what System V callers expect, so no extra saves are needed.
+- Any external not on the allowlist fails `pcuda_objcheck` and the loader.
+- Test: a kernel that calls each function is compared against the CRT within 1 ULP.
+
+### 7.5 Fault containment (`src/cpu/fault_guard.cpp`)
+
+- Install one vectored exception handler (`AddVectoredExceptionHandler(1, …)`) in `pcudaInit` and remove it in `pcudaShutdown`.
+- Per-thread state (`thread_local`): `in_kernel` flag, `anchor` (from the thunk), current kernel name and image range.
+- The handler acts **only** when `in_kernel` is set **and** RIP is inside a registered image or shim range. Otherwise it returns `EXCEPTION_CONTINUE_SEARCH`.
+  - Recoverable: `EXCEPTION_ACCESS_VIOLATION`, `EXCEPTION_INT_DIVIDE_BY_ZERO`, `EXCEPTION_INT_OVERFLOW`, `EXCEPTION_ILLEGAL_INSTRUCTION`, `EXCEPTION_PRIV_INSTRUCTION`. Record `FaultInfo`, then set `ctx->Rsp = anchor` and `ctx->Rip = &pcuda_sysv_recover`. Return `EXCEPTION_CONTINUE_EXECUTION`. The thunk restores the non-volatile registers it saved, so the caller's state is intact.
+  - `EXCEPTION_STACK_OVERFLOW`: recovered like the others. After the thunk returns, `invokeSysV` calls `_resetstkoflw()` to re-arm the guard page. Only if that fails does the process `__fastfail`. Tests overflow the same thread three times in a row.
+- The handler makes no heap allocations, takes no locks and does no CRT I/O.
+- After recovery the runtime sets the sticky `ContextPoisoned` state (CUDA-like). Buffers written by the faulted launch are undefined.
+- Guard pages make faults deterministic. See §9.
+
+### 7.6 Threads and stacks
+
+- All kernel calls happen on runtime-owned threads created with `_beginthreadex` and an explicit **8 MB** stack (F9), or on the caller's thread for synchronous POC 0.1 launches, where `SetThreadStackGuarantee` reserves room to report a stack overflow.
+- Stack size is configurable (`PCUDA_KERNEL_STACK_MB`). The default is 8.
+- Worker threads are joined in `pcudaShutdown()`, never in static destructors (avoids the loader-lock deadlock).
+
+## 8. Backend interface
+
+```cpp
+class IBackend {
+public:
+    virtual ~IBackend() = default;
+    virtual const char*  name() const noexcept = 0;
+    virtual pcuda::Error allocate(void** ptr, size_t bytes) noexcept = 0;
+    virtual pcuda::Error release(void* ptr) noexcept = 0;
+    virtual pcuda::Error copy(void* dst, const void* src, size_t bytes, pcuda::CopyKind) noexcept = 0;
+    virtual pcuda::Error launch(const KernelEntry&, const LaunchArgs&) noexcept = 0;
+    virtual pcuda::Error synchronize() noexcept = 0;
+};
+
+struct LaunchArgs {                 // already marshalled by the typed adapter
+    uint64_t gpr[6];  unsigned n_gpr;
+    double   xmm[8];  unsigned n_xmm;
+    int64_t  nthreads;              // > 0, validated
+};
+
+struct KernelEntry {
+    const char*                     name;
+    std::span<const std::byte>      image;        // embedded ELF bytes
+    std::array<uint8_t, 32>         sha256;       // checked at load
+    unsigned                        max_int_params;
+    // typed adapter: validates user args, fills LaunchArgs, returns Error
+    pcuda::Error (*marshal)(const void* typed_args, LaunchArgs* out) noexcept;
+};
+```
+
+`CpuBackend` is implemented now. `NvidiaBackend` is a stub behind `-DPCUDA_ENABLE_NVIDIA=ON`, which defaults to OFF, and no CUDA libraries are linked in the CPU build.
+
+## 9. Allocation registry and guarded allocator
+
+```cpp
+struct AllocationInfo {
+    std::byte* user_base;   size_t user_bytes;
+    std::byte* region_base; size_t region_bytes;   // for VirtualFree
+    int device_id;  uint64_t generation;
+};
+```
+
+- **Allocator** (`guarded_alloc.cpp`): `VirtualAlloc` with `region = round_up(bytes, page) + page`, and the trailing page set to `PAGE_NOACCESS`. Guard mode is **on by default in every configuration**, robustness first. The user block is placed **flush against the guard page** with 64-byte alignment, so for sizes that are multiples of 64 bytes a one-past-the-end write faults immediately and becomes a `KernelFault` instead of silent corruption. Other sizes have up to 63 bytes of undetected slack. `PCUDA_GUARD_PAGES=0` switches to `_aligned_malloc(bytes, 64)` / `_aligned_free`. `std::aligned_alloc` is not used because MSVC doesn't provide it.
+- **Registry**: an ordered map keyed by `user_base`, protected by `std::shared_mutex`. Interior-pointer lookup uses `upper_bound` then a range check. Every range check uses overflow-safe `add`.
+- Double free and unknown pointers return `InvalidPointer`, and the registry stays unchanged.
+- `pcudaShutdown`/`pcudaDeviceReset` free every remaining allocation and report the count of leaked allocations in the diagnostics.
+
+## 10. Streams and events
+
+**POC 0.1:** one default stream, synchronous launch. `pcudaDeviceSynchronize` is a fence that returns the first stored error.
+
+**POC 0.2:**
+- `Stream` holds a FIFO and one worker thread (8 MB stack). Operations run in submission order.
+- `pcudaStreamSynchronize` waits for the stream to drain and returns the first error from that stream since the last sync.
+- `Event` records a completion marker. `pcudaEventSynchronize` waits for it.
+- Task errors and C++ exceptions are captured on the worker (`try/catch(...)` → `Error`) and stored. They never propagate across threads.
+- No `pcudaMemcpyAsync` until host-buffer lifetime rules are implemented and tested.
+- Cross-stream waits are deferred.
+
+## 11. N-core chunking experiment (POC 0.2)
+
+This relies on F8: each call runs one block with `threadIdx.x ∈ [0, nthreads)`, `blockIdx.x = 0`.
+
+1. Split `[0, n)` into `W` disjoint chunks. Each chunk is ≥ 4096 elements and its boundaries are 64-byte aligned, which avoids false sharing on output.
+2. For each chunk, the adapter builds a separate `LaunchArgs` with **pointers offset to the chunk start, `count = chunk_len` and `nthreads = chunk_len`**. The original plan left `count` unchanged (review C4).
+3. Submit to a persistent `WorkerPool` (W threads, 8 MB stacks). Wait for all chunks. The first error wins. A fault in any chunk poisons the context.
+4. Opt-in only, per kernel, via `KernelEntry::chunkable = true`. Never used for reductions, atomics, barriers, or kernels that depend on `blockIdx` or `count`-relative indexing.
+
+## 12. Implementation phases
+
+### Phase 0 — Upstream spike and go/no-go (1–2 days)
+
+1. Pin a Booth tag and commit (start with `v0.6.1`) in `BOOTH_PIN.txt`.
+2. Obtain `kath` using the first method that works (§13.2) and record which one in `BOOTH_PIN.txt`. Verify the SHA-256 of any downloaded binary against the release's `SHA256SUMS`.
+3. `kath --version`. Compile `kernels/vector_add.cu` with `--cpu` (with and without `extern "C"`).
+4. Inspect the object with `llvm-readelf -h -S -s -r` (from the LLVM install) or the first `pcuda_objcheck` prototype. **Re-verify F1–F8.** Record the results.
+5. Write a ~150-line spike: a minimal loader, the MASM thunk and a vector-add call with n = 1, 7, 257. Compare against a scalar reference.
+
+**Go/no-go gate.** Continue only if all of these hold:
+- the object matches F1–F4,
+- the thunk call returns correct results for all three sizes,
+- the ASan build of the spike is clean.
+
+If F1–F4 drift (new sections or relocation types), extend the loader allowlist only if the new item is fully specified. Otherwise pin an older commit. If the thunk fails, stop and replan. Don't continue on assumptions.
+
+### Phase 1 — Runtime skeleton (2–3 days)
+- CMake project, presets, `.gitattributes`, warnings-as-errors (`/W4 /WX /permissive- /EHsc /utf-8 /Zc:__cplusplus`).
+- `Error`, `DeviceManager`, `IBackend`, `CpuBackend` memory paths, guarded allocator, registry.
+- Tests: alloc/free/copy, zero sizes, null, double free, interior pointer, out-of-range copy, overlapping D2D, overflow sizes, use before init.
+
+**Exit:** memory tests pass on both MSVC and clang-cl, with ASan on.
+
+### Phase 2 — Loader, thunk, shims and build integration (3–4 days)
+- `booth_image.cpp`, `objcheck.cpp`, `sysv_invoke.asm`, `sysv_shims.asm`, `fault_guard.cpp`.
+- `booth_add_kernel()` CMake function: run `kath` (by the chosen method) → `pcuda_objcheck` → SHA-256 → embed as `alignas(16) const unsigned char[]` in a generated `.cpp`. Any failure stops the build with a clear message.
+- `test_loader.cpp`: every file in `loader_corpus/` must return `InvalidKernelImage` with the expected reason and must never crash. Add a fuzz target (`/fsanitize=fuzzer` with clang-cl) when available.
+- `test_thunk_abi.cpp`: hand-written System V test functions in asm that deliberately clobber `rbx, rbp, rdi, rsi, r12–15, xmm6–15`, MXCSR and DF. Assert the caller's state is intact afterwards. Test that 64-bit `nthreads` with garbage upper bits is impossible through the marshaller.
+
+**Exit:** a clean build from an empty build directory with **no** CUDA Toolkit, NVIDIA driver, WSL or network (prebuilt mode) compiles, validates, embeds and runs the kernel.
+
+### Phase 3 — End-to-end launch and fault containment (2–3 days)
+- `pcudaLaunchVectorAdd` through the registry, with pointer-ownership checks before launch and a `count ≤ allocation size / sizeof(float)` check.
+- Sizes 1, 7, 256, 257, 4096, 1 << 24. Compare bit-for-bit against a scalar reference (float add is exact here).
+- `test_fault.cpp`: a deliberately out-of-bounds kernel (`out[i + count]`) with guard pages must return `KernelFault` with `FaultInfo` filled. Afterwards calls return `ContextPoisoned`, `pcudaDeviceReset` recovers, and the process stays alive. Run 1,000 iterations to catch state leaks.
+- Stack overflow test (separate process via CTest `WILL_FAIL`/exit-code check): verifies the fast-fail diagnostic.
+
+**Exit:** the app uses only `pcuda*` APIs, results are correct, and faults are contained.
+
+### Phase 4 — Streams/events (2–4 days)
+As in §10. Tests cover ordering with host marker tasks, two independent streams, error propagation to the synchronizing caller, and shutdown with pending work.
+
+### Phase 5 — N-core chunking (3–5 days)
+As in §11. Correctness on 1, 2, 4 and `std::thread::hardware_concurrency()` workers, compared against the serial reference.
+- **Race checking:** ThreadSanitizer isn't available on Windows. Instead use (a) a deterministic disjointness assertion on chunk ranges, (b) guard-page fences between chunk outputs in a test-only mode, and (c) an **optional** WSL/Linux CI job that builds the portable core (registry, worker pool, chunk planner) with TSan.
+- Benchmarks: `std::chrono::steady_clock` (QPC-backed), 5 warm-up runs then a median of 21, power plan recorded, optional `SetThreadAffinityMask`. Report scheduler overhead separately from kernel time.
+
+### Phase 6 — Optional NVIDIA parity (later)
+Same as revision 1. It must not affect the CPU-only build.
+
+## 13. Build and run on Windows
+
+### 13.1 Prerequisites (checked by `scripts/bootstrap.ps1`)
+
+| Item | Check | Required |
+|---|---|---|
+| Windows x64 | `$env:PROCESSOR_ARCHITECTURE -eq 'AMD64'` | Yes |
+| VS 2022 Build Tools (C++ workload) | `vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64` | Yes |
+| `ml64.exe` | in the VS Developer environment | Yes |
+| CMake ≥ 3.26, Ninja | `cmake --version`, `ninja --version` | Yes |
+| LLVM (clang-cl, llvm-readelf) | `clang-cl --version` | Optional (second compiler, Phase 0 inspection, fuzzing) |
+| `kath` | §13.2 | Only if not using prebuilt mode |
+| WSL | `wsl --status` | Optional fallback only |
+
+The script prints a pass/fail table and exits non-zero on any required failure. It never installs anything without being asked.
+
+### 13.2 Obtaining the kernel object (`-DPCUDA_KATH_MODE=auto|exe|wsl|prebuilt`)
+
+`auto` (default) tries the methods in order and logs which one it used:
+1. **exe:** `KATH_EXECUTABLE` or `kath.exe` on PATH. Its SHA-256 must match `BOOTH_PIN.txt`. A mismatch is a warning in `auto` and an error in `exe`.
+2. **wsl:** `wsl.exe -e sh -c "<kath> --cpu …"` with paths translated by `wslpath`. `scripts/install_kath_wsl.sh` installs the pinned Linux release (SHA-256 checked), or builds the pinned commit with `--from-source`. Booth's output is byte-identical regardless of host (verified).
+3. **prebuilt:** `kernels/prebuilt/<name>.o`, used only if its SHA-256 matches the committed `.sha256` and the `.cu` file's hash matches the one recorded with it. This means a stale prebuilt object can't be used silently after the source changes.
+
+If every method fails, configuration fails and names each method and why it failed. After any successful `kath` run, `cmake --build --target refresh_prebuilt` updates the prebuilt object and its hashes.
+
+### 13.3 Commands (PowerShell, from a VS x64 Developer shell)
+
+```powershell
+# 0. Environment report
+pwsh scripts/bootstrap.ps1
+
+# 1. Configure + build (kernel compile/validate/embed happens inside the build)
+cmake --preset windows-msvc            # or windows-clangcl / windows-msvc-asan
+cmake --build --preset windows-msvc
+
+# 2. Run
+.\build\windows-msvc\pcuda_poc.exe
+
+# 3. Tests
+ctest --preset windows-msvc --output-on-failure
+```
+
+Notes:
+- Paths with spaces are supported. Every custom command uses `VERBATIM` and list arguments.
+- `.cu` files are checked out with LF (`.gitattributes`). The CMake function also normalises CRLF to LF before passing the file to `kath`.
+- Control Flow Guard (`/guard:cf`) is safe to enable because kernel code is reached only from the MASM thunk's `call`, which CFG doesn't instrument (rule 3).
+
+### 13.4 CI (GitHub Actions)
+
+| Job | Runner | Mode | Purpose |
+|---|---|---|---|
+| win-msvc | `windows-2022` | prebuilt | Main gate: build, all tests |
+| win-msvc-asan | `windows-2022` | prebuilt | ASan |
+| win-clangcl | `windows-2022` | prebuilt | Second compiler, fuzz smoke |
+| win-kath | `windows-2022` | exe | Fresh `kath` compile, prebuilt hash comparison |
+| linux-tsan (optional) | `ubuntu-24.04` | n/a | TSan on the portable core |
+
+## 14. Test matrix and acceptance criteria
+
+| Area | Test | Pass condition |
+|---|---|---|
+| Toolchain | `bootstrap.ps1` | All required items pass, or a clear failure is reported |
+| Compiler | `kath --cpu vector_add.cu` | ELF object emitted, no GPU |
+| Validation | `pcuda_objcheck` | Accepts the good object and rejects every corpus file with the right reason |
+| Loader | Map, relocate, set W^X | Never writable and executable at once; ACG case → `DynamicCodeBlocked` |
+| ABI | Thunk clobber test | All Win64 non-volatile registers, MXCSR and DF preserved |
+| ABI | 64-bit marshalling | `nthreads`/ints sign-extended; garbage upper bits impossible |
+| Shims | `sinf/cosf/exp2f/log2f` kernel | ≤ 1 ULP from the CRT |
+| Device | Enumerate | One CPU device, `is_hardware_gpu = false` |
+| Memory | Alloc/free/copy/edge cases | Correct bytes; invalid operations return the specified errors |
+| Kernel | Vector add, sizes 1…1<<24 | Bit-exact against the reference |
+| Fault | OOB kernel × 1000 | `KernelFault` then `ContextPoisoned`; reset recovers; process alive |
+| Stack overflow | Separate process | Fast-fail with diagnostic, non-zero exit |
+| Stream/Event | Ordering, errors, shutdown | Order preserved; first error returned; clean shutdown |
+| Chunking | 1/2/4/N workers | Equal to the serial reference; disjointness assert holds |
+| Isolation | No CUDA, no WSL, no network | Builds and passes in prebuilt mode |
+| Diagnostics | Unsupported operation | Explicit error, never silent success |
+
+### Definition of done
+
+**POC 0.1** is done when:
+- A clean Windows checkout builds with MSVC **and** clang-cl in prebuilt mode, and in `exe` mode where `kath.exe` is available.
+- Booth is pinned by tag, commit and binary SHA-256, with F1–F10 re-verified.
+- No NVIDIA hardware, CUDA Toolkit, driver or WSL is needed.
+- The host app uses only `pcuda*` APIs.
+- The vector-add, loader, ABI, shim and fault tests pass, including under ASan.
+- There's a clean seam for an NVIDIA backend.
+
+**POC 0.2** is done when streams/events and chunking pass, along with the Windows race-check substitutes (and the optional Linux TSan job, if enabled).
+
+## 15. Risks and mitigations
+
+| Risk | Likelihood | Mitigation |
+|---|---|---|
+| Booth changes object layout, relocations or ABI | Medium (0.x) | Pin commit and hash; the strict allowlist in loader and objcheck fails the build, not the runtime; Phase 0 re-verifies |
+| `kath` unavailable on a dev machine or CI | Medium | Four methods (§13.2); committed prebuilt object with source-hash binding |
+| Thunk ABI bug (register or stack corruption) | Medium | Dedicated clobber tests; MASM `PROC FRAME` unwind data; spike before Phase 1 |
+| Kernel writes out of bounds | High during development | Guard-page allocator, launch-size validation, VEH containment, sticky poison |
+| Stack overflow from stack-heavy codegen | Medium | 8 MB worker stacks, `SetThreadStackGuarantee`, fast-fail diagnostic |
+| Dynamic code blocked by policy (ACG, enterprise lockdown) | Low | Detect `ERROR_DYNAMIC_CODE_BLOCKED` → `DynamicCodeBlocked`; documented |
+| Antivirus flags executable `VirtualAlloc` memory | Low | W^X discipline; signed builds if distributed; documented |
+| Booth's 64-bit param handling differs from assumption | Medium | Sign-extend everything to 64 bits in the marshaller |
+| CRT shadow-space corruption from libm calls | Certain without shims | Allowlisted System V shims only |
+| No TSan on Windows | Certain | Deterministic disjointness checks, guard fences, optional Linux TSan job |
+| Static-destructor/loader-lock deadlock | Medium | Explicit `pcudaShutdown`; no thread joins in static destructors |
+| Confusing CPU execution with GPU emulation | Low | Honest device name; `is_hardware_gpu = false`; docs |
+| Accidental CUDA dependency | Low | CI job without CUDA; NVIDIA backend off by default |
+
+## 16. Upstream references
+
+- Booth repository: https://github.com/Zaneham/Booth
+- Booth releases: https://github.com/Zaneham/Booth/releases
+- Booth usage guide: https://github.com/Zaneham/Booth/blob/master/docs/usage.md
+- Booth feature status: https://github.com/Zaneham/Booth/blob/master/docs/features.md
+- Booth CPU ELF writer: https://github.com/Zaneham/Booth/blob/master/src/cpu/cpu_elf.c
+- Booth CPU code emitter: https://github.com/Zaneham/Booth/blob/master/src/cpu/cpu_emit.c
+- Booth CPU vector-add example: https://github.com/Zaneham/Booth/blob/master/examples/cpu_launch_vadd.c
+- PantheonSim repository: https://github.com/pantheongpu/pantheonsim
+- PantheonSim architecture: https://github.com/pantheongpu/pantheonsim/blob/main/ARCHITECTURE.md
+- Microsoft x64 calling convention: https://learn.microsoft.com/cpp/build/x64-calling-convention
+- x64 prolog/epilog and unwind data: https://learn.microsoft.com/cpp/build/prolog-and-epilog
+- System V AMD64 psABI: https://gitlab.com/x86-psABIs/x86-64-ABI
+
+## 17. First implementation decision
+
+Start with the **Phase 0 spike**: one `vector_add.cu`, a minimal ELF loader, the MASM thunk and a scalar reference, all in one throwaway executable. It tests the riskiest assumption (System V object code running safely inside a Win64 process) in about a day. Build the runtime, streams and chunking only after the go/no-go gate passes.
+
+## 18. Implementation status (2026-11-06)
+
+Environment: Windows 11 x64 (16 logical processors), Visual Studio 2022 17.14 / MSVC 14.44, CMake 3.31, Ninja (bundled with VS), Booth 0.6.1.
+
+### Phase results
+
+| Phase | Result |
+|---|---|
+| 0: spike and go/no-go | **Go.** F1–F9 confirmed against real `kath` output. Two new facts found: F10 (identical objects from Windows, Linux and WSL `kath`) and F11 (sin/cos argument lowering). Details are in `BOOTH_PIN.txt`. The spike went straight into the real loader and thunk. |
+| 1: runtime skeleton | Done: `test_api` (7 cases), `test_memory` (11 cases) |
+| 2: loader, thunk, shims, build | Done: `test_loader` (8 cases, including 60,000 random mutations), `test_thunk_abi` (6 cases, register-clobber harness in MASM) |
+| 3: end-to-end and faults | Done: `test_vector_add` (7 cases, sizes 1 to 2^24, bit-exact), `test_fault` (6 cases, 1,000 contained out-of-bounds faults, divide-by-zero, 3 consecutive stack overflows) |
+| 4: streams and events | Done: `test_stream` (8 cases) |
+| 5: chunking | Done: `test_chunked_vector_add` (4 cases, 1/2/4/16 workers, bit-exact against serial) |
+| 6: NVIDIA parity | Not started (future milestone). `PCUDA_ENABLE_NVIDIA=ON` fails configuration with an explicit message. |
+
+Verified configurations: MSVC RelWithDebInfo; MSVC Debug + AddressSanitizer; `PCUDA_KATH_MODE` = exe, wsl and prebuilt (prebuilt with `kath` unavailable); a source path containing spaces and parentheses. **Not verified:** clang-cl (not installed on the dev machine) and the GitHub Actions workflow (written but never run).
+
+### Benchmark (`pcuda_bench`, median of 21, AC power)
+
+| Elements | Serial | 4 workers | 16 workers |
+|---|---|---|---|
+| 1,024 | 3.3 µs | 0.13× | 0.11× |
+| 262,144 | 0.65 ms | 2.85× | 2.68× |
+| 4,194,304 | 10.0 ms | 3.59× | 6.35× |
+| 16,777,216 | 41.3 ms | 3.84× | 5.57× |
+
+Launch overhead: about 1.2 µs synchronous, about 41 µs chunked (pool wake-up). Chunking is worth it only from about 256K elements.
+
+### Departures from the text above
+
+1. **Stack overflow is recoverable** (§7.5 updated). It isn't a fail-fast.
+2. **Guard pages default on** in every configuration (§9 updated).
+3. **Argument-count limit** is enforced in `ArgPacker`, not `pcuda_objcheck` (§7.2 updated).
+4. **Poisoned-context rules** let release calls through (§6 updated).
+5. **F11, Booth sin/cos lowering:** `sinf(x)` compiles to `sinf((x * 1/(2π)) * 2π)` in float, so results differ from a direct CRT `sinf(x)` by a few ULP. Tests compare bit-exactly against that exact lowering and loosely against double precision.
+6. **Name clash:** `FaultInfo::exception_code` was renamed to `code` because `exception_code` is a macro in `<excpt.h>`.
+7. **Layout:** `scripts/run_poc.ps1` became `scripts/build.ps1`, which loads the VS environment itself. `build_kath_wsl.sh` became `install_kath_wsl.sh`. Malformed-ELF cases are generated in `test_loader.cpp` instead of committed under `loader_corpus/`. Fuzzing is a seeded mutation test instead of libFuzzer, since there is no clang-cl.
+8. **`/CETCOMPAT:NO`** is set explicitly on all executables, because fault recovery rewrites RSP/RIP.
+9. **Kernel threads:** every launch, including synchronous ones, runs on a runtime-owned thread with an 8 MB stack (the default stream's worker). None run on the caller's thread.

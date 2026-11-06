@@ -1,0 +1,20 @@
+# Test kernels (Booth-compiled, test-only) and their adapters.
+add_library(pcuda_test_support STATIC test_kernels.cpp harness_main.cpp sysv_test_funcs.asm)
+target_link_libraries(pcuda_test_support PUBLIC pcuda)
+target_include_directories(pcuda_test_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/src")
+foreach(k oob_write int_div deep_recursion scale_add trig_mix)
+  booth_add_kernel(TARGET pcuda_test_support NAME ${k} SOURCE "${PROJECT_SOURCE_DIR}/kernels/test/${k}.cu")
+endforeach()
+
+# ASan runtime DLL lives next to cl.exe.
+get_filename_component(_msvc_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+
+set(PCUDA_TESTS test_api test_memory test_loader test_thunk_abi test_vector_add test_fault test_stream
+                test_chunked_vector_add)
+foreach(t IN LISTS PCUDA_TESTS)
+  add_executable(${t} ${t}.cpp)
+  target_link_libraries(${t} PRIVATE pcuda_test_support)
+  add_test(NAME ${t} COMMAND ${t})
+  set_tests_properties(${t} PROPERTIES TIMEOUT 600
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_msvc_bin}")
+endforeach()

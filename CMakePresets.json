@@ -1,0 +1,58 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 26, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "architecture": { "value": "x64", "strategy": "external" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "windows-msvc",
+      "displayName": "MSVC x64 RelWithDebInfo",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_C_COMPILER": "cl", "CMAKE_CXX_COMPILER": "cl", "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "windows-msvc-debug",
+      "displayName": "MSVC x64 Debug",
+      "inherits": "windows-msvc",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "windows-msvc-asan",
+      "displayName": "MSVC x64 Debug + AddressSanitizer",
+      "inherits": "windows-msvc",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "PCUDA_ENABLE_ASAN": "ON" }
+    },
+    {
+      "name": "windows-msvc-prebuilt",
+      "displayName": "MSVC x64, kernels from kernels/prebuilt only",
+      "inherits": "windows-msvc",
+      "cacheVariables": { "PCUDA_KATH_MODE": "prebuilt" }
+    },
+    {
+      "name": "windows-clangcl",
+      "displayName": "clang-cl x64 RelWithDebInfo",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_C_COMPILER": "clang-cl", "CMAKE_CXX_COMPILER": "clang-cl", "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-msvc", "configurePreset": "windows-msvc" },
+    { "name": "windows-msvc-debug", "configurePreset": "windows-msvc-debug" },
+    { "name": "windows-msvc-asan", "configurePreset": "windows-msvc-asan" },
+    { "name": "windows-msvc-prebuilt", "configurePreset": "windows-msvc-prebuilt" },
+    { "name": "windows-clangcl", "configurePreset": "windows-clangcl" }
+  ],
+  "testPresets": [
+    { "name": "windows-msvc", "configurePreset": "windows-msvc", "output": { "outputOnFailure": true } },
+    { "name": "windows-msvc-debug", "configurePreset": "windows-msvc-debug", "output": { "outputOnFailure": true } },
+    { "name": "windows-msvc-asan", "configurePreset": "windows-msvc-asan", "output": { "outputOnFailure": true } },
+    { "name": "windows-msvc-prebuilt", "configurePreset": "windows-msvc-prebuilt", "output": { "outputOnFailure": true } },
+    { "name": "windows-clangcl", "configurePreset": "windows-clangcl", "output": { "outputOnFailure": true } }
+  ]
+}

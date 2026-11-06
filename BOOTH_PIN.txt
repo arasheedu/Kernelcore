@@ -1,0 +1,31 @@
+Booth pin for pcuda (machine-readable copy: cmake/BoothPin.cmake)
+
+version   : 0.6.1
+tag       : v0.6.1 (published 2026-10-26)
+commit    : fc128cb50234a9975858ad17c056e30ca4111441
+license   : Apache-2.0
+
+booth-0.6.1-windows-x86_64.zip  sha256 d6079aa110bb9a84de38bb49d759e1aa1e6a19660e1a4dd2dd6afdc5185c6a1d  (matches release SHA256SUMS)
+  kath.exe                      sha256 4c52df1d90be0d4789692d69056175ef8a42210475754fe7683bfa4e77d4411a
+booth-0.6.1-linux-x86_64.tar.gz sha256 526dbccc3d0e05a110a0555ea6cf2d5cef54fd22c68bdfb0ef03d606e3c24fa9  (WSL fallback)
+
+Facts verified against real kath 0.6.1 output on 2026-11-06 (Phase 0):
+  F1  --cpu writes ELF64 ET_REL, EM_X86_64, OS/ABI System V. No COFF option.            verified (readelf)
+  F2  sections: NULL .text .rela.text .shstrtab .symtab .strtab; .rela.text present
+      even when empty; no .data/.rodata/.bss (float constants are immediates).           verified
+  F3  only relocation type R_X86_64_PLT32, addend -4, for external calls.                verified (trig_mix)
+  F4  externals seen: sinf cosf exp2f log2f.                                             verified
+  F5  System V convention: args rdi rsi rdx rcx r8 r9 / xmm0-7; push rbp frame; no red
+      zone; `and rsp,-16` before external calls.                                         verified (objdump)
+  F6  hidden nthreads compared as 64-bit, not extended; declared int params are
+      sign-extended by the kernel (movsxd).                                              verified
+  F7  one kernel symbol per object (GLOBAL FUNC), plain name; extern "C" accepted and
+      produces identical bytes; __device__ helpers have no symbol.                       verified
+  F8  threadIdx.x loops 0..nthreads-1; blockIdx = 0.                                     verified (tests)
+  F9  stack-everything codegen; recursion in __device__ functions supported.             verified
+  F10 Windows, Linux and WSL kath produce byte-identical objects.                        verified
+  F11 sinf/cosf: argument converted as (x * 1/(2*pi)) * 2*pi in float before the call.   verified (objdump)
+
+Exact command lines:
+  kath --cpu <file.cu> -o <file.o>
+  pcuda_objcheck <file.o> --kernel <name>

@@ -36,8 +36,8 @@ bool protectedFill(void* dst, int value, size_t bytes) noexcept {
     }
 }
 
-CpuBackend::CpuBackend(AllocationRegistry& registry, bool guard_pages)
-    : registry_(registry), guard_pages_(guard_pages) {
+CpuBackend::CpuBackend(AllocationRegistry& registry, bool guard_pages, bool large_pages)
+    : registry_(registry), guard_pages_(guard_pages), large_pages_(large_pages) {
     acquireFaultGuard();
 }
 
@@ -48,7 +48,7 @@ CpuBackend::~CpuBackend() {
 
 Error CpuBackend::allocate(void** ptr, size_t bytes) noexcept {
     HostBlock b;
-    const Error e = allocateBlock(bytes, guard_pages_, b);
+    const Error e = allocateBlock(bytes, guard_pages_, large_pages_, b);
     if (e != Error::Success) {
         detail::setDetail(std::format("allocation of {} bytes failed", bytes));
         return e;

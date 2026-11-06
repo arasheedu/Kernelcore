@@ -1007,3 +1007,22 @@ Stability: 150 repeated runs of the pool and stream tests, plus AddressSanitizer
 | Ollama CPU | 35.3 | 28.3 |
 | CUDA, same kernels | 20.4 | 49.0 |
 | Ollama GPU | 9.3 | 107.7 |
+
+## 28. Large pages (opt-in, 2026-11-06)
+
+**Allocation.** `PCUDA_LARGE_PAGES=1` makes `pcudaInit` enable `SeLockMemoryPrivilege`. From then on, allocations of at least one large page (2 MB) use `VirtualAlloc(MEM_LARGE_PAGES)`.
+- **Fallback:** without the right, or when no contiguous physical memory is left, allocations silently use normal pages. `DeviceProperties::large_pages` reports whether large pages are active.
+- **Guarded mode is kept:**
+  - The user block ends flush with the large-page region, and a 64 KB reserved no-access range ("fence") sits right after it.
+  - The fence is placed by reserving address space, releasing it, and claiming both parts at that address, retrying if another thread took it.
+  - Tested: a write one byte past a 3 MB block faults.
+- **Granting the right:** `scripts\grant_lock_pages.ps1` calls `LsaAddAccountRights`, because Windows Home has no `secpol.msc`. It must run elevated, followed by a sign-out and sign-in.
+
+**Measured** (3B decode, alternating runs):
+
+| Prefetch | Large pages off | Large pages on |
+|---|---|---|
+| Default 2 KB | 31.1–32.8 ms | 30.9–31.6 ms (within noise) |
+| Off | 32.7 ms | 31.7 ms |
+
+Large pages and the software prefetch remove the same cost: page walks and stalls at 4 KB boundaries. The gains don't stack, so large pages stay opt-in and off by default.

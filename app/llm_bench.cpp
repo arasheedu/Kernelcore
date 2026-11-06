@@ -385,6 +385,9 @@ int run(int argc, char** argv) {
     std::printf("CPU   : %u logical processors; pcuda pool of %u threads + the launching thread; workers = %u\n",
                 std::thread::hardware_concurrency(), pprops.worker_count, workers);
     std::printf("Graphs: %s (each token as one pcuda graph and one CUDA graph)\n", graphs ? "on" : "off");
+    std::printf("Memory: pcuda large pages %s\n",
+                pprops.large_pages ? "on (allocations of 2 MB or more)"
+                                   : "off (PCUDA_LARGE_PAGES=1 plus scripts\\grant_lock_pages.ps1 turn them on)");
     std::fflush(stdout);
 
     cudaStream_t stream{};

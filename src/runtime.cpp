@@ -127,6 +127,7 @@ struct Runtime {
     std::atomic<bool> poisoned{false};
 
     bool     guard_pages = true;
+    bool     large_pages = false;  // PCUDA_LARGE_PAGES=1 and the privilege could be enabled
     size_t   stack_bytes = 8 * kMiB;
     unsigned hw_threads = 1;
     unsigned chunks_per_worker = 4;  // chunked launches: chunks = workers * this (load balance)
@@ -338,7 +339,10 @@ Error startDevice(Runtime& r) {
         else if (cg == "simd") r.codegen.store(Codegen::Simd);
         else r.codegen.store(Codegen::Auto);
     }
-    r.backend = std::make_unique<cpu::CpuBackend>(r.registry, r.guard_pages);
+    // Large pages for big allocations (opt-in): needs the "Lock pages in memory" right
+    // (scriptsgrant_lock_pages.ps1). Without it, allocations silently use normal pages.
+    r.large_pages = envInt("PCUDA_LARGE_PAGES", 0, 0, 1) != 0 && cpu::enableLargePages();
+    r.backend = std::make_unique<cpu::CpuBackend>(r.registry, r.guard_pages, r.large_pages);
     r.backend->setCodegen(r.codegen.load());
     r.default_stream = std::make_unique<Stream>(r.stack_bytes, L"pcuda default stream", r.pool_spin_us);
     r.poisoned.store(false);
@@ -607,6 +611,7 @@ Error pcudaGetDeviceProperties(DeviceProperties* props, int device) noexcept {
         if (GlobalMemoryStatusEx(&ms)) p.total_memory = static_cast<size_t>(ms.ullTotalPhys);
         p.is_hardware_gpu = false;
         p.guard_pages = r.guard_pages;
+        p.large_pages = r.large_pages;
         p.kernel_stack_bytes = r.stack_bytes;
         *props = p;
         return Error::Success;

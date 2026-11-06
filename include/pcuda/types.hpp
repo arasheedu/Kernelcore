@@ -21,6 +21,7 @@ struct DeviceProperties {
     size_t   total_memory = 0;     // physical host memory in bytes
     bool     is_hardware_gpu = false;
     bool     guard_pages = false;  // allocations end against a no-access page
+    bool     large_pages = false;  // allocations of >= 2 MB use large pages (PCUDA_LARGE_PAGES=1 + privilege)
     size_t   kernel_stack_bytes = 0;
 };
 

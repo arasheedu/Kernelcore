@@ -294,6 +294,7 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
 | `PCUDA_POOL_THREADS` | P-core logical CPUs − 1 | Threads in the chunked-launch pool (1–1024); the launching thread runs chunks too. On non-hybrid CPUs: all logical CPUs − 1 |
 | `PCUDA_CHUNKS_PER_WORKER` | `4` | A chunked launch with `workers = N` is split into up to N × this many chunks, so fast cores pick up the slow (efficiency) cores' share |
 | `PCUDA_PREFETCH_BYTES` | `2048` | How far ahead the simd path prefetches streaming loads (0 = off; 1.5–8 KB measured the same) |
+| `PCUDA_LARGE_PAGES` | `0` | `1` backs allocations of 2 MB or more with large pages, for fewer TLB misses. Needs the "Lock pages in memory" right: run `scriptsgrant_lock_pages.ps1` as administrator once, then sign out and in. Without it, normal pages are used. Overruns still fault (a reserved no-access range follows each block). Measured: about 1 ms per token faster with prefetch off, no gain on top of the default prefetch |
 | `PCUDA_POOL_SPIN_US` | `50` | Pool and stream threads, and a waiting caller, wait this long (in `UMWAIT` if the CPU has WAITPKG, else spinning) before sleeping, so back-to-back launches skip the thread wake-up. Longer was slower here |
 | `PCUDA_ALLOW_EMULATION` | unset | `1` lets the runtime start under x64 emulation on ARM64 (unsupported) |
 

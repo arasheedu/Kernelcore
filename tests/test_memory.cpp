@@ -3,6 +3,7 @@
 #include "harness.hpp"
 
 #include <windows.h>
+#include <psapi.h>
 
 #include <cstdint>
 #include <cstring>
@@ -175,4 +176,35 @@ TEST_CASE(shutdown_frees_leaked_allocations) {
     REQUIRE_OK(pcudaMalloc(&p, 1024));
     CHECK_OK(pcudaShutdown());
     CHECK(std::strstr(pcudaGetLastErrorDetail(), "2 allocation") != nullptr);
+}
+
+// Opt-in large pages: without the "Lock pages in memory" right, allocations fall back to normal
+// pages; with it, big blocks are large-page memory that still ends against a faulting range.
+TEST_CASE(large_pages_back_big_allocations_or_fall_back) {
+    _putenv_s("PCUDA_LARGE_PAGES", "1");
+    struct Unset {
+        ~Unset() { _putenv_s("PCUDA_LARGE_PAGES", ""); }
+    } unset;
+    RuntimeFixture fx;
+    REQUIRE(fx.ok);
+    pcuda::DeviceProperties p{};
+    REQUIRE_OK(pcudaGetDeviceProperties(&p, 0));
+    const size_t bytes = 3u << 20;  // 3 MB: two large pages, user block flush with the end
+    unsigned char* d = nullptr;
+    REQUIRE_OK(pcudaMalloc(reinterpret_cast<void**>(&d), bytes));
+    std::memset(d, 7, bytes);
+    CHECK(d[0] == 7 && d[bytes - 1] == 7);
+    PSAPI_WORKING_SET_EX_INFORMATION info{};
+    info.VirtualAddress = d;
+    REQUIRE(QueryWorkingSetEx(GetCurrentProcess(), &info, sizeof info));
+    const bool large = info.VirtualAttributes.Valid && info.VirtualAttributes.LargePage;
+    std::printf("  large pages %s; this block %s large-page memory\n", p.large_pages ? "enabled" : "unavailable",
+                large ? "is" : "is not");
+    if (!p.large_pages) {
+        CHECK(!large);
+    } else {
+        CHECK(large);  // memory may be too fragmented on a busy machine, but not right after start
+        if (p.guard_pages) CHECK(writeFaults(d + bytes));
+    }
+    CHECK_OK(pcudaFree(d));
 }

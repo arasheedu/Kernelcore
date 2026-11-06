@@ -15,7 +15,7 @@ namespace pcuda::cpu {
 
 class CpuBackend final : public IBackend {
 public:
-    CpuBackend(AllocationRegistry& registry, bool guard_pages);
+    CpuBackend(AllocationRegistry& registry, bool guard_pages, bool large_pages);
     ~CpuBackend() override;
 
     const char* name() const noexcept override { return "cpu-booth-x86_64"; }
@@ -44,6 +44,7 @@ private:
     };
     AllocationRegistry&         registry_;
     bool                        guard_pages_;
+    bool                        large_pages_;  // blocks of >= 2 MB use large pages
     std::mutex                  images_mutex_;
     std::map<std::string, Slot> images_;
     std::mutex                  fault_mutex_;

@@ -21,7 +21,9 @@
 
 namespace llm {
 
-enum class Weights { Q8, Q4 };
+// Q4X8: the Q4 bytes repacked with 8 rows interleaved (kernels/llm/matvec_q4x8.cu), so SIMD
+// lanes and neighbouring GPU threads read adjacent bytes. Same size and results as Q4.
+enum class Weights { Q8, Q4, Q4X8 };
 
 struct Config {
     std::string name;
@@ -85,7 +87,7 @@ struct Mat {
     int          rows = 0;
     int          k = 0;
     Weights      format = Weights::Q8;
-    const void*  q = nullptr;     // int8 [rows][k] (Q8) or packed nibbles [rows][k/2] (Q4)
+    const void*  q = nullptr;     // int8 [rows][k] (Q8), nibbles [rows][k/2] (Q4) or interleaved (Q4X8)
     const float* s = nullptr;     // scales [rows][k/32]
     const int*   dims = nullptr;  // device int[2] {rows, k}
 };

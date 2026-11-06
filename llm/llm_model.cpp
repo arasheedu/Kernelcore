@@ -26,7 +26,7 @@ int64_t Config::weightParams() const {
 
 int64_t Config::weightBytes() const {
     const int64_t p = weightParams();
-    const int64_t values = weights == Weights::Q4 ? p / 2 : p;
+    const int64_t values = weights == Weights::Q8 ? p : p / 2;
     return values + p / 32 * int64_t(sizeof(float));
 }
 
@@ -54,7 +54,14 @@ Config tinyConfig(Weights w) {
     return c;
 }
 
-const char* weightsName(Weights w) { return w == Weights::Q4 ? "Q4 (4-bit + f32 scale per 32)" : "Q8 (8-bit + f32 scale per 32)"; }
+const char* weightsName(Weights w) {
+    switch (w) {
+    case Weights::Q8: return "Q8 (8-bit + f32 scale per 32)";
+    case Weights::Q4: return "Q4 (4-bit + f32 scale per 32)";
+    case Weights::Q4X8: return "Q4 x8 (4-bit + f32 scale per 32, 8 rows interleaved)";
+    }
+    return "?";
+}
 
 const char* opName(Op op) {
     switch (op) {
@@ -161,7 +168,7 @@ void randomBytes(Rng& rng, std::vector<uint8_t>& v) {
 // Q4: nibble - 8 uniform in [-8, 7] (variance 21.25).
 std::vector<Mat> makeMat(Rng& rng, const std::vector<Allocator*>& allocs, int rows, int k, Weights fmt) {
     const size_t n = size_t(rows) * size_t(k);
-    std::vector<uint8_t> q(fmt == Weights::Q4 ? n / 2 : n);
+    std::vector<uint8_t> q(fmt == Weights::Q8 ? n : n / 2);
     randomBytes(rng, q);
     float var = 21.25f;
     if (fmt == Weights::Q8) {
@@ -171,6 +178,14 @@ std::vector<Mat> makeMat(Rng& rng, const std::vector<Allocator*>& allocs, int ro
     }
     const float base = 1.0f / std::sqrt(var * static_cast<float>(k));
     std::vector<float> s = uniformVector(rng, n / 32, base, 0.1f * base);
+    if (fmt == Weights::Q4X8) {  // same values as Q4, repacked
+        if (rows % 8 != 0) throw std::invalid_argument("Q4X8 needs a multiple of 8 rows");
+        std::vector<uint8_t> q8(q.size());
+        std::vector<float> s8(s.size());
+        ref::repackQ4x8(q.data(), s.data(), q8.data(), s8.data(), rows, k);
+        q.swap(q8);
+        s.swap(s8);
+    }
     const std::vector<int> dims{rows, k};
     const auto qd = uploadAll(allocs, q);
     const auto sd = uploadAll(allocs, s);
@@ -312,9 +327,9 @@ public:
         pcudaCheck(pcudaMemcpy(m_.attn_dims, dims, sizeof dims, pcuda::CopyKind::HostToDevice), "pcudaMemcpy dims");
     }
     void matvec(const Mat& w, const float* x, float* y) override {
-        if (w.format == Weights::Q4) {
+        if (w.format == Weights::Q4 || w.format == Weights::Q4X8) {
             const MatvecQ4Args a{static_cast<const uint8_t*>(w.q), w.s, x, y, w.dims, w.rows, w.k};
-            launch("matvec_q4", &a, 16);
+            launch(w.format == Weights::Q4 ? "matvec_q4" : "matvec_q4x8", &a, 16);
         } else {
             const MatvecQ8Args a{static_cast<const int8_t*>(w.q), w.s, x, y, w.dims, w.rows, w.k};
             launch("matvec_q8", &a, 16);
@@ -374,7 +389,8 @@ public:
 
     void setContext(int ctx) override { ctx_ = ctx; }
     void matvec(const Mat& w, const float* x, float* y) override {
-        if (w.format == Weights::Q4) ref::matvecQ4(static_cast<const uint8_t*>(w.q), w.s, x, y, w.rows, w.k);
+        if (w.format == Weights::Q4X8) ref::matvecQ4x8(static_cast<const uint8_t*>(w.q), w.s, x, y, w.rows, w.k);
+        else if (w.format == Weights::Q4) ref::matvecQ4(static_cast<const uint8_t*>(w.q), w.s, x, y, w.rows, w.k);
         else ref::matvecQ8(static_cast<const int8_t*>(w.q), w.s, x, y, w.rows, w.k);
     }
     void rmsNorm(const float* x, const float* w, float* y) override {

@@ -39,6 +39,41 @@ void matvecQ4(const uint8_t* qs, const float* scales, const float* x, float* y, 
     }
 }
 
+void matvecQ4x8(const uint8_t* qs, const float* scales, const float* x, float* y, int rows, int k) {
+    const int nb = k / 32;
+    for (int row = 0; row < rows; ++row) {
+        const int g = row / 8, l = row % 8;
+        float acc = 0.0f;
+        for (int b = 0; b < nb; ++b) {
+            const size_t blk = size_t(g) * nb + b;
+            const uint8_t* qb = qs + blk * 128 + l;
+            const float* xb = x + size_t(b) * 32;
+            float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;  // same partial sums as the kernel
+            for (int j = 0; j < 16; j += 2) {
+                const int v0 = qb[j * 8], v1 = qb[j * 8 + 8];
+                s0 += static_cast<float>((v0 & 15) - 8) * xb[j];
+                s1 += static_cast<float>((v0 >> 4) - 8) * xb[j + 16];
+                s2 += static_cast<float>((v1 & 15) - 8) * xb[j + 1];
+                s3 += static_cast<float>((v1 >> 4) - 8) * xb[j + 17];
+            }
+            acc += ((s0 + s2) + (s1 + s3)) * scales[blk * 8 + l];
+        }
+        y[row] = acc;
+    }
+}
+
+void repackQ4x8(const uint8_t* qs, const float* scales, uint8_t* qs8, float* scales8, int rows, int k) {
+    const int nb = k / 32;
+    for (int row = 0; row < rows; ++row) {
+        const int g = row / 8, l = row % 8;
+        for (int b = 0; b < nb; ++b) {
+            const size_t blk = size_t(g) * nb + b;
+            for (int j = 0; j < 16; ++j) qs8[blk * 128 + size_t(j) * 8 + l] = qs[size_t(row) * (k / 2) + size_t(b) * 16 + j];
+            scales8[blk * 8 + l] = scales[size_t(row) * nb + b];
+        }
+    }
+}
+
 void rmsNorm(const float* x, const float* w, float* y, int n, int rows, float eps) {
     for (int row = 0; row < rows; ++row) {
         const float* xr = x + size_t(row) * n;

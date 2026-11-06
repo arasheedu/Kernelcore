@@ -177,6 +177,11 @@ inline VI load(VPtr<int> p, VI m) {
 // up to 3 bytes of the same word outside a heap block, which is harmless at page granularity.)
 // Lanes hold the raw byte zero-extended; the following cast applies the signedness.
 inline VI load(VPtr<char> p, VI m) {
+    // All 8 lanes active and reading consecutive bytes (interleaved layouts): one 8-byte load.
+    // Only with a full mask, so a partial tail group never reads past what the threads would.
+    int i0;
+    if (_mm256_movemask_ps(_mm256_castsi256_ps(m)) == 0xFF && contiguous(p.idx, m, &i0))
+        return _mm256_cvtepu8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(p.base + i0)));
     const uintptr_t b = reinterpret_cast<uintptr_t>(p.base);
     const VI big = _mm256_cmpgt_epi32(p.idx, splat(0x7FFFFFF0));
     const VI neg = _mm256_cmpgt_epi32(splat(-0x7FFFFFF0), p.idx);

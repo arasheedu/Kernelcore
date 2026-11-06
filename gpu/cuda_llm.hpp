@@ -13,6 +13,8 @@ cudaError_t matvecQ8(const int8_t* q, const float* scales, const float* x, float
                      cudaStream_t s);
 cudaError_t matvecQ4(const uint8_t* qs, const float* scales, const float* x, float* y, const int* dims, int rows,
                      cudaStream_t s);
+cudaError_t matvecQ4x8(const uint8_t* qs, const float* scales, const float* x, float* y, const int* dims, int rows,
+                       cudaStream_t s);
 cudaError_t rmsNorm(const float* x, const float* w, float* y, int n, int rows, float eps, cudaStream_t s);
 cudaError_t rope(float* x, int pairs_per_head, int pos, int count, float log2_base, cudaStream_t s);
 cudaError_t attnScores(const float* q, const float* k, float* scores, const int* dims, int total, float scale,

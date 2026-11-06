@@ -188,7 +188,9 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
 | pcuda, `booth` path (Booth's x86 code), 16 threads | 1,766 | 0.57 | 1.1 |
 | pcuda, `native` path, 16 threads | 216 | 4.6 | 9.3 |
 | pcuda, `simd` path, 16 threads | 156 | 6.4 | 12.9 |
+| pcuda, `simd` path, **8-row interleaved Q4** (`q4x8`, default) | **111** | **9.0** | **18.0** |
 | CUDA, same kernels (nvcc) | 65 | 15.4 | 30.9 |
+| CUDA, same kernels, `q4x8` (coalesced) | 39 | 25.7 | 51.5 |
 | plain C++ `/O2`, 1 thread | 1,195 | 0.84 | 1.7 |
 | Ollama llama.cpp, CPU only | 35 | 28.7 | 58 |
 | Ollama llama.cpp, GPU | 9.3 | 107 | 216 |
@@ -199,6 +201,14 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
 - Same source on the GPU is still 2.4× faster than `simd`. Real llama.cpp is 4.5× faster again on
   this CPU and 7× on the GPU. Its kernels use techniques this kernel subset can't express: integer
   dot products on quantized activations, and warp-cooperative, coalesced loads.
+- `q4x8` (`kernels/llm/matvec_q4x8.cu`) stores 8 rows' bytes side by side, so the 8 SIMD lanes
+  read 8 adjacent bytes with one load and neighbouring GPU threads make coalesced loads. It also sums
+  each block in 4 independent partial sums, so a core isn't stalled on one chain of dependent
+  additions. It is still one-thread-per-row CUDA C that Booth accepts, and all paths stay
+  bit-identical. Its results differ from `q4` only by summation order.
+- This machine reads memory at up to 84 GB/s (DDR5-6000, 16 threads), a limit of about 41.6 tok/s for
+  2.02 GB per token. Ollama reaches 58 GB/s, and more threads don't change that
+  (6/10/16 threads: 26.4/29.5/28.6 tok/s).
 - Slow paths time an evenly spaced subset of the 128 positions (the "tokens timed" column in the
   bench output), so the average covers the same context range.
 

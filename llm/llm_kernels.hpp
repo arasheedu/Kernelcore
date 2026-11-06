@@ -42,6 +42,9 @@ struct MatvecQ4Args {
     int            k;
 };
 
+// matvec_q4x8 takes MatvecQ4Args with qs/scales in the 8-row interleaved layout (see
+// kernels/llm/matvec_q4x8.cu and repackQ4x8). rows % 8 == 0.
+
 struct RmsNormArgs {  // one row of n per thread
     const float* x;
     const float* w;
@@ -89,7 +92,7 @@ struct SiluMulArgs {
     int          count;
 };
 
-// Registers matvec_q8, matvec_q4, rms_norm, rope, attn_scores, softmax, attn_values and silu_mul.
+// Registers matvec_q8, matvec_q4, matvec_q4x8, rms_norm, rope, attn_scores, softmax, attn_values and silu_mul.
 // All but rope opt into chunked launches.
 pcuda::Error registerKernels() noexcept;
 

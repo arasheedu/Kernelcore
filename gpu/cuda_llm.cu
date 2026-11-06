@@ -8,6 +8,7 @@
 
 #include "kernels/llm/matvec_q8.cu"
 #include "kernels/llm/matvec_q4.cu"
+#include "kernels/llm/matvec_q4x8.cu"
 #include "kernels/llm/rms_norm.cu"
 #include "kernels/llm/rope.cu"
 #include "kernels/llm/attn_scores.cu"
@@ -33,6 +34,13 @@ cudaError_t matvecQ4(const uint8_t* qs, const float* scales, const float* x, flo
                      cudaStream_t s) {
     if (rows <= 0) return cudaSuccess;
     matvec_q4<<<blocksFor(rows), kBlockSize, 0, s>>>(qs, scales, x, y, dims);
+    return cudaGetLastError();
+}
+
+cudaError_t matvecQ4x8(const uint8_t* qs, const float* scales, const float* x, float* y, const int* dims, int rows,
+                       cudaStream_t s) {
+    if (rows <= 0) return cudaSuccess;
+    matvec_q4x8<<<blocksFor(rows), kBlockSize, 0, s>>>(qs, scales, x, y, dims);
     return cudaGetLastError();
 }
 

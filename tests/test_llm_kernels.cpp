@@ -104,6 +104,45 @@ TEST_CASE(matvec_q8_matches_reference_and_chunks) {
     }
 }
 
+// The 8-row interleaved kernel matches its C++ reference exactly, and matvec_q4 on the same
+// (row-major) weights up to summation order.
+TEST_CASE(matvec_q4x8_matches_reference_and_q4) {
+    LlmFixture fx;
+    REQUIRE(fx.ok);
+    for (auto [rows, k] : {std::pair{8, 32}, std::pair{96, 64}, std::pair{1000, 256}}) {
+        std::mt19937 rng(unsigned(rows + k));
+        std::vector<uint8_t> q(size_t(rows) * k / 2), q8(q.size());
+        for (auto& v : q) v = static_cast<uint8_t>(rng());
+        const auto s = randomFloats(size_t(rows) * k / 32, 21, 0.001f, 0.01f);
+        std::vector<float> s8(s.size());
+        llm::ref::repackQ4x8(q.data(), s.data(), q8.data(), s8.data(), rows, k);
+        const auto x = randomFloats(size_t(k), 22);
+        std::vector<float> want(static_cast<size_t>(rows)), want8(static_cast<size_t>(rows));
+        llm::ref::matvecQ4(q.data(), s.data(), x.data(), want.data(), rows, k);
+        llm::ref::matvecQ4x8(q8.data(), s8.data(), x.data(), want8.data(), rows, k);
+        CHECK(relDiff(want8, want) < 1e-5);  // 4 partial sums vs one running sum
+        auto* dq = devCopy(q8);
+        auto* ds = devCopy(s8);
+        auto* dx = devCopy(x);
+        auto* dy = devCopy(std::vector<float>(size_t(rows), 0.0f));
+        auto* dd = devCopy(std::vector<int>{rows, k});
+        REQUIRE(dq && ds && dx && dy && dd);
+        const llm::MatvecQ4Args a{dq, ds, dx, dy, dd, rows, k};
+        CHECK_OK(pcudaLaunchKernel("matvec_q4x8", &a));
+        CHECK(bitEqual(hostCopy(dy, size_t(rows)), want8));
+        CHECK_OK(pcudaMemset(dy, 0xFF, size_t(rows) * 4));
+        CHECK_OK(pcudaLaunchKernelChunked("matvec_q4x8", &a, workers(), 8));
+        CHECK(bitEqual(hostCopy(dy, size_t(rows)), want8));
+    }
+    // rows must be a multiple of 8
+    auto* buf = devCopy(std::vector<float>(1024, 0.0f));
+    auto* q = devCopy(std::vector<uint8_t>(4096, 0));
+    auto* dims = devCopy(std::vector<int>{12, 32});
+    REQUIRE(buf && q && dims);
+    const llm::MatvecQ4Args bad{q, buf, buf, buf, dims, 12, 32};
+    CHECK_ERR(pcudaLaunchKernel("matvec_q4x8", &bad), Error::InvalidValue);
+}
+
 TEST_CASE(attention_kernels_match_reference_and_chunk) {
     LlmFixture fx;
     REQUIRE(fx.ok);
@@ -228,7 +267,7 @@ TEST_CASE(llm_argument_validation) {
 TEST_CASE(tiny_decode_token_pcuda_vs_cpp) {
     LlmFixture fx;
     REQUIRE(fx.ok);
-    for (llm::Weights w : {llm::Weights::Q8, llm::Weights::Q4}) {
+    for (llm::Weights w : {llm::Weights::Q8, llm::Weights::Q4, llm::Weights::Q4X8}) {
         const llm::Config cfg = llm::tinyConfig(w);
         llm::PcudaAllocator pa;
         llm::HostAllocator ha;

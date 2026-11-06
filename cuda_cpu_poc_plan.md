@@ -768,3 +768,33 @@ Pool changes alone (`pcuda_bench`, vector_add):
 3. SIMD is limited by the per-row accumulation chain and strided gathers (8 rows per register), not by memory bandwidth (12.9 of about 60 GB/s).
 
 **Next steps (not done):** interleave two 8-lane groups per call to hide add latency; carry kernels with `__shared__` and barriers (not supported by Booth's CPU backend).
+
+## 22. Toward Ollama's CPU speed, step 1: 8-row interleaved weights (2026-11-06)
+
+**Limits measured on this machine.**
+- The i5-13400F has AVX2, FMA and AVX-VNNI, but no AVX-512.
+- Memory is dual-channel DDR5-6000, which streams at 84 GB/s with 16 threads (73 GB/s with 10). At 2.02 GB per token that caps decode at about 41.6 tok/s.
+- Ollama CPU-only runs at 28.4 tok/s (58 GB/s) with default threads, and at 26.4/29.5/28.6 tok/s with 6/10/16 threads.
+
+**Change.**
+- `matvec_q4x8` stores, for each group of 8 rows and each 32-weight block, byte j of all 8 rows side by side. Neighbouring threads therefore read neighbouring bytes. It is the same Booth-compatible one-thread-per-row CUDA C, with different index arithmetic.
+- It sums each block in 4 independent partial sums, combined in a fixed order. That breaks the dependent-add chain that limited the SIMD path once the gathers were gone.
+- The SIMD byte load gained a fast path: when all 8 lanes are active and contiguous, it does one 8-byte load widened to 8 lanes. Partial groups keep masked gathers.
+- The adapter requires rows % 8 == 0, and chunks start on 8-row groups.
+- `Weights::Q4X8` repacks the Q4 values (`ref::repackQ4x8`). It is now the default for `pcuda_llm_bench` and `compare_llm.ps1`.
+
+**Results** (3B shapes, prompt 43, 128 tokens):
+
+| ms/token | booth | native | simd | CUDA |
+|---|---|---|---|---|
+| q4 (row-major) | 1,795 | 208 | 182 | 65 |
+| q4x8, layout only | 1,707 | 233 | 138 | 40 |
+| q4x8 + 4 partial sums | 1,666 | 208 | **111** | **39** |
+
+- SIMD is 1.64× faster than with row-major weights, at 9.0 tok/s (18 GB/s).
+- The same kernels on CUDA reach 25.7 tok/s (51.5 GB/s), because their loads are now coalesced.
+- All pcuda paths are bit-identical. Logits are within 3e-7 of the C++ reference.
+
+**Remaining gap to Ollama's 28.4 tok/s** (about 3.2× on SIMD). The SIMD path is still compute-bound at about 1 µop per weight: per weight it converts to float, multiplies and adds, and a contiguity check runs on every load. Next steps:
+- 2: 8-bit activations with integer dot products (AVX-VNNI `vpdpbusd`, through a `__dp4a`-style helper that the generator maps to VNNI).
+- 3: fewer launches and barriers per token.

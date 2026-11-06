@@ -10,6 +10,7 @@
 
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q8);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4);
+PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8);
 PCUDA_DECLARE_KERNEL_IMAGE(rms_norm);
 PCUDA_DECLARE_KERNEL_IMAGE(rope);
 PCUDA_DECLARE_KERNEL_IMAGE(attn_scores);
@@ -121,6 +122,19 @@ Error matvecQ4Chunk(const void* p, int64_t begin, int64_t length, LaunchArgs* ou
     ArgPacker pk(*out);
     pk.ptr(a.qs + begin * (a.k / 2)).ptr(a.scales + begin * (a.k / 32)).ptr(a.x).ptr(a.y + begin).ptr(a.dims);
     return pk.finish(length);
+}
+
+// ---- matvec_q4x8: same arguments and byte counts as matvec_q4, 8-row interleaved layout ----
+
+Error matvecQ4x8Marshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    if (static_cast<const MatvecQ4Args*>(p)->rows % 8 != 0) return Error::InvalidValue;
+    return matvecQ4Marshal(p, ctx, out);
+}
+
+// Chunks must start on an 8-row group so each thread's position within its group is unchanged.
+Error matvecQ4x8Chunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    if (begin % 8 != 0) return Error::InvalidValue;
+    return matvecQ4Chunk(p, begin, length, out);
 }
 
 // ---- rms_norm(x, w, y, n, rows, eps) ------------------------------------------
@@ -277,6 +291,7 @@ Error siluChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) n
 const pcuda::KernelEntry kEntries[] = {
     {"matvec_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q8), &matvecMarshal, &matvecExtent, &matvecChunk},
     {"matvec_q4", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4), &matvecQ4Marshal, &matvecQ4Extent, &matvecQ4Chunk},
+    {"matvec_q4x8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8), &matvecQ4x8Marshal, &matvecQ4Extent, &matvecQ4x8Chunk},
     {"rms_norm", PCUDA_KERNEL_IMAGE_FIELDS(rms_norm), &rmsMarshal, &rmsExtent, &rmsChunk},
     {"rope", PCUDA_KERNEL_IMAGE_FIELDS(rope), &ropeMarshal},
     {"attn_scores", PCUDA_KERNEL_IMAGE_FIELDS(attn_scores), &scoresMarshal, &scoresExtent, &scoresChunk},

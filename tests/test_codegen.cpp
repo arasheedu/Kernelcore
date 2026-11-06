@@ -157,7 +157,7 @@ TEST_CASE(llm_kernels_identical_on_all_paths) {
     Fixture fx;
     REQUIRE(fx.ok);
     // matvec_q8 and matvec_q4 with row counts that leave partial 8-row groups.
-    for (auto [rows, k] : {std::pair{1, 32}, std::pair{13, 64}, std::pair{1003, 256}}) {
+    for (auto [rows, k] : {std::pair{1, 32}, std::pair{13, 64}, std::pair{8, 32}, std::pair{1000, 256}, std::pair{1003, 256}}) {
         const auto q = bytes(size_t(rows) * k, 3);
         const auto s = floats(size_t(rows) * k / 32, 4, 0.001f, 0.02f);
         const auto x = floats(size_t(k), 5, -1, 1);
@@ -176,6 +176,10 @@ TEST_CASE(llm_kernels_identical_on_all_paths) {
         sameOnAllPaths(("matvec_q4" + tag).c_str(), dy, size_t(rows) * 4, [&](bool ch) {
             return ch ? pcudaLaunchKernelChunked("matvec_q4", &a4, 4, 1) : pcudaLaunchKernel("matvec_q4", &a4);
         }, true);
+        if (rows % 8 == 0)  // interleaved layout (the bytes are just a different arrangement here)
+            sameOnAllPaths(("matvec_q4x8" + tag).c_str(), dy, size_t(rows) * 4, [&](bool ch) {
+                return ch ? pcudaLaunchKernelChunked("matvec_q4x8", &a4, 4, 8) : pcudaLaunchKernel("matvec_q4x8", &a4);
+            }, true);
     }
     // Attention, softmax (fmax, varying loops), rms_norm (sqrt), rope (sin/cos).
     const llm::AttnDims d{6, 77, 64, 128, 3};

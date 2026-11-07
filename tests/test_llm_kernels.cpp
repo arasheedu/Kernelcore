@@ -273,7 +273,7 @@ TEST_CASE(kquant_matvecs_match_reference_and_dequantized_floats) {
 
 // Multi-column K-quant matmuls (prompt processing): quantize_cols fills one scratch slot per
 // column exactly as quantize_q8x4; matmul_q4k_q8x4 / matmul_q6k_q8x4 give, per column, the
-// mirror matvec's bits. Column counts cover full and short 4-column tiles; chunked launches too.
+// mirror matvec's bits, with 4- or 8-column tiles. Column counts cover full and short tiles; chunked launches too.
 TEST_CASE(kquant_matmuls_equal_per_column_matvecs) {
     LlmFixture fx;
     REQUIRE(fx.ok);
@@ -297,7 +297,7 @@ TEST_CASE(kquant_matmuls_equal_per_column_matvecs) {
         else llm::ref::repackQ4K(src.data(), rows, k, qw.data());
         auto* dqw = devCopy(qw);
         REQUIRE(dqw);
-        for (int ncols : {1, 3, 4, 7, 9}) {
+        for (int ncols : {1, 3, 4, 7, 8, 9, 13}) {
             const auto x = randomFloats(size_t(k) * ncols, unsigned(950 + ncols), -3, 3);
             std::vector<int> scratch(size_t(slot) * ncols, 0);
             std::vector<float> want(size_t(rows) * ncols);
@@ -319,7 +319,7 @@ TEST_CASE(kquant_matmuls_equal_per_column_matvecs) {
             for (int c = 0; c < ncols; ++c)
                 for (int i = 0; i < nb * 10; ++i) same = same && got[size_t(c) * slot + i] == scratch[size_t(c) * slot + i];
             CHECK(same);
-            const char* kn = q6 ? "matmul_q6k_q8x4" : "matmul_q4k_q8x4";
+            for (const char* kn : {q6 ? "matmul_q6k_q8x4" : "matmul_q4k_q8x4", q6 ? "matmul_q6k_q8x8" : "matmul_q4k_q8x8"})
             for (int rb : {1, 2, 3, 8, 1000}) {  // 5 row groups: partial last blocks, tile-major
                 auto* dmd = devCopy(std::vector<int>{rows, k, ncols, rb});
                 REQUIRE(dmd);

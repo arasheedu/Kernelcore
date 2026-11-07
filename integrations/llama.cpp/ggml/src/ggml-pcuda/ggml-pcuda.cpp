@@ -47,6 +47,7 @@ struct PcudaRuntime {
     bool     matmul_only = false;  // GGML_PCUDA_MATMUL_ONLY=1: only MUL_MAT (the first prototype)
     bool     matvec_cols = false;  // GGML_PCUDA_MATVEC_COLS=1: one matvec per column for batches (no matmul kernel)
     int      row_block = 8;        // GGML_PCUDA_ROW_BLOCK: 8-row groups per matmul block (cache blocking)
+    int      tile = 8;             // GGML_PCUDA_TILE=4 or 8: columns per matmul thread (batches of <= 4 use 4)
 };
 
 PcudaRuntime & runtime() {
@@ -72,6 +73,7 @@ PcudaRuntime & runtime() {
         const char * mc = std::getenv("GGML_PCUDA_MATVEC_COLS");
         r.matvec_cols = mc && std::strcmp(mc, "1") == 0;
         if (const char * rb = std::getenv("GGML_PCUDA_ROW_BLOCK")) r.row_block = std::max(1, std::atoi(rb));
+        if (const char * tl = std::getenv("GGML_PCUDA_TILE")) r.tile = std::atoi(tl) == 4 ? 4 : 8;
         r.ok = true;
         GGML_LOG_INFO("pcuda: %s, pool of %u threads + caller, graphs %s\n", p.name, p.worker_count, r.graphs ? "on" : "off");
         return r;
@@ -415,7 +417,8 @@ bool mul_mat(BackendCtx & ctx, ggml_tensor * dst) {
     int * base = dims ? quantized_input(ctx, x, k, ncols) : nullptr;
     if (!base) return false;
     if (ncols > 1 && !runtime().matvec_cols) {  // several tokens: each weight word read once per 4 columns
-        const char * kernel = w->type == GGML_TYPE_Q4_K ? "matmul_q4k_q8x4" : "matmul_q6k_q8x4";
+        const bool  q4 = w->type == GGML_TYPE_Q4_K;
+        const char * kernel = runtime().tile == 8 && ncols > 4 ? (q4 ? "matmul_q4k_q8x8" : "matmul_q6k_q8x8") : (q4 ? "matmul_q4k_q8x4" : "matmul_q6k_q8x4");
         const llm::MatmulKQ8Args a{static_cast<const int *>(w->data), base, static_cast<float *>(dst->data), dims,
                                    rows, k, int(ncols), runtime().row_block};
         return launch(ctx, kernel, a, 16);

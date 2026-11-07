@@ -343,7 +343,7 @@ kernel objects, so no Booth compiler is needed. A copy and the hook patch are in
 - **What it runs:** a layer's ops except the KV-cache writes and flash attention, all as CUDA C
   kernels. ggml's scheduler gives the rest to the CPU backend, which makes 2 hand-offs per layer
   (from 10 with matmuls only).
-  - `MUL_MAT` with Q4_K / Q6_K weights: a matvec for one token, a 4-column matmul for batches;
+  - `MUL_MAT` with Q4_K / Q6_K weights: a matvec for one token, an 8-column matmul for batches;
   - `ADD` + `RMS_NORM` + `MUL` by the norm weight, as two parallel kernels (`add_sumsq_f` /
     `sumsq_part`, then `norm_mul_q8_f`). These also produce the 8-bit input for the matmuls that
     follow.
@@ -361,6 +361,7 @@ kernel objects, so no Booth compiler is needed. A copy and the hook patch are in
   - `GGML_PCUDA_DISABLE=1` (same binary, CPU only);
   - `GGML_PCUDA_MATMUL_ONLY=1`;
   - `GGML_PCUDA_MATVEC_COLS=1` (batches as one matvec per token);
+  - `GGML_PCUDA_TILE=4` (4 tokens per matmul thread instead of 8);
   - `GGML_PCUDA_ROW_BLOCK=<n>` (matmul thread order: 8-row groups per block, default 8);
   - `GGML_PCUDA_GRAPHS=0`;
   - `GGML_PCUDA_PROFILE=1` (time breakdown at exit; per kernel with graphs off);
@@ -377,23 +378,25 @@ Results with Llama 3.2 3B Q4_K_M from Ollama's store, in llama-bench (same binar
 
 | Backend | Generation (tg64) | Prompt pp32 | pp128 | pp512 |
 |---|---|---|---|---|
-| **pcuda, whole layer** (1 ggml thread) | **29.4–30.2 tok/s** | 81 | 97 | 93 |
+| **pcuda, whole layer** (1 ggml thread) | **29.4–30.2 tok/s** | **101** | **119** | **115** |
+| pcuda, 4 tokens per thread (`GGML_PCUDA_TILE=4`) | same | 81 | 98 | 94 |
 | pcuda, one matvec per prompt token (`GGML_PCUDA_MATVEC_COLS=1`) | same | 58 | 69 | |
 | pcuda, matmuls only | 26.3–27.6 tok/s | 57 | | |
-| llama.cpp CPU backend, 6 threads | 25.9–27.4 tok/s | 99 | 105 | 119–121 |
+| llama.cpp CPU backend, 6 threads | 25.9–27.4 tok/s | 92–99 | 105–110 | 118–121 |
 
 - **Correct.** Against the CPU backend in the same `llama-server` (`GGML_PCUDA_DISABLE=1`):
   - prompt 1: 64/64 greedy tokens identical, mean |Δ log-prob| 0.013;
   - prompt 2: identical until the 0.033 near-tie that standalone pcuda also hits.
 - **Generation is about 10% faster** than llama.cpp's own CPU backend.
-- **Prompt processing** uses multi-column matmuls (`matmul_q4k_q8x4`, `matmul_q6k_q8x4`):
-  - Each thread computes one row for 4 tokens, so each weight word is loaded once per 4 tokens.
+- **Prompt processing** uses multi-column matmuls (`matmul_q4k_q8x8` / `matmul_q6k_q8x8`; the
+  `x4` versions for batches of up to 4 tokens):
+  - Each thread computes one row for 8 tokens, so each weight word is loaded once per 8 tokens.
   - Every column's arithmetic is the matvec's, so results are bit-identical to the one-token path.
   - `quantize_cols` quantizes all of a batch's columns in one launch.
-  - This is 40% faster than one matvec per token, but still 15–25% behind llama.cpp's CPU
-    backend.
-  - These matmuls are 94% of pcuda's prompt time, and they are bound by compute, not memory:
-    the order of tiles and rows (`GGML_PCUDA_ROW_BLOCK`) makes no measurable difference.
+  - This is about 75% faster than one matvec per token. It is level with or ahead of llama.cpp's CPU
+    backend up to pp128, and about 5% behind it at pp512.
+  - 8 tokens per thread beats 4 by about 23%. The matmuls are bound by compute, not memory: the
+    order of tiles and rows (`GGML_PCUDA_ROW_BLOCK`) makes no measurable difference.
 - Use 1 ggml thread (`-t 1`). More ggml threads compete with pcuda's pool.
 
 ## Runtime settings (environment variables)

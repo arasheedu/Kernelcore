@@ -18,6 +18,8 @@ PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4k_q8);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q6k_q8);
 PCUDA_DECLARE_KERNEL_IMAGE(matmul_q4k_q8x4);
 PCUDA_DECLARE_KERNEL_IMAGE(matmul_q6k_q8x4);
+PCUDA_DECLARE_KERNEL_IMAGE(matmul_q4k_q8x8);
+PCUDA_DECLARE_KERNEL_IMAGE(matmul_q6k_q8x8);
 PCUDA_DECLARE_KERNEL_IMAGE(quantize_cols);
 PCUDA_DECLARE_KERNEL_IMAGE(rope_ff);
 PCUDA_DECLARE_KERNEL_IMAGE(mul_rows);
@@ -273,9 +275,9 @@ Error kquantChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out)
 
 // ---- matmul_q4k_q8x4 / matmul_q6k_q8x4(qw, xq, y, dims, base): one thread per (4-column tile, row)
 
-int64_t matmulThreads(const MatmulKQ8Args& a) { return int64_t(a.rows) * ((a.ncols + 3) / 4); }
+int64_t matmulThreads(const MatmulKQ8Args& a, int tile) { return int64_t(a.rows) * ((a.ncols + tile - 1) / tile); }
 
-template <int kWords>
+template <int kWords, int kTile>
 Error matmulKMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
     const auto& a = *static_cast<const MatmulKQ8Args*>(p);
     if (a.rows <= 0 || a.rows % 8 != 0 || a.k <= 0 || a.k % 256 != 0 || a.ncols <= 0 || a.row_block <= 0 ||
@@ -283,7 +285,7 @@ Error matmulKMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) n
         return Error::InvalidValue;
     const int64_t nb = a.k / 32, nsb = a.k / 256;
     if (!fitsIndex(int64_t(a.rows) / 8 * nsb, kWords * 8) || !fitsIndex(scratchInts(int(nb)), a.ncols) ||
-        !fitsIndex(a.rows, a.ncols) || !fitsIndex(matmulThreads(a)) || !fitsIndex(a.row_block, (a.ncols + 3) / 4))
+        !fitsIndex(a.rows, a.ncols) || !fitsIndex(matmulThreads(a, kTile)) || !fitsIndex(a.row_block, (a.ncols + kTile - 1) / kTile))
         return Error::InvalidValue;
     LLM_TRY(check(ctx, a.qw, size_t(int64_t(a.rows) / 8 * nsb * kWords * 8 * 4), "qw"));
     LLM_TRY(check(ctx, a.xq, size_t(scratchInts(int(nb))) * size_t(a.ncols) * sizeof(int), "xq"));
@@ -292,17 +294,19 @@ Error matmulKMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) n
     if (a.dims[0] != a.rows || a.dims[1] != a.k || a.dims[2] != a.ncols || a.dims[3] != a.row_block) return Error::InvalidValue;
     ArgPacker pk(*out);
     pk.ptr(a.qw).ptr(a.xq).ptr(a.y).ptr(a.dims).i32(0);
-    return pk.finish(matmulThreads(a));
+    return pk.finish(matmulThreads(a, kTile));
 }
+template <int kTile>
 Error matmulKChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
     const auto& a = *static_cast<const MatmulKQ8Args*>(p);
-    if (!chunkOk(matmulThreads(a), begin, length) || begin % 8 != 0) return Error::InvalidValue;
+    if (!chunkOk(matmulThreads(a, kTile), begin, length) || begin % 8 != 0) return Error::InvalidValue;
     ArgPacker pk(*out);
     pk.ptr(a.qw).ptr(a.xq).ptr(a.y).ptr(a.dims).i32(int32_t(begin));
     return pk.finish(length);
 }
+template <int kTile>
 Error matmulKExtent(const void* p, int64_t* total) noexcept {
-    *total = matmulThreads(*static_cast<const MatmulKQ8Args*>(p));
+    *total = matmulThreads(*static_cast<const MatmulKQ8Args*>(p), kTile);
     return Error::Success;
 }
 
@@ -753,8 +757,10 @@ const pcuda::KernelEntry kEntries[] = {
     {"matvec_q4x8_q8x2", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8_q8x2), &q4q8x2Marshal, &q4q8x2Extent, &q4q8x2Chunk},
     {"matvec_q4k_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4k_q8), &kquantMarshal<37>, &q4q8Extent, &kquantChunk<37>},
     {"matvec_q6k_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q6k_q8), &kquantMarshal<53>, &q4q8Extent, &kquantChunk<53>},
-    {"matmul_q4k_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q4k_q8x4), &matmulKMarshal<37>, &matmulKExtent, &matmulKChunk},
-    {"matmul_q6k_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q6k_q8x4), &matmulKMarshal<53>, &matmulKExtent, &matmulKChunk},
+    {"matmul_q4k_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q4k_q8x4), &matmulKMarshal<37, 4>, &matmulKExtent<4>, &matmulKChunk<4>},
+    {"matmul_q6k_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q6k_q8x4), &matmulKMarshal<53, 4>, &matmulKExtent<4>, &matmulKChunk<4>},
+    {"matmul_q4k_q8x8", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q4k_q8x8), &matmulKMarshal<37, 8>, &matmulKExtent<8>, &matmulKChunk<8>},
+    {"matmul_q6k_q8x8", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q6k_q8x8), &matmulKMarshal<53, 8>, &matmulKExtent<8>, &matmulKChunk<8>},
     {"quantize_cols", PCUDA_KERNEL_IMAGE_FIELDS(quantize_cols), &quantColsMarshal, &quantColsExtent, &quantColsChunk},
     {"rope_ff", PCUDA_KERNEL_IMAGE_FIELDS(rope_ff), &ropeFFMarshal},
     {"mul_rows", PCUDA_KERNEL_IMAGE_FIELDS(mul_rows), &mulRowsMarshal},

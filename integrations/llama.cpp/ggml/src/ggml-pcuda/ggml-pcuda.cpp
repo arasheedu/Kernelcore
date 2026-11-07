@@ -45,6 +45,8 @@ struct PcudaRuntime {
     bool     graphs = true;
     bool     disabled = false;     // GGML_PCUDA_DISABLE=1: claim nothing (CPU-only comparisons)
     bool     matmul_only = false;  // GGML_PCUDA_MATMUL_ONLY=1: only MUL_MAT (the first prototype)
+    bool     matvec_cols = false;  // GGML_PCUDA_MATVEC_COLS=1: one matvec per column for batches (no matmul kernel)
+    int      row_block = 8;        // GGML_PCUDA_ROW_BLOCK: 8-row groups per matmul block (cache blocking)
 };
 
 PcudaRuntime & runtime() {
@@ -67,6 +69,9 @@ PcudaRuntime & runtime() {
         r.disabled = off && std::strcmp(off, "1") == 0;
         const char * mm = std::getenv("GGML_PCUDA_MATMUL_ONLY");
         r.matmul_only = mm && std::strcmp(mm, "1") == 0;
+        const char * mc = std::getenv("GGML_PCUDA_MATVEC_COLS");
+        r.matvec_cols = mc && std::strcmp(mc, "1") == 0;
+        if (const char * rb = std::getenv("GGML_PCUDA_ROW_BLOCK")) r.row_block = std::max(1, std::atoi(rb));
         r.ok = true;
         GGML_LOG_INFO("pcuda: %s, pool of %u threads + caller, graphs %s\n", p.name, p.worker_count, r.graphs ? "on" : "off");
         return r;
@@ -355,6 +360,12 @@ int * quantized_input(BackendCtx & ctx, const ggml_tensor * x, int k, int64_t nc
         if (qi.t == x && qi.ncols == ncols && qi.k == k) return qi.q;
     int * base = quantized_slots(ctx, x, k, ncols);
     if (!base) return nullptr;
+    if (ncols > 1 && x->nb[1] == size_t(k) * sizeof(float)) {  // contiguous columns: one launch
+        const int * dims = ctx.ints({nb, int(ncols)});
+        if (!dims) return nullptr;
+        const llm::QuantizeColsArgs a{static_cast<const float *>(x->data), base, dims, k, int(ncols)};
+        return launch(ctx, "quantize_cols", a, 16) ? base : nullptr;
+    }
     for (int64_t c = 0; c < ncols; ++c) {
         int * q = base + size_t(c) * slot;
         const auto * xc = reinterpret_cast<const float *>(static_cast<const char *>(x->data) + c * x->nb[1]);
@@ -400,9 +411,15 @@ bool mul_mat(BackendCtx & ctx, ggml_tensor * dst) {
     const ggml_tensor * x = dst->src[1];
     const int rows = int(w->ne[1]), k = int(w->ne[0]), nb = k / 32;
     const int64_t ncols = ggml_nrows(x);
-    const int * dims = ctx.ints({rows, k});
+    const int * dims = ctx.ints({rows, k, int(ncols), runtime().row_block});
     int * base = dims ? quantized_input(ctx, x, k, ncols) : nullptr;
     if (!base) return false;
+    if (ncols > 1 && !runtime().matvec_cols) {  // several tokens: each weight word read once per 4 columns
+        const char * kernel = w->type == GGML_TYPE_Q4_K ? "matmul_q4k_q8x4" : "matmul_q6k_q8x4";
+        const llm::MatmulKQ8Args a{static_cast<const int *>(w->data), base, static_cast<float *>(dst->data), dims,
+                                   rows, k, int(ncols), runtime().row_block};
+        return launch(ctx, kernel, a, 16);
+    }
     const char * kernel = w->type == GGML_TYPE_Q4_K ? "matvec_q4k_q8" : "matvec_q6k_q8";
     for (int64_t c = 0; c < ncols; ++c) {
         int * q = base + size_t(c) * size_t(llm::scratchInts(nb));

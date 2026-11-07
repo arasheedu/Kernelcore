@@ -16,6 +16,9 @@ PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8_q8);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8_q8x2);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4k_q8);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q6k_q8);
+PCUDA_DECLARE_KERNEL_IMAGE(matmul_q4k_q8x4);
+PCUDA_DECLARE_KERNEL_IMAGE(matmul_q6k_q8x4);
+PCUDA_DECLARE_KERNEL_IMAGE(quantize_cols);
 PCUDA_DECLARE_KERNEL_IMAGE(rope_ff);
 PCUDA_DECLARE_KERNEL_IMAGE(mul_rows);
 PCUDA_DECLARE_KERNEL_IMAGE(rope_ggml);
@@ -266,6 +269,69 @@ Error kquantChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out)
     ArgPacker pk(*out);
     pk.ptr(a.qw + begin / 8 * (a.k / 256) * kWords * 8).ptr(a.xq).ptr(a.xd).ptr(a.y + begin).ptr(a.dims);
     return pk.finish(length);
+}
+
+// ---- matmul_q4k_q8x4 / matmul_q6k_q8x4(qw, xq, y, dims, base): one thread per (4-column tile, row)
+
+int64_t matmulThreads(const MatmulKQ8Args& a) { return int64_t(a.rows) * ((a.ncols + 3) / 4); }
+
+template <int kWords>
+Error matmulKMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const MatmulKQ8Args*>(p);
+    if (a.rows <= 0 || a.rows % 8 != 0 || a.k <= 0 || a.k % 256 != 0 || a.ncols <= 0 || a.row_block <= 0 ||
+        !fitsIndex(a.rows, a.k))
+        return Error::InvalidValue;
+    const int64_t nb = a.k / 32, nsb = a.k / 256;
+    if (!fitsIndex(int64_t(a.rows) / 8 * nsb, kWords * 8) || !fitsIndex(scratchInts(int(nb)), a.ncols) ||
+        !fitsIndex(a.rows, a.ncols) || !fitsIndex(matmulThreads(a)) || !fitsIndex(a.row_block, (a.ncols + 3) / 4))
+        return Error::InvalidValue;
+    LLM_TRY(check(ctx, a.qw, size_t(int64_t(a.rows) / 8 * nsb * kWords * 8 * 4), "qw"));
+    LLM_TRY(check(ctx, a.xq, size_t(scratchInts(int(nb))) * size_t(a.ncols) * sizeof(int), "xq"));
+    LLM_TRY(check(ctx, a.y, f32Bytes(int64_t(a.rows) * a.ncols), "y"));
+    LLM_TRY(check(ctx, a.dims, 4 * sizeof(int), "dims"));
+    if (a.dims[0] != a.rows || a.dims[1] != a.k || a.dims[2] != a.ncols || a.dims[3] != a.row_block) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.qw).ptr(a.xq).ptr(a.y).ptr(a.dims).i32(0);
+    return pk.finish(matmulThreads(a));
+}
+Error matmulKChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const MatmulKQ8Args*>(p);
+    if (!chunkOk(matmulThreads(a), begin, length) || begin % 8 != 0) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.qw).ptr(a.xq).ptr(a.y).ptr(a.dims).i32(int32_t(begin));
+    return pk.finish(length);
+}
+Error matmulKExtent(const void* p, int64_t* total) noexcept {
+    *total = matmulThreads(*static_cast<const MatmulKQ8Args*>(p));
+    return Error::Success;
+}
+
+// ---- quantize_cols(x, q, dims, base): one thread per (column, block) ------------------
+
+Error quantColsMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const QuantizeColsArgs*>(p);
+    if (a.k <= 0 || a.k % 256 != 0 || a.ncols <= 0 || !fitsIndex(a.k, a.ncols) ||
+        !fitsIndex(scratchInts(a.k / 32), a.ncols))
+        return Error::InvalidValue;
+    LLM_TRY(check(ctx, a.x, f32Bytes(int64_t(a.k) * a.ncols), "x"));
+    LLM_TRY(check(ctx, a.q, size_t(scratchInts(a.k / 32)) * size_t(a.ncols) * sizeof(int), "q"));
+    LLM_TRY(check(ctx, a.dims, 2 * sizeof(int), "dims"));
+    if (a.dims[0] != a.k / 32 || a.dims[1] != a.ncols) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.x).ptr(a.q).ptr(a.dims).i32(0);
+    return pk.finish(int64_t(a.k / 32) * a.ncols);
+}
+Error quantColsChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const QuantizeColsArgs*>(p);
+    if (!chunkOk(int64_t(a.k / 32) * a.ncols, begin, length) || begin % 8 != 0) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.x).ptr(a.q).ptr(a.dims).i32(int32_t(begin));
+    return pk.finish(length);
+}
+Error quantColsExtent(const void* p, int64_t* total) noexcept {
+    const auto& a = *static_cast<const QuantizeColsArgs*>(p);
+    *total = int64_t(a.k / 32) * a.ncols;
+    return Error::Success;
 }
 
 // ---- rope_ff(x, ff, pairs_per_head, pos, count, log2_base) ------------------------
@@ -687,6 +753,9 @@ const pcuda::KernelEntry kEntries[] = {
     {"matvec_q4x8_q8x2", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8_q8x2), &q4q8x2Marshal, &q4q8x2Extent, &q4q8x2Chunk},
     {"matvec_q4k_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4k_q8), &kquantMarshal<37>, &q4q8Extent, &kquantChunk<37>},
     {"matvec_q6k_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q6k_q8), &kquantMarshal<53>, &q4q8Extent, &kquantChunk<53>},
+    {"matmul_q4k_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q4k_q8x4), &matmulKMarshal<37>, &matmulKExtent, &matmulKChunk},
+    {"matmul_q6k_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q6k_q8x4), &matmulKMarshal<53>, &matmulKExtent, &matmulKChunk},
+    {"quantize_cols", PCUDA_KERNEL_IMAGE_FIELDS(quantize_cols), &quantColsMarshal, &quantColsExtent, &quantColsChunk},
     {"rope_ff", PCUDA_KERNEL_IMAGE_FIELDS(rope_ff), &ropeFFMarshal},
     {"mul_rows", PCUDA_KERNEL_IMAGE_FIELDS(mul_rows), &mulRowsMarshal},
     {"rope_ggml", PCUDA_KERNEL_IMAGE_FIELDS(rope_ggml), &ropeGgmlMarshal},

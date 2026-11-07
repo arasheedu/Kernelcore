@@ -271,6 +271,74 @@ TEST_CASE(kquant_matvecs_match_reference_and_dequantized_floats) {
 }
 
 
+// Multi-column K-quant matmuls (prompt processing): quantize_cols fills one scratch slot per
+// column exactly as quantize_q8x4; matmul_q4k_q8x4 / matmul_q6k_q8x4 give, per column, the
+// mirror matvec's bits. Column counts cover full and short 4-column tiles; chunked launches too.
+TEST_CASE(kquant_matmuls_equal_per_column_matvecs) {
+    LlmFixture fx;
+    REQUIRE(fx.ok);
+    const int rows = 40, k = 768, nsb = k / 256, nb = k / 32, slot = llm::scratchInts(nb);
+    for (int q6 = 0; q6 < 2; ++q6) {
+        const int bb = q6 ? 210 : 144, words = q6 ? 53 : 37;
+        std::mt19937 rng(unsigned(901 + q6));
+        std::vector<uint8_t> src(size_t(rows) * nsb * bb);
+        for (auto& v : src) v = static_cast<uint8_t>(rng());
+        auto setHalf = [&](uint8_t* p) {
+            const uint16_t h = static_cast<uint16_t>(0x1800 + rng() % 0x0C00);
+            p[0] = uint8_t(h & 0xFF), p[1] = uint8_t(h >> 8);
+        };
+        for (int r = 0; r < rows * nsb; ++r) {
+            uint8_t* b = src.data() + size_t(r) * bb;
+            if (q6) setHalf(b + 208);
+            else setHalf(b), setHalf(b + 2);
+        }
+        std::vector<int> qw(size_t(rows) * nsb * words);
+        if (q6) llm::ref::repackQ6K(src.data(), rows, k, qw.data());
+        else llm::ref::repackQ4K(src.data(), rows, k, qw.data());
+        auto* dqw = devCopy(qw);
+        REQUIRE(dqw);
+        for (int ncols : {1, 3, 4, 7, 9}) {
+            const auto x = randomFloats(size_t(k) * ncols, unsigned(950 + ncols), -3, 3);
+            std::vector<int> scratch(size_t(slot) * ncols, 0);
+            std::vector<float> want(size_t(rows) * ncols);
+            for (int c = 0; c < ncols; ++c) {
+                int* s = scratch.data() + size_t(c) * slot;
+                llm::ref::quantizeQ8x4(x.data() + size_t(c) * k, s, llm::scratchScales(s, nb), nb);
+                if (q6) llm::ref::matvecQ6KQ8(qw.data(), s, llm::scratchScales(s, nb), want.data() + size_t(c) * rows, rows, k);
+                else llm::ref::matvecQ4KQ8(qw.data(), s, llm::scratchScales(s, nb), want.data() + size_t(c) * rows, rows, k);
+            }
+            auto* dx = devCopy(x);
+            auto* dq = devCopy(std::vector<int>(scratch.size(), 0));
+            auto* dy = devCopy(std::vector<float>(want.size(), 0.0f));
+            auto* dqd = devCopy(std::vector<int>{nb, ncols});
+            REQUIRE(dx && dq && dy && dqd);
+            const llm::QuantizeColsArgs qa{dx, dq, dqd, k, ncols};
+            CHECK_OK(pcudaLaunchKernelChunked("quantize_cols", &qa, workers(), 8));
+            const auto got = hostCopy(dq, scratch.size());
+            bool same = true;  // words and {scale, sum}; the partial-sum floats are not written
+            for (int c = 0; c < ncols; ++c)
+                for (int i = 0; i < nb * 10; ++i) same = same && got[size_t(c) * slot + i] == scratch[size_t(c) * slot + i];
+            CHECK(same);
+            const char* kn = q6 ? "matmul_q6k_q8x4" : "matmul_q4k_q8x4";
+            for (int rb : {1, 2, 3, 8, 1000}) {  // 5 row groups: partial last blocks, tile-major
+                auto* dmd = devCopy(std::vector<int>{rows, k, ncols, rb});
+                REQUIRE(dmd);
+                const llm::MatmulKQ8Args a{dqw, dq, dy, dmd, rows, k, ncols, rb};
+                CHECK_OK(pcudaMemset(dy, 0xFF, want.size() * 4));
+                CHECK_OK(pcudaLaunchKernel(kn, &a));
+                CHECK(bitEqual(hostCopy(dy, want.size()), want));
+                CHECK_OK(pcudaMemset(dy, 0xFF, want.size() * 4));
+                CHECK_OK(pcudaLaunchKernelChunked(kn, &a, workers(), 8));
+                CHECK(bitEqual(hostCopy(dy, want.size()), want));
+                if (ncols > 1) {  // dims disagree with the arguments
+                    const llm::MatmulKQ8Args bad{dqw, dq, dy, dmd, rows, k, ncols - 1, rb};
+                    CHECK_ERR(pcudaLaunchKernel(kn, &bad), Error::InvalidValue);
+                }
+            }
+        }
+    }
+}
+
 // ggml ops for the llama.cpp backend: broadcast multiply and rope with positions from a tensor.
 TEST_CASE(ggml_op_kernels_match_reference) {
     LlmFixture fx;

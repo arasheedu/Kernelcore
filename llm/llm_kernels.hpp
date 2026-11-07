@@ -241,7 +241,34 @@ struct SiluMulArgs {
     int          count;
 };
 
-// Registers matvec_q8, matvec_q4, matvec_q4x8, quantize_q8x4, matvec_q4x8_q8, matvec_q4x8_q8x2, matvec_q4k_q8, matvec_q6k_q8, rope_ff, add_rms_norm, silu_mul_q8x4, add_sumsq, norm_q8x4, rms_norm, rope, kv_append, attn_scores, softmax, attn_values and silu_mul.
+// Y = W X for GGUF K-quant weights and ncols 8-bit activation columns (kernels/llm/
+// matmul_q4k_q8x4.cu, matmul_q6k_q8x4.cu): each weight word is read once per 4 columns. Column c's
+// activations are the scratch slot xq + c * scratchInts(k / 32); its output is y + c * rows.
+// Bit-identical to matvec_q4k_q8 / matvec_q6k_q8 per column. dims -> device int[4]
+// {rows, k, ncols, row_block}: threads run in blocks of row_block 8-row groups, tile by tile.
+struct MatmulKQ8Args {
+    const int* qw;
+    const int* xq;
+    float*     y;
+    const int* dims;
+    int        rows;
+    int        k;
+    int        ncols;
+    int        row_block = 8;
+};
+
+// 8-bit quantization of ncols columns of k floats (x + c * k) into scratch slots
+// q + c * scratchInts(k / 32), as quantize_q8x4 does (kernels/llm/quantize_cols.cu).
+// dims -> device int[2] {k / 32, ncols}.
+struct QuantizeColsArgs {
+    const float* x;
+    int*         q;
+    const int*   dims;
+    int          k;
+    int          ncols;
+};
+
+// Registers matvec_q8, matvec_q4, matvec_q4x8, quantize_q8x4, quantize_cols, matvec_q4x8_q8, matvec_q4x8_q8x2, matvec_q4k_q8, matvec_q6k_q8, matmul_q4k_q8x4, matmul_q6k_q8x4, rope_ff, add_rms_norm, silu_mul_q8x4, add_sumsq, norm_q8x4, rms_norm, rope, kv_append, attn_scores, softmax, attn_values and silu_mul.
 // All but add_rms_norm, rope and kv_append opt into chunked launches.
 pcuda::Error registerKernels() noexcept;
 

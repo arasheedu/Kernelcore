@@ -333,6 +333,46 @@ at −0.7117. After that, both texts are fluent and say the same thing in differ
 scale, llama.cpp and Ollama differ by about 0.02 on " Paris" in "The capital of France is",
 from different builds of the same code.
 
+### ggml backend prototype: pcuda inside llama.cpp (`ggml-pcuda`)
+
+`ggml/src/ggml-pcuda/` in a llama.cpp tree, built with `-DGGML_PCUDA=ON -DGGML_PCUDA_ROOT=<this repo>`,
+adds a `PCUDA` device to ggml. It pulls in this repo with `add_subdirectory` and uses the prebuilt
+kernel objects, so no Booth compiler is needed.
+
+- **What it runs:** `MUL_MAT` with Q4_K / Q6_K weights, for any batch size. Every other op and weight
+  stays on the CPU backend; ggml's scheduler splits the graph.
+- **Weights:** the buffer type is pcuda memory, and `set_tensor` repacks the weights into the
+  interleaved streams. It is not a host buffer type, so the CPU backend never reads repacked weights.
+- **Activations:** each column is copied into pcuda memory and quantized by the `quantize_q8x4`
+  kernel. Matrices that share an input (q/k/v, gate/up) quantize it once. All matmuls of one
+  `graph_compute` call run as one pcuda graph.
+- **Switches:**
+  - `GGML_PCUDA_DISABLE=1` (same binary, CPU only);
+  - `GGML_PCUDA_GRAPHS=0`;
+  - `GGML_PCUDA_PROFILE=1` (time breakdown at exit).
+
+```powershell
+cmake -S llama.cpp -B build-pcuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_PCUDA=ON -DGGML_PCUDA_ROOT=C:/BitsPlus/CudaOnCPUCores
+cmake --build build-pcuda --target llama-server llama-bench
+build-pcuda\bin\llama-bench -m <llama3.2 gguf> -t 1 -p 16 -n 64
+```
+
+Results with Llama 3.2 3B Q4_K_M from Ollama's store:
+
+- **Correct.** Against llama.cpp's CPU backend in the same `llama-server` binary (`GGML_PCUDA_DISABLE=1`):
+  - prompt 1: 64/64 greedy tokens identical, mean |Δ log-prob| 0.011;
+  - prompt 2: identical until the same 0.033 near-tie that standalone pcuda hits.
+- **Speed is not there yet.** In llama-bench, the same binary:
+  - CPU backend alone, 6 threads: generation 26.8 tok/s, prompt 94 tok/s;
+  - pcuda for the matmuls, best thread split: 24.5–25.4 tok/s and 54–64 tok/s.
+
+  The kernels take 30 ms of each ~38 ms token, matching standalone pcuda. The rest is:
+  - about 2 ms of per-split bookkeeping: llama.cpp calls into pcuda about 141 times per token;
+  - about 5 ms of CPU-side ops and hand-offs. These run on 1–2 ggml threads, because more ggml
+    threads compete with pcuda's pool, even with `--poll 0`.
+
+  Prompt processing runs one matvec per token column, so it reads every weight once per prompt token.
+
 ## Runtime settings (environment variables)
 
 | Variable | Default | Meaning |

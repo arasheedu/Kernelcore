@@ -1111,3 +1111,42 @@ Q6_K covers the 323 MB tied output matrix and half of ffn_down and attn_v, so it
 **Real model** (`real_model_check.ps1`):
 - **Prompt 1, 64 tokens:** 28.6 -> 30.6 tok/s, against Ollama CPU at 30.3. Still bit-identical to the C++ mirror, 64/64 top tokens, identical text.
 - **Prompt 2, 128 tokens:** 29.2 tok/s against 29.6, in a noisy run (llama-server measured 24 tok/s itself). Top token 125/128, mean |delta log-prob| 0.011. The new summation order moves the free-run divergence to an earlier near-tie with a 0.033 gap.
+
+## 32. Step 2: ggml backend prototype in llama.cpp (2026-11-06)
+
+**Where.** In the user's llama.cpp fork (`C:\BitsPlus\VisOllamInference\llama.cpp`, not committed there):
+- new: `ggml/include/ggml-pcuda.h` and `ggml/src/ggml-pcuda/{CMakeLists.txt, ggml-pcuda.cpp}`;
+- hooks: `GGML_PCUDA` and `GGML_PCUDA_ROOT` options, `ggml_add_backend(PCUDA)`, and static registration in `ggml-backend-reg.cpp`.
+
+**Build.** The backend `add_subdirectory`s CudaOnCPUCores (`PCUDA_KATH_MODE=prebuilt`, tests off, `EXCLUDE_FROM_ALL`) and links `pcuda` and `pcuda_llm`. The one change needed here: `BoothKernel.cmake` now writes generated kernels under `PROJECT_BINARY_DIR`, not `CMAKE_BINARY_DIR`.
+
+**Design:**
+- **Device:** an ACCEL device, so llama.cpp tries its buffer type first for every weight (`make_cpu_buft_list`).
+- **`supports_op`:** only `MUL_MAT` whose weight is Q4_K or Q6_K, 2-D, with `k % 256 == 0` and `rows % 8 == 0`, and lives in the pcuda buffer type. llama.cpp probes with 512 columns, so every batch size is accepted. The f32 input must be contiguous.
+- **Buffer type:**
+  - memory is `pcudaMalloc`;
+  - `set_tensor` repacks whole Q4_K / Q6_K tensors, and `get_tensor` unpacks them (fp32 scales back to fp16, exact);
+  - `get_alloc_size` returns the stream size;
+  - `is_host` is false.
+- **`graph_compute`:**
+  - each input column is copied into scratch and quantized by `quantize_q8x4`; inputs shared by several matmuls in the call are quantized once;
+  - matvec kernels run chunked over the pool;
+  - everything is recorded as one pcuda graph per call and launched at the end. It is flushed early if an input comes from this backend.
+
+**Results.** Llama 3.2 3B Q4_K_M; same binary with and without `GGML_PCUDA_DISABLE=1`.
+- **Correctness:**
+  - prompt 1: 64/64 greedy tokens identical to the CPU backend, mean |Δ log-prob| 0.011;
+  - prompt 2: identical until the 0.033 near-tie that standalone pcuda also hits. The backend reproduces standalone pcuda exactly.
+- **llama-bench, generation (tg64):** pcuda 24.5–25.4 tok/s (±2) against the CPU backend's 26.8 at 6 threads.
+- **llama-bench, prompt (pp16):** pcuda 54–64 tok/s against 94.
+- **Profile** (`GGML_PCUDA_PROFILE=1`), per ~37.6 ms token:
+  - kernel runs about 30 ms;
+  - pcuda bookkeeping about 2 ms (141 `graph_compute` calls per token);
+  - CPU-side work about 5 ms.
+  - Host quantization, single-threaded C++ run once per matrix, had cost 3.7 ms/token. It now runs as the kernel, once per shared input: 0.5 ms.
+- **Threads:** more ggml threads make it slower even with `--poll 0`, because ggml's pool and pcuda's pool compete. Best: ggml 1–3 threads plus pcuda 9–11.
+
+**Next (step 4 territory):**
+1. A multi-column matmul kernel (reads each weight once for up to N columns) for prompt processing.
+2. Take over the rest of the layer (rms_norm, rope, attention on the F16 KV cache, silu·mul, add), so a token is one or two pcuda graphs instead of ~141 splits. This also removes the ggml thread contention.
+3. Ollama integration (step 3): build `ggml-pcuda` as a `GGML_BACKEND_DL` module next to the CPU variants.

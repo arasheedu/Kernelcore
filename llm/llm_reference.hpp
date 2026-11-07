@@ -27,6 +27,17 @@ void siluMulQ8x4(const float* g, const float* u, int* xq, float* xd, int count);
 // Parallel RMS norm + quantization (add_sumsq, norm_q8x4); q is the scratch of llm::scratchInts(nb).
 void addSumsq(float* x, const float* t, int* q, int nb);
 void normQ8x4(const float* x, const float* w, int* q, int nb, float eps);
+
+// GGUF K-quants. Streams: rows in groups of 8, super-blocks interleaved by 32-bit word
+// (see kernels/llm/matvec_q4k_q8.cu and matvec_q6k_q8.cu); fp16 scales are stored as f32.
+float f16ToF32(uint16_t h);
+void  dequantRowQ4K(const uint8_t* src, int k, float* out);  // ggml dequantize_row_q4_K
+void  dequantRowQ6K(const uint8_t* src, int k, float* out);  // ggml dequantize_row_q6_K
+void  repackQ4K(const uint8_t* src, int rows, int k, int* qw);  // rows * k / 256 * 37 ints
+void  repackQ6K(const uint8_t* src, int rows, int k, int* qw);  // rows * k / 256 * 53 ints
+void  matvecQ4KQ8(const int* qw, const int* xq, const float* xd, float* y, int rows, int k);
+void  matvecQ6KQ8(const int* qw, const int* xq, const float* xd, float* y, int rows, int k);
+void  ropeFF(float* x, const float* ff, int pairs_per_head, int pos, int count, float log2_base);
 void rope(float* x, int pairs_per_head, int pos, int count, float log2_base);
 // Layouts as in AttnDims: kt[kv_stride][k_stride] (K transposed), v[ctx][kv_stride],
 // scores/p[n_heads][ctx_pad] (entries t >= ctx untouched).

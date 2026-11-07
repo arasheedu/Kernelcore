@@ -276,3 +276,230 @@ void normQ8x4(const float* x, const float* w, int* q, int nb, float eps) {
 }
 
 } // namespace llm::ref
+
+// ---- GGUF K-quants (Q4_K, Q6_K) ------------------------------------------------
+
+namespace llm::ref {
+
+float f16ToF32(uint16_t h) {
+    const uint32_t sign = uint32_t(h & 0x8000u) << 16;
+    const uint32_t exp = (h >> 10) & 0x1Fu;
+    const uint32_t man = h & 0x3FFu;
+    uint32_t bits;
+    if (exp == 0) {
+        if (man == 0) {
+            bits = sign;
+        } else {  // subnormal: renormalize
+            int e = -1;
+            uint32_t m = man;
+            do {
+                ++e;
+                m <<= 1;
+            } while ((m & 0x400u) == 0);
+            bits = sign | uint32_t(127 - 15 - e) << 23 | (m & 0x3FFu) << 13;
+        }
+    } else if (exp == 31) {
+        bits = sign | 0x7F800000u | man << 13;
+    } else {
+        bits = sign | (exp + 127 - 15) << 23 | man << 13;
+    }
+    float f;
+    std::memcpy(&f, &bits, sizeof f);
+    return f;
+}
+
+namespace {
+uint16_t rd16(const uint8_t* p) { return uint16_t(p[0] | p[1] << 8); }
+int rd32(const uint8_t* p) {
+    int v;
+    std::memcpy(&v, p, 4);
+    return v;
+}
+int f32bits(float f) {
+    int v;
+    std::memcpy(&v, &f, 4);
+    return v;
+}
+float bitsF32(int v) {
+    float f;
+    std::memcpy(&f, &v, 4);
+    return f;
+}
+// ggml get_scale_min_k4
+void scaleMinK4(int j, const uint8_t* q, int* sc, int* m) {
+    if (j < 4) {
+        *sc = q[j] & 63;
+        *m = q[j + 4] & 63;
+    } else {
+        *sc = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4);
+        *m = (q[j + 4] >> 4) | ((q[j - 0] >> 6) << 4);
+    }
+}
+int sar(int v, int s) { return v >> s; }                                                   // arithmetic
+int shl(int v, int s) { return static_cast<int>(static_cast<uint32_t>(v) << s); }        // no UB
+} // namespace
+
+void dequantRowQ4K(const uint8_t* src, int k, float* out) {
+    for (int s = 0; s < k / 256; ++s) {
+        const uint8_t* b = src + size_t(s) * 144;
+        const float d = f16ToF32(rd16(b)), dmin = f16ToF32(rd16(b + 2));
+        const uint8_t* scales = b + 4;
+        const uint8_t* q = b + 16;
+        float* y = out + size_t(s) * 256;
+        for (int j = 0; j < 4; ++j) {
+            int sc, m;
+            scaleMinK4(2 * j, scales, &sc, &m);
+            const float d1 = d * float(sc), m1 = dmin * float(m);
+            scaleMinK4(2 * j + 1, scales, &sc, &m);
+            const float d2 = d * float(sc), m2 = dmin * float(m);
+            for (int l = 0; l < 32; ++l) y[64 * j + l] = d1 * float(q[32 * j + l] & 0xF) - m1;
+            for (int l = 0; l < 32; ++l) y[64 * j + 32 + l] = d2 * float(q[32 * j + l] >> 4) - m2;
+        }
+    }
+}
+
+void dequantRowQ6K(const uint8_t* src, int k, float* out) {
+    for (int s = 0; s < k / 256; ++s) {
+        const uint8_t* b = src + size_t(s) * 210;
+        const uint8_t* ql = b;
+        const uint8_t* qh = b + 128;
+        const int8_t* sc = reinterpret_cast<const int8_t*>(b + 192);
+        const float d = f16ToF32(rd16(b + 208));
+        float* y = out + size_t(s) * 256;
+        for (int n = 0; n < 2; ++n) {
+            for (int l = 0; l < 32; ++l) {
+                const int is = l / 16;
+                const int q1 = int((ql[64 * n + l] & 0xF) | (((qh[32 * n + l] >> 0) & 3) << 4)) - 32;
+                const int q2 = int((ql[64 * n + l + 32] & 0xF) | (((qh[32 * n + l] >> 2) & 3) << 4)) - 32;
+                const int q3 = int((ql[64 * n + l] >> 4) | (((qh[32 * n + l] >> 4) & 3) << 4)) - 32;
+                const int q4 = int((ql[64 * n + l + 32] >> 4) | (((qh[32 * n + l] >> 6) & 3) << 4)) - 32;
+                y[128 * n + l] = d * float(sc[8 * n + is + 0]) * float(q1);
+                y[128 * n + l + 32] = d * float(sc[8 * n + is + 2]) * float(q2);
+                y[128 * n + l + 64] = d * float(sc[8 * n + is + 4]) * float(q3);
+                y[128 * n + l + 96] = d * float(sc[8 * n + is + 6]) * float(q4);
+            }
+        }
+    }
+}
+
+void repackQ4K(const uint8_t* src, int rows, int k, int* qw) {
+    const int nsb = k / 256;
+    for (int row = 0; row < rows; ++row) {
+        const int g = row / 8, l = row % 8;
+        for (int s = 0; s < nsb; ++s) {
+            const uint8_t* b = src + (size_t(row) * nsb + s) * 144;
+            int* dst = qw + (size_t(g) * nsb + s) * 296;
+            dst[0 * 8 + l] = f32bits(f16ToF32(rd16(b)));
+            dst[1 * 8 + l] = f32bits(f16ToF32(rd16(b + 2)));
+            for (int w = 0; w < 3; ++w) dst[(2 + w) * 8 + l] = rd32(b + 4 + 4 * w);
+            for (int w = 0; w < 32; ++w) dst[(5 + w) * 8 + l] = rd32(b + 16 + 4 * w);
+        }
+    }
+}
+
+void repackQ6K(const uint8_t* src, int rows, int k, int* qw) {
+    const int nsb = k / 256;
+    for (int row = 0; row < rows; ++row) {
+        const int g = row / 8, l = row % 8;
+        for (int s = 0; s < nsb; ++s) {
+            const uint8_t* b = src + (size_t(row) * nsb + s) * 210;
+            int* dst = qw + (size_t(g) * nsb + s) * 424;
+            for (int w = 0; w < 52; ++w) dst[w * 8 + l] = rd32(b + 4 * w);  // ql, qh, scales
+            dst[52 * 8 + l] = f32bits(f16ToF32(rd16(b + 208)));
+        }
+    }
+}
+
+void matvecQ4KQ8(const int* qw, const int* xq, const float* xd, float* y, int rows, int k) {
+    const int nsb = k / 256;
+    for (int row = 0; row < rows; ++row) {
+        const int g = row / 8, l = row % 8;
+        float acc = 0.0f;
+        for (int s = 0; s < nsb; ++s) {
+            const int* blk = qw + (size_t(g) * nsb + s) * 296;
+            const float d = bitsF32(blk[l]), dmin = bitsF32(blk[8 + l]);
+            const int s0 = blk[16 + l], s1 = blk[24 + l], s2 = blk[32 + l];
+            const int sclo = s0 & 0x3F3F3F3F, mlo = s1 & 0x3F3F3F3F;
+            const int schi = (s2 & 0x0F0F0F0F) | (sar(s0, 2) & 0x30303030);
+            const int mhi = (sar(s2, 4) & 0x0F0F0F0F) | (sar(s1, 2) & 0x30303030);
+            float fd = 0.0f, fm = 0.0f;
+            for (int j = 0; j < 4; ++j) {
+                const int b = s * 8 + j * 2;
+                int da = 0, db = 0;
+                for (int w = 0; w < 8; ++w) {
+                    const int q = blk[(5 + j * 8 + w) * 8 + l];
+                    da = dp4a(q & 0x0F0F0F0F, xq[b * 8 + w], da);
+                    db = dp4a(sar(q, 4) & 0x0F0F0F0F, xq[b * 8 + 8 + w], db);
+                }
+                const int sh = 16 * (j & 1);
+                const int scw = j < 2 ? sclo : schi, mw = j < 2 ? mlo : mhi;
+                const int sca = sar(scw, sh) & 255, scb = sar(scw, sh + 8) & 255;
+                const int ma = sar(mw, sh) & 255, mb = sar(mw, sh + 8) & 255;
+                fd += float(sca * da) * xd[b * 2] + float(scb * db) * xd[b * 2 + 2];
+                fm += float(ma) * (xd[b * 2] * xd[b * 2 + 1]) + float(mb) * (xd[b * 2 + 2] * xd[b * 2 + 3]);
+            }
+            acc += d * fd - dmin * fm;
+        }
+        y[row] = acc;
+    }
+}
+
+void matvecQ6KQ8(const int* qw, const int* xq, const float* xd, float* y, int rows, int k) {
+    const int nsb = k / 256;
+    auto byteS = [](int w, int i) { return sar(shl(w, 24 - 8 * i), 24); };  // signed byte i
+    for (int row = 0; row < rows; ++row) {
+        const int g = row / 8, l = row % 8;
+        float acc = 0.0f;
+        for (int s = 0; s < nsb; ++s) {
+            const int* blk = qw + (size_t(g) * nsb + s) * 424;
+            const float d = bitsF32(blk[52 * 8 + l]);
+            for (int n = 0; n < 2; ++n) {
+                const int b = s * 8 + n * 4;
+                int da[4] = {}, db[4] = {}, sa[4] = {};
+                for (int w = 0; w < 8; ++w) {
+                    const int qa = blk[(16 * n + w) * 8 + l], qc = blk[(16 * n + 8 + w) * 8 + l];
+                    const int h = blk[(32 + 8 * n + w) * 8 + l];
+                    const int q[4] = {(qa & 0x0F0F0F0F) | (shl(h, 4) & 0x30303030),
+                                      (qc & 0x0F0F0F0F) | (shl(h, 2) & 0x30303030),
+                                      (sar(qa, 4) & 0x0F0F0F0F) | (h & 0x30303030),
+                                      (sar(qc, 4) & 0x0F0F0F0F) | (sar(h, 2) & 0x30303030)};
+                    for (int t = 0; t < 4; ++t) {
+                        const int x = xq[b * 8 + 8 * t + w];
+                        if (w < 4) {
+                            da[t] = dp4a(q[t], x, da[t]);
+                            sa[t] = dp4a(0x01010101, x, sa[t]);
+                        } else {
+                            db[t] = dp4a(q[t], x, db[t]);
+                        }
+                    }
+                }
+                const int sw0 = blk[(48 + 2 * n) * 8 + l], sw1 = blk[(49 + 2 * n) * 8 + l];
+                int is[4];
+                for (int t = 0; t < 4; ++t) {
+                    const int sw = t < 2 ? sw0 : sw1, lo = 2 * (t & 1);
+                    const int sb = int(xd[(b + t) * 2 + 1]) - sa[t];
+                    is[t] = byteS(sw, lo) * (da[t] - 32 * sa[t]) + byteS(sw, lo + 1) * (db[t] - 32 * sb);
+                }
+                acc += d * (float(is[0]) * xd[b * 2] + float(is[1]) * xd[b * 2 + 2] + float(is[2]) * xd[b * 2 + 4] +
+                            float(is[3]) * xd[b * 2 + 6]);
+            }
+        }
+        y[row] = acc;
+    }
+}
+
+void ropeFF(float* x, const float* ff, int pairs_per_head, int pos, int count, float log2_base) {
+    for (int idx = 0; idx < count; ++idx) {
+        const int i = idx % pairs_per_head;
+        const float theta = static_cast<float>(pos) *
+                            std::exp2(-static_cast<float>(i) / static_cast<float>(pairs_per_head) * log2_base) / ff[i];
+        const float turns = theta * 0.159154943f;  // Booth lowers sin/cos this way (BOOTH_PIN F11)
+        const float c = std::cos(turns * 6.28318548f);
+        const float s = std::sin(turns * 6.28318548f);
+        const float x0 = x[2 * idx], x1 = x[2 * idx + 1];
+        x[2 * idx] = x0 * c - x1 * s;
+        x[2 * idx + 1] = x0 * s + x1 * c;
+    }
+}
+
+} // namespace llm::ref

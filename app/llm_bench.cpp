@@ -147,6 +147,9 @@ public:
     void copy(float* dst, const float* src, int n) override {
         ck(cudaMemcpyAsync(dst, src, size_t(n) * sizeof(float), cudaMemcpyDeviceToDevice, s_), "cudaMemcpy D2D");
     }
+    void upload(float* dst, const float* host, int n) override {
+        ck(cudaMemcpy(dst, host, size_t(n) * sizeof(float), cudaMemcpyHostToDevice), "cudaMemcpy H2D");
+    }
     void finish() override { ck(cudaStreamSynchronize(s_), "cudaStreamSynchronize"); }
 
     // CUDA graphs, as llama.cpp's CUDA backend uses them: capture the token's launches, update

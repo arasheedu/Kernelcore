@@ -26,6 +26,7 @@ int64_t Config::weightParams() const {
 }
 
 int64_t Config::weightBytes() const {
+    if (weights == Weights::Gguf) return file_weight_bytes;
     const int64_t p = weightParams();
     const int64_t values = weights == Weights::Q8 ? p : p / 2;
     return values + p / 32 * int64_t(sizeof(float));
@@ -61,6 +62,9 @@ const char* weightsName(Weights w) {
     case Weights::Q4: return "Q4 (4-bit + f32 scale per 32)";
     case Weights::Q4X8: return "Q4 x8 (4-bit + f32 scale per 32, 8 rows interleaved)";
     case Weights::Q4X8Q8: return "Q4 x8 with 8-bit activations (4-bit + f32 scale per 32; integer dot products)";
+    case Weights::Q4K: return "Q4_K";
+    case Weights::Q6K: return "Q6_K";
+    case Weights::Gguf: return "GGUF K-quants (Q4_K / Q6_K, 8 rows interleaved) with 8-bit activations";
     }
     return "?";
 }
@@ -280,7 +284,7 @@ Acts allocActs(const Config& c, Allocator& alloc, uint64_t seed) {
 
 // ---- decode step --------------------------------------------------------------
 
-void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* prof) {
+void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* prof, int token) {
     const Config& c = m.cfg;
     if (pos < 0 || pos >= c.max_ctx) throw std::out_of_range("decode position outside the KV cache");
     auto op = [&](Op o, auto&& f) {
@@ -290,15 +294,35 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
     };
     b.setScratch(a.xq);
     b.setContext(pos + 1);
-    b.copy(a.x, a.x0, c.hidden);
+    if (token >= 0 && m.embed) {
+        std::vector<float> e(size_t(c.hidden));
+        m.embed(token, e.data());
+        b.upload(a.x, e.data(), c.hidden);
+    } else {
+        b.copy(a.x, a.x0, c.hidden);
+    }
     b.beginToken(prof != nullptr);
-    const bool q8 = c.weights == Weights::Q4X8Q8;
+    const bool q8 = quantizedActs(c.weights);
+    // Matrices (one, or parts writing consecutive slices of y) on one input: x is quantized once
+    // (by the first part), or x == nullptr: the input is already in the scratch.
+    auto project = [&](const Mat& fused, const std::vector<Mat>& parts, const float* x, float* y) {
+        if (parts.empty()) {
+            if (x) b.matvec(fused, x, y);
+            else b.matvecQuantized(fused, y);
+            return;
+        }
+        for (size_t i = 0; i < parts.size(); ++i) {
+            if (i == 0 && x) b.matvec(parts[i], x, y);
+            else b.matvecQuantized(parts[i], y);
+            y += parts[i].rows;
+        }
+    };
     op(Op::RmsNorm, [&] { b.rmsNorm(a.x, m.layers[0].attn_norm, a.xn); });
     for (size_t l = 0; l < m.layers.size(); ++l) {
         const Layer& L = m.layers[l];
         op(Op::MatvecAttn, [&] {  // q, k and v in one launch
-            if (q8 && l > 0) b.matvecQuantized(L.wqkv, a.q);  // input quantized by the last norm
-            else b.matvec(L.wqkv, a.xn, a.q);
+            if (q8 && l > 0) project(L.wqkv, L.qkv_parts, nullptr, a.q);  // input quantized by the last norm
+            else project(L.wqkv, L.qkv_parts, a.xn, a.q);
         });
         op(Op::Rope, [&] {
             b.rope(a.q, c.heads + c.kv_heads, pos);  // q and k are adjacent: one launch
@@ -312,7 +336,7 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
         op(Op::MatvecAttn, [&] { b.matvec(L.wo, a.attn, a.t); });
         if (q8) {
             op(Op::Add, [&] { b.addRmsNormQuant(a.x, a.t, L.ffn_norm); });
-            op(Op::MatvecFfn, [&] { b.matvecQuantized(L.wgu, a.g); });  // gate and up in one launch
+            op(Op::MatvecFfn, [&] { project(L.wgu, L.gu_parts, nullptr, a.g); });  // gate and up
         } else {
             op(Op::Add, [&] { b.addRmsNorm(a.x, a.t, L.ffn_norm, a.xn); });
             op(Op::MatvecFfn, [&] { b.matvec(L.wgu, a.xn, a.g); });
@@ -359,7 +383,7 @@ public:
         pcudaCheck(pcudaMemcpy(m_.attn_dims, dims, sizeof dims, pcuda::CopyKind::HostToDevice), "pcudaMemcpy dims");
     }
     void matvec(const Mat& w, const float* x, float* y) override {
-        if (w.format == Weights::Q4X8Q8) {
+        if (quantizedActs(w.format)) {
             const QuantizeArgs qa{x, xq_, scratchScales(xq_, w.k / 32), w.k / 32};
             launch("quantize_q8x4", &qa, 16);
             matvecQuantized(w, y);
@@ -385,7 +409,9 @@ public:
     }
     void matvecQuantized(const Mat& w, float* y) override {
         const MatvecQ4Q8Args a{static_cast<const int*>(w.q), xq_, scratchScales(xq_, w.k / 32), y, w.dims, w.rows, w.k};
-        if (two_rows_ && w.rows % 16 == 0) launch("matvec_q4x8_q8x2", &a, 8);  // min_chunk in threads (rows / 2)
+        if (w.format == Weights::Q4K) launch("matvec_q4k_q8", &a, 16);
+        else if (w.format == Weights::Q6K) launch("matvec_q6k_q8", &a, 16);
+        else if (two_rows_ && w.rows % 16 == 0) launch("matvec_q4x8_q8x2", &a, 8);  // min_chunk in threads (rows / 2)
         else launch("matvec_q4x8_q8", &a, 16);
     }
     void addRmsNormQuant(float* x, const float* t, const float* w) override {
@@ -397,6 +423,11 @@ public:
     }
     void rope(float* x, int heads, int pos) override {
         const int pairs = m_.cfg.head_dim / 2;
+        if (m_.rope_ff) {
+            const RopeFFArgs a{x, m_.rope_ff, pairs, pos, heads * pairs, std::log2(m_.cfg.rope_base)};
+            launch("rope_ff", &a, 0);
+            return;
+        }
         const RopeArgs a{x, pairs, pos, heads * pairs, std::log2(m_.cfg.rope_base)};
         launch("rope", &a, 0);
     }
@@ -428,6 +459,9 @@ public:
     }
     void copy(float* dst, const float* src, int n) override {
         pcudaCheck(pcudaMemcpy(dst, src, size_t(n) * sizeof(float), pcuda::CopyKind::DeviceToDevice), "pcudaMemcpy");
+    }
+    void upload(float* dst, const float* host, int n) override {
+        pcudaCheck(pcudaMemcpy(dst, host, size_t(n) * sizeof(float), pcuda::CopyKind::HostToDevice), "pcudaMemcpy");
     }
     void finish() override { pcudaCheck(pcudaDeviceSynchronize(), "pcudaDeviceSynchronize"); }
     void beginToken(bool profiling) override {
@@ -475,7 +509,7 @@ public:
     void setScratch(int* q) override { xq_ = q; }
     void setContext(int ctx) override { ctx_ = ctx; }
     void matvec(const Mat& w, const float* x, float* y) override {
-        if (w.format == Weights::Q4X8Q8) {
+        if (quantizedActs(w.format)) {
             ref::quantizeQ8x4(x, xq_, scratchScales(xq_, w.k / 32), w.k / 32);
             matvecQuantized(w, y);
         } else if (w.format == Weights::Q4X8) ref::matvecQ4x8(static_cast<const uint8_t*>(w.q), w.s, x, y, w.rows, w.k);
@@ -496,11 +530,16 @@ public:
         ref::normQ8x4(x, w, xq_, m_.cfg.hidden / 32, m_.cfg.eps);
     }
     void matvecQuantized(const Mat& w, float* y) override {
-        ref::matvecQ4x8Q8(static_cast<const int*>(w.q), xq_, scratchScales(xq_, w.k / 32), y, w.rows, w.k);
+        const int* qw = static_cast<const int*>(w.q);
+        float* xd = scratchScales(xq_, w.k / 32);
+        if (w.format == Weights::Q4K) ref::matvecQ4KQ8(qw, xq_, xd, y, w.rows, w.k);
+        else if (w.format == Weights::Q6K) ref::matvecQ6KQ8(qw, xq_, xd, y, w.rows, w.k);
+        else ref::matvecQ4x8Q8(qw, xq_, xd, y, w.rows, w.k);
     }
     void rope(float* x, int heads, int pos) override {
         const int pairs = m_.cfg.head_dim / 2;
-        ref::rope(x, pairs, pos, heads * pairs, std::log2(m_.cfg.rope_base));
+        if (m_.rope_ff) ref::ropeFF(x, m_.rope_ff, pairs, pos, heads * pairs, std::log2(m_.cfg.rope_base));
+        else ref::rope(x, pairs, pos, heads * pairs, std::log2(m_.cfg.rope_base));
     }
     void appendKv(const float* k, const float* v, float* kt, float* vc, int pos) override {
         ref::appendKv(k, v, kt, vc, m_.cfg.kvStride(), m_.cfg.kStride(), pos);
@@ -515,6 +554,7 @@ public:
     void siluMul(const float* g, const float* u, float* out, int n) override { ref::siluMul(g, u, out, n); }
     void add(float* x, const float* t, int n) override { ref::add(x, t, n); }
     void copy(float* dst, const float* src, int n) override { std::memcpy(dst, src, size_t(n) * sizeof(float)); }
+    void upload(float* dst, const float* host, int n) override { std::memcpy(dst, host, size_t(n) * sizeof(float)); }
     void finish() override {}
 
 private:

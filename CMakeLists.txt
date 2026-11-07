@@ -66,14 +66,17 @@ target_link_libraries(pcuda PUBLIC bcrypt synchronization)
 booth_add_kernel(TARGET pcuda NAME vector_add SOURCE kernels/vector_add.cu)
 
 # ---- LLM decode kernels: synthetic Llama decode step (tests, pcuda_llm_bench) --
-add_library(pcuda_llm STATIC llm/llm_kernels.cpp llm/llm_model.cpp llm/llm_reference.cpp)
+add_library(pcuda_llm STATIC llm/llm_kernels.cpp llm/llm_model.cpp llm/llm_reference.cpp llm/gguf.cpp llm/gguf_model.cpp)
 target_include_directories(pcuda_llm PUBLIC llm)
 target_link_libraries(pcuda_llm PUBLIC pcuda)
-foreach(k matvec_q8 matvec_q4 matvec_q4x8 quantize_q8x4 matvec_q4x8_q8 matvec_q4x8_q8x2 add_rms_norm silu_mul_q8x4 add_sumsq norm_q8x4 rms_norm rope kv_append attn_scores softmax attn_values silu_mul)
+foreach(k matvec_q8 matvec_q4 matvec_q4x8 quantize_q8x4 matvec_q4x8_q8 matvec_q4x8_q8x2 matvec_q4k_q8 matvec_q6k_q8 rope_ff add_rms_norm silu_mul_q8x4 add_sumsq norm_q8x4 rms_norm rope kv_append attn_scores softmax attn_values silu_mul)
   booth_add_kernel(TARGET pcuda_llm NAME ${k} SOURCE kernels/llm/${k}.cu)
 endforeach()
 
 # ---- applications ------------------------------------------------------------
+add_executable(pcuda_llm_real app/llm_real.cpp)
+target_link_libraries(pcuda_llm_real PRIVATE pcuda pcuda_llm)
+
 add_executable(pcuda_poc app/main.cpp)
 target_link_libraries(pcuda_poc PRIVATE pcuda)
 

@@ -196,6 +196,80 @@ TEST_CASE(matvec_q4x8_q8_matches_reference) {
     }
 }
 
+
+// GGUF K-quant matvecs: random Q4_K / Q6_K blocks, repacked; bit-exact against the C++ mirror,
+// close to the float dot product of ggml's own dequantization.
+TEST_CASE(kquant_matvecs_match_reference_and_dequantized_floats) {
+    LlmFixture fx;
+    REQUIRE(fx.ok);
+    for (int q6 = 0; q6 < 2; ++q6) {
+        for (auto [rows, k] : {std::pair{8, 256}, std::pair{40, 768}}) {
+            const int nsb = k / 256, bb = q6 ? 210 : 144, words = q6 ? 53 : 37;
+            std::mt19937 rng(unsigned(rows * 31 + k + q6));
+            std::vector<uint8_t> src(size_t(rows) * nsb * bb);
+            for (auto& v : src) v = static_cast<uint8_t>(rng());
+            auto setHalf = [&](uint8_t* p) {  // a positive fp16 scale in [2^-9, 2^-6)
+                const uint16_t h = static_cast<uint16_t>(0x1800 + rng() % 0x0C00);
+                p[0] = uint8_t(h & 0xFF), p[1] = uint8_t(h >> 8);
+            };
+            for (int r = 0; r < rows * nsb; ++r) {
+                uint8_t* b = src.data() + size_t(r) * bb;
+                if (q6) setHalf(b + 208);
+                else setHalf(b), setHalf(b + 2);
+            }
+            std::vector<int> qw(size_t(rows) * nsb * words);
+            if (q6) llm::ref::repackQ6K(src.data(), rows, k, qw.data());
+            else llm::ref::repackQ4K(src.data(), rows, k, qw.data());
+
+            const auto x = randomFloats(size_t(k), 61, -3, 3);
+            const int nb = k / 32;
+            std::vector<int> xq(size_t(nb) * 8);
+            std::vector<float> xd(static_cast<size_t>(nb) * 2), want(static_cast<size_t>(rows)), flt(static_cast<size_t>(rows)),
+                row(static_cast<size_t>(k));
+            llm::ref::quantizeQ8x4(x.data(), xq.data(), xd.data(), nb);
+            if (q6) llm::ref::matvecQ6KQ8(qw.data(), xq.data(), xd.data(), want.data(), rows, k);
+            else llm::ref::matvecQ4KQ8(qw.data(), xq.data(), xd.data(), want.data(), rows, k);
+            for (int r = 0; r < rows; ++r) {
+                const uint8_t* rs = src.data() + size_t(r) * nsb * bb;
+                if (q6) llm::ref::dequantRowQ6K(rs, k, row.data());
+                else llm::ref::dequantRowQ4K(rs, k, row.data());
+                double s = 0;
+                for (int i = 0; i < k; ++i) s += double(row[size_t(i)]) * x[size_t(i)];
+                flt[size_t(r)] = float(s);
+            }
+            if (!(relDiff(want, flt) < 3e-2))
+                th::fail(__FILE__, __LINE__, std::string(q6 ? "q6_K" : "q4_K") + " vs dequantized floats: " +
+                                                 std::to_string(relDiff(want, flt)));
+
+            auto* dqw = devCopy(qw);
+            auto* dxq = devCopy(xq);
+            auto* dxd = devCopy(xd);
+            auto* dy = devCopy(std::vector<float>(size_t(rows), 0.0f));
+            auto* dd = devCopy(std::vector<int>{rows, k});
+            REQUIRE(dqw && dxq && dxd && dy && dd);
+            const char* kn = q6 ? "matvec_q6k_q8" : "matvec_q4k_q8";
+            const llm::MatvecQ4Q8Args a{dqw, dxq, dxd, dy, dd, rows, k};
+            CHECK_OK(pcudaLaunchKernel(kn, &a));
+            CHECK(bitEqual(hostCopy(dy, size_t(rows)), want));
+            CHECK_OK(pcudaMemset(dy, 0xFF, size_t(rows) * 4));
+            CHECK_OK(pcudaLaunchKernelChunked(kn, &a, workers(), 8));
+            CHECK(bitEqual(hostCopy(dy, size_t(rows)), want));
+        }
+    }
+    // rope with frequency factors
+    const int pairs = 64, heads = 3;
+    const auto x = randomFloats(size_t(heads) * pairs * 2, 62, -1, 1);
+    const auto ff = randomFloats(size_t(pairs), 63, 1.0f, 8.0f);
+    std::vector<float> rx = x;
+    llm::ref::ropeFF(rx.data(), ff.data(), pairs, 77, heads * pairs, std::log2(500000.0f));
+    auto* dx = devCopy(x);
+    auto* dff = devCopy(ff);
+    REQUIRE(dx && dff);
+    const llm::RopeFFArgs ra{dx, dff, pairs, 77, heads * pairs, std::log2(500000.0f)};
+    CHECK_OK(pcudaLaunchKernel("rope_ff", &ra));
+    CHECK(bitEqual(hostCopy(dx, x.size()), rx));
+}
+
 // Fused kernels give exactly the results of the sequences they replace.
 TEST_CASE(fused_kernels_equal_unfused_sequences) {
     LlmFixture fx;

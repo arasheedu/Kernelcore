@@ -1049,3 +1049,65 @@ Large pages and the software prefetch remove the same cost: page walks and stall
 - matvec runs at about 62 GB/s overall, against the 84 GB/s machine limit;
 - lm_head alone, a single large launch, reaches about 75–80 GB/s;
 - the gap is mostly the smaller per-layer matvecs, where step barriers and the last chunks finishing late matter.
+
+## 30. Real model: llama3.2 Q4_K_M from Ollama's store, against llama.cpp (2026-11-06)
+
+**Question:** do pcuda's CUDA C kernels run a real model correctly, and at llama.cpp's speed?
+
+**Pieces:**
+- `llm/gguf.*`: a minimal GGUF reader (metadata, tensor directory, memory-mapped data).
+- `llm/gguf_model.*`:
+  - builds an `llm::Model` with separate q/k/v and gate/up "parts", since their formats differ per layer (Q4_K and Q6_K);
+  - zero KV caches, `rope_freqs`, and token embeddings dequantized on demand;
+  - tied output (`token_embd` as lm_head);
+  - vocabulary pieces decoded from GPT-2 bytes for printing.
+- **Kernels:**
+  - `matvec_q4k_q8`: 37 words per row and super-block, with d and dmin as f32 and the 6-bit scales unpacked in-lane (`get_scale_min_k4`).
+  - `matvec_q6k_q8`: 53 words; 16-weight halves use per-half activation sums, which are uniform across lanes and therefore scalar.
+  - `rope_ff`: rope with frequency factors.
+  - The C++ mirrors are `ref::matvecQ4KQ8`, `ref::matvecQ6KQ8` and `ref::ropeFF`; `ref::dequantRowQ4K` and `ref::dequantRowQ6K` follow ggml.
+- `decodeToken` takes a token id when the model has embeddings. The backends gained `upload`, and rope uses the frequency factors when present.
+- `scripts/real_model_check.ps1`:
+  - gets llama.cpp's reference from `llama-server` (`/tokenize`, then `/completion` with `n_probs`: token ids and top-5 log-probabilities);
+  - times Ollama on the CPU;
+  - runs `pcuda_llm_real`.
+
+**Results:** see the README table. In short:
+- bit-identical to the C++ mirror;
+- 64/64 and 126/128 top tokens agree under teacher forcing, with mean |Δ log-prob| of 0.010–0.014;
+- the free run is identical to llama.cpp until a near-tie (Δ 0.0008);
+- decode 28.6–29.2 tok/s against Ollama's 29.6–30.3 tok/s, about 97%.
+
+The synthetic Q4 format had reached about 31 tok/s. The K-quant kernels do more work per weight (scale unpacking, mins, 16-weight halves), and the real file includes Q6_K tensors, so they come in a little slower.
+
+**Verdict:** go for step 2, a ggml backend prototype. Correctness holds on the real model, and speed is at parity with llama.cpp's hand-tuned CPU kernels. Speed headroom is in the Q4_K inner loop: unpack the scales once per super-block, and fold the min term with the per-block sums.
+
+## 31. K-quant kernel tuning (2026-11-06)
+
+`pcuda_llm_real --bench-matvec` times each 8-bit-activation matvec on an 8192 x 3072 matrix, chunked like decode. The matrix largely fits in the 20 MB L3, so this measures compute.
+
+**Before tuning:**
+
+| Kernel | Time | Throughput |
+|---|---|---|
+| q4x8q8 (synthetic) | 107-113 us | 139-147 GB/s |
+| Q4_K | 121 us | 120 GB/s |
+| Q6_K | 289 us | 72 GB/s, below DRAM bandwidth |
+
+Q6_K covers the 323 MB tied output matrix and half of ffn_down and attn_v, so it was the larger problem.
+
+**Q4_K:**
+- All 8 scales and 8 mins are unpacked once per super-block, four per word, with masks:
+  - `sclo = s0 & 0x3F3F3F3F`, `mlo = s1 & 0x3F3F3F3F`;
+  - `schi = (s2 & 0x0F0F0F0F) | ((s0 >> 2) & 0x30303030)`, `mhi = ((s2 >> 4) & 0x0F0F0F0F) | ((s1 >> 2) & 0x30303030)`.
+- The min term is folded: `fd += sc*dot*dx`, `fm += m*(dx*xsum)`, then `acc += d*fd - dmin*fm` once per super-block.
+- Result: 107-112 us (130-136 GB/s).
+
+**Q6_K:**
+- Each ql/qh word is loaded once for the four activation blocks that share it, giving 8 independent dot chains.
+- Only the first 16-value half's activation sums are computed; the second half's is the block sum (`xd[2b+1]`) minus the first.
+- Result: 189-203 us (103-110 GB/s), 1.45x faster.
+
+**Real model** (`real_model_check.ps1`):
+- **Prompt 1, 64 tokens:** 28.6 -> 30.6 tok/s, against Ollama CPU at 30.3. Still bit-identical to the C++ mirror, 64/64 top tokens, identical text.
+- **Prompt 2, 128 tokens:** 29.2 tok/s against 29.6, in a noisy run (llama-server measured 24 tok/s itself). Top token 125/128, mean |delta log-prob| 0.011. The new summation order moves the free-run divergence to an earlier near-tie with a 0.033 gap.

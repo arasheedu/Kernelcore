@@ -289,6 +289,50 @@ Results (i5-13400F with 16 logical CPUs, RTX 4060; prompt 43 tokens, 128 generat
 - Slow paths time an evenly spaced subset of the 128 positions (the "tokens timed" column in the
   bench output), so the average covers the same context range.
 
+### Real model: Ollama's llama3.2 against llama.cpp (`pcuda_llm_real`, `scripts\real_model_check.ps1`)
+
+This check runs the real model rather than random weights: Llama 3.2 3B Instruct, the Q4_K_M GGUF
+file in Ollama's model store, read in place. It goes through pcuda's CUDA C kernels on the CPU and
+is compared with llama.cpp (`llama-server`) on the same file.
+
+- New kernels:
+  - `matvec_q4k_q8` and `matvec_q6k_q8` read llama.cpp's Q4_K and Q6_K blocks. At load time the
+    blocks are interleaved by 8 rows and their fp16 scales converted to fp32, which adds under 3%
+    to the bytes read. They are multiplied with 8-bit activations through AVX-VNNI and `__dp4a`.
+  - `rope_ff` applies Llama 3's rope frequency factors.
+  - Everything else reuses the existing kernels.
+- The C++ mirror of the kernels gives bit-identical logits; the unit tests check every code path.
+
+```powershell
+.\scripts\real_model_check.ps1                 # needs Ollama with llama3.2, and a llama-server build
+.\scripts\real_model_check.ps1 -Prompt "..." -Tokens 128
+```
+
+| Check (CPU only, greedy) | Prompt 1, 64 tokens | Prompt 2, 128 tokens |
+|---|---|---|
+| Same top token as llama.cpp, fed llama.cpp's tokens | 64/64 | 126/128 |
+| \|log-prob difference\| of llama.cpp's token, mean / max | 0.014 / 0.073 | 0.010 / 0.117 |
+| Top-5 overlap | 98.4% | 98.0% |
+| Free-run greedy text identical to llama.cpp | 64/64 tokens | first 12 tokens, then a near-tie |
+| pcuda decode, first kernels | 28.6 tok/s | 29.2 tok/s |
+| pcuda decode, tuned kernels (below) | **30.6 tok/s** | 29.2 tok/s (noisy run: llama.cpp itself 24 tok/s) |
+| Ollama CPU-only decode | 30.3 tok/s | 29.6 tok/s |
+
+Tuning: the Q4_K kernel unpacks all 8 scales and mins once per super-block with word-wide masks
+and folds the min term into one `dmin` multiply per super-block. That made it 8–12% faster per
+matrix. The Q6_K kernel loads each weight word once for the four activation blocks that share it,
+and derives the second half's activation sum from the block sum: 1.4–1.5× faster. Measured with
+`pcuda_llm_real --bench-matvec` on an 8192 × 3072 matrix:
+- Q4_K: 121 → 107–112 µs;
+- Q6_K: 289 → 189–203 µs, now faster than memory bandwidth.
+
+Accuracy is unchanged: mean |Δ log-prob| 0.012 and 0.011, top token 64/64 and 125/128. With the new
+summation order, prompt 2's free run first differs at a 0.033 near-tie ("phenomenon" against
+"thing"). With the first kernels, prompt 2's free run diverged where llama.cpp itself had a near-tie: "." at −0.7109 against ","
+at −0.7117. After that, both texts are fluent and say the same thing in different words. For
+scale, llama.cpp and Ollama differ by about 0.02 on " Paris" in "The capital of France is",
+from different builds of the same code.
+
 ## Runtime settings (environment variables)
 
 | Variable | Default | Meaning |

@@ -15,6 +15,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -25,7 +26,13 @@ namespace llm {
 // lanes and neighbouring GPU threads read adjacent bytes. Same size and results as Q4.
 // Q4X8Q8: the same 4-bit weights with scales inside an 8-row interleaved stream, multiplied
 // by 8-bit activations with integer dot products (AVX-VNNI on the simd path, __dp4a on CUDA).
-enum class Weights { Q8, Q4, Q4X8, Q4X8Q8 };
+// Q4K, Q6K: GGUF K-quant matrices (llama.cpp's Q4_K / Q6_K blocks, 8 rows interleaved), used with
+// 8-bit activations. Gguf: a real model from a GGUF file, whose matrices are Q4K or Q6K.
+enum class Weights { Q8, Q4, Q4X8, Q4X8Q8, Q4K, Q6K, Gguf };
+// Formats multiplied with 8-bit activations from the scratch (quantize_q8x4 / norm_q8x4).
+inline bool quantizedActs(Weights w) {
+    return w == Weights::Q4X8Q8 || w == Weights::Q4K || w == Weights::Q6K || w == Weights::Gguf;
+}
 
 struct Config {
     std::string name;
@@ -40,6 +47,7 @@ struct Config {
     float   eps = 1e-5f;
     float   rope_base = 500000.0f;
     Weights weights = Weights::Q4;
+    int64_t file_weight_bytes = 0;  // Gguf: bytes of the model's matrices as stored in the file
 
     int     kvStride() const { return kv_heads * head_dim; }
     int     group() const { return heads / kv_heads; }
@@ -106,6 +114,9 @@ struct Layer {
     const float* ffn_norm = nullptr;
     float*       k_cache = nullptr;  // transposed: [kv_stride][kStride()]
     float*       v_cache = nullptr;  // [max_ctx][kv_stride]
+    // A real model's q, k, v (and gate, up) may differ in format: then they are kept as parts
+    // whose outputs are written one after another, sharing one quantized input.
+    std::vector<Mat> qkv_parts, gu_parts;  // empty: use wqkv / wgu
 };
 
 struct Model {
@@ -114,6 +125,9 @@ struct Model {
     const float*       out_norm = nullptr;
     Mat                lm_head;              // tied embeddings: [vocab][hidden]
     int*               attn_dims = nullptr;  // device int[7], rewritten for each token's context
+    const float*       rope_ff = nullptr;    // Llama 3 rope frequency factors [head_dim / 2], or null
+    // Real models: the embedding of a token (host floats, cfg.hidden of them).
+    std::function<void(int token, float* out)> embed;
 };
 
 struct Acts {
@@ -166,6 +180,7 @@ public:
     virtual void siluMul(const float* g, const float* u, float* out, int n) = 0;
     virtual void add(float* x, const float* t, int n) = 0;
     virtual void copy(float* dst, const float* src, int n) = 0;
+    virtual void upload(float* dst, const float* host, int n) = 0;  // host floats -> backend memory
     virtual void finish() = 0;  // wait until queued work is done
     // Bracket one token's launches (decodeToken calls them). A backend may record the launches
     // between them and run them as one batch (pcuda / CUDA graphs). `profiling`: per-op timing
@@ -176,7 +191,8 @@ public:
 
 // One decode step for the token at position `pos` (0-based): every layer (with K/V appended at
 // `pos` and attention over pos + 1 positions), final norm and lm_head. Result in a.logits.
-void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* prof = nullptr);
+// token: the input token for models with embeddings (Model::embed); otherwise a.x0 is used.
+void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* prof = nullptr, int token = -1);
 
 // Synchronous pcuda launches; the kernel code path follows pcudaSetKernelCodegen.
 // workers == 0: one launch per kernel; workers > 0: matvec, attention, softmax and silu are

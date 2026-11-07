@@ -14,6 +14,9 @@ PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8);
 PCUDA_DECLARE_KERNEL_IMAGE(quantize_q8x4);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8_q8);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8_q8x2);
+PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4k_q8);
+PCUDA_DECLARE_KERNEL_IMAGE(matvec_q6k_q8);
+PCUDA_DECLARE_KERNEL_IMAGE(rope_ff);
 PCUDA_DECLARE_KERNEL_IMAGE(add_rms_norm);
 PCUDA_DECLARE_KERNEL_IMAGE(silu_mul_q8x4);
 PCUDA_DECLARE_KERNEL_IMAGE(add_sumsq);
@@ -229,6 +232,47 @@ Error q4q8x2Chunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out)
     ArgPacker pk(*out);
     pk.ptr(a.qw + begin / 8 * 2 * (a.k / 32) * 40).ptr(a.xq).ptr(a.xd).ptr(a.y + begin * 2).ptr(a.dims);
     return pk.finish(length);
+}
+
+// ---- matvec_q4k_q8 / matvec_q6k_q8 (GGUF K-quant streams), same arguments ---------
+
+template <int kWords>  // 32-bit words per row and super-block: 37 (Q4_K) or 53 (Q6_K)
+Error kquantMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const MatvecQ4Q8Args*>(p);
+    if (a.rows < 0 || a.rows % 8 != 0 || a.k <= 0 || a.k % 256 != 0 || !fitsIndex(a.rows, a.k)) return Error::InvalidValue;
+    const int64_t nb = a.k / 32, nsb = a.k / 256;
+    if (!fitsIndex(int64_t(a.rows) / 8 * nsb, kWords * 8)) return Error::InvalidValue;
+    LLM_TRY(check(ctx, a.qw, size_t(int64_t(a.rows) / 8 * nsb * kWords * 8 * 4), "qw"));
+    LLM_TRY(check(ctx, a.xq, size_t(nb * 8 * 4), "xq"));
+    LLM_TRY(check(ctx, a.xd, f32Bytes(nb * 2), "xd"));
+    LLM_TRY(check(ctx, a.y, f32Bytes(a.rows), "y"));
+    LLM_TRY(check(ctx, a.dims, 2 * sizeof(int), "dims"));
+    if (a.dims[0] != a.rows || a.dims[1] != a.k) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.qw).ptr(a.xq).ptr(a.xd).ptr(a.y).ptr(a.dims);
+    return pk.finish(a.rows);
+}
+
+template <int kWords>
+Error kquantChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const MatvecQ4Q8Args*>(p);
+    if (!chunkOk(a.rows, begin, length) || begin % 8 != 0) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.qw + begin / 8 * (a.k / 256) * kWords * 8).ptr(a.xq).ptr(a.xd).ptr(a.y + begin).ptr(a.dims);
+    return pk.finish(length);
+}
+
+// ---- rope_ff(x, ff, pairs_per_head, pos, count, log2_base) ------------------------
+
+Error ropeFFMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const RopeFFArgs*>(p);
+    if (a.pairs_per_head <= 0 || a.count < 0 || a.count % a.pairs_per_head != 0 || !fitsIndex(a.count, 2))
+        return Error::InvalidValue;
+    LLM_TRY(check(ctx, a.x, f32Bytes(int64_t(a.count) * 2), "x"));
+    LLM_TRY(check(ctx, a.ff, f32Bytes(a.pairs_per_head), "ff"));
+    ArgPacker pk(*out);
+    pk.ptr(a.x).ptr(a.ff).i32(a.pairs_per_head).i32(a.pos).i32(a.count).f32(a.log2_base);
+    return pk.finish(a.count);
 }
 
 // ---- add_rms_norm(x, t, w, y, n, eps): one row, one thread ------------------------
@@ -498,6 +542,9 @@ const pcuda::KernelEntry kEntries[] = {
     {"quantize_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(quantize_q8x4), &quantMarshal, &quantExtent, &quantChunk},
     {"matvec_q4x8_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8_q8), &q4q8Marshal, &q4q8Extent, &q4q8Chunk},
     {"matvec_q4x8_q8x2", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8_q8x2), &q4q8x2Marshal, &q4q8x2Extent, &q4q8x2Chunk},
+    {"matvec_q4k_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4k_q8), &kquantMarshal<37>, &q4q8Extent, &kquantChunk<37>},
+    {"matvec_q6k_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q6k_q8), &kquantMarshal<53>, &q4q8Extent, &kquantChunk<53>},
+    {"rope_ff", PCUDA_KERNEL_IMAGE_FIELDS(rope_ff), &ropeFFMarshal},
     {"add_rms_norm", PCUDA_KERNEL_IMAGE_FIELDS(add_rms_norm), &addRmsMarshal},
     {"silu_mul_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(silu_mul_q8x4), &siluQMarshal, &siluQExtent, &siluQChunk},
     {"add_sumsq", PCUDA_KERNEL_IMAGE_FIELDS(add_sumsq), &sumsqMarshal, &sumsqExtent, &sumsqChunk},

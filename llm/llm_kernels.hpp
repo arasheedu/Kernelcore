@@ -127,6 +127,16 @@ struct RopeArgs {  // in place; count = heads * pairs_per_head
     float  log2_base;
 };
 
+// Rope with per-frequency factors ff[pairs_per_head] (Llama 3 rope scaling, GGUF rope_freqs).
+struct RopeFFArgs {  // in place; count = heads * pairs_per_head
+    float*       x;
+    const float* ff;
+    int          pairs_per_head;
+    int          pos;
+    int          count;
+    float        log2_base;
+};
+
 struct AttnScoresArgs {  // scores[n_heads][ctx_pad]; dims -> device int[7] matching d
     const float* q;
     const float* k;
@@ -167,7 +177,7 @@ struct SiluMulArgs {
     int          count;
 };
 
-// Registers matvec_q8, matvec_q4, matvec_q4x8, quantize_q8x4, matvec_q4x8_q8, matvec_q4x8_q8x2, add_rms_norm, silu_mul_q8x4, add_sumsq, norm_q8x4, rms_norm, rope, kv_append, attn_scores, softmax, attn_values and silu_mul.
+// Registers matvec_q8, matvec_q4, matvec_q4x8, quantize_q8x4, matvec_q4x8_q8, matvec_q4x8_q8x2, matvec_q4k_q8, matvec_q6k_q8, rope_ff, add_rms_norm, silu_mul_q8x4, add_sumsq, norm_q8x4, rms_norm, rope, kv_append, attn_scores, softmax, attn_values and silu_mul.
 // All but add_rms_norm, rope and kv_append opt into chunked launches.
 pcuda::Error registerKernels() noexcept;
 

@@ -1,0 +1,58 @@
+diff --git a/ggml/CMakeLists.txt b/ggml/CMakeLists.txt
+index 0e236bfec..372bfd087 100644
+--- a/ggml/CMakeLists.txt
++++ b/ggml/CMakeLists.txt
+@@ -192,6 +192,8 @@ option(GGML_SCHED_NO_REALLOC                "ggml: disallow reallocations in ggm
+ # 3rd party libs / backends
+ option(GGML_ACCELERATE                      "ggml: enable Accelerate framework"               ON)
+ option(GGML_BLAS                            "ggml: use BLAS"                                  ${GGML_BLAS_DEFAULT})
++option(GGML_PCUDA                           "ggml: use pcuda (CUDA C kernels on CPU cores, Windows x64)" OFF)
++set(GGML_PCUDA_ROOT "" CACHE PATH           "ggml: path to a CudaOnCPUCores checkout for GGML_PCUDA")
+ set(GGML_BLAS_VENDOR ${GGML_BLAS_VENDOR_DEFAULT} CACHE STRING
+                                             "ggml: BLAS library vendor")
+ option(GGML_LLAMAFILE                       "ggml: use LLAMAFILE"                             ${GGML_LLAMAFILE_DEFAULT})
+@@ -330,6 +332,7 @@ set(GGML_PUBLIC_HEADERS
+     include/ggml-alloc.h
+     include/ggml-backend.h
+     include/ggml-blas.h
++    include/ggml-pcuda.h
+     include/ggml-cann.h
+     include/ggml-cpp.h
+     include/ggml-cuda.h
+diff --git a/ggml/src/CMakeLists.txt b/ggml/src/CMakeLists.txt
+index fe001a042..e3e578dae 100644
+--- a/ggml/src/CMakeLists.txt
++++ b/ggml/src/CMakeLists.txt
+@@ -597,6 +597,7 @@ elseif (GGML_CPU)
+ endif()
+ 
+ ggml_add_backend(BLAS)
++ggml_add_backend(PCUDA)
+ ggml_add_backend(CANN)
+ ggml_add_backend(CUDA)
+ ggml_add_backend(ET)
+diff --git a/ggml/src/ggml-backend-reg.cpp b/ggml/src/ggml-backend-reg.cpp
+index 4e9681c9f..cfacea279 100644
+--- a/ggml/src/ggml-backend-reg.cpp
++++ b/ggml/src/ggml-backend-reg.cpp
+@@ -66,6 +66,10 @@
+ #include "ggml-blas.h"
+ #endif
+ 
++#ifdef GGML_USE_PCUDA
++#include "ggml-pcuda.h"
++#endif
++
+ #ifdef GGML_USE_RPC
+ #include "ggml-rpc.h"
+ #endif
+@@ -159,6 +163,9 @@ struct ggml_backend_registry {
+ #ifdef GGML_USE_BLAS
+         register_backend(ggml_backend_blas_reg());
+ #endif
++#ifdef GGML_USE_PCUDA
++        register_backend(ggml_backend_pcuda_reg());
++#endif
+ #ifdef GGML_USE_RPC
+         register_backend(ggml_backend_rpc_reg());
+ #endif

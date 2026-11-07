@@ -56,3 +56,38 @@ index 4e9681c9f..cfacea279 100644
  #ifdef GGML_USE_RPC
          register_backend(ggml_backend_rpc_reg());
  #endif
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index cad18408a..06e4542f5 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -2966,10 +2966,26 @@ llm_graph_cb llama_context::graph_get_cb() const {
+         if (ubatch.n_tokens < 32 || full_offload) {
+             if (il != -1 && (strcmp(name, "norm") == 0 || strcmp(name, "l_last") == 0)) {
+                 const auto & dev_layer = model.dev_layer(il);
+-                for (const auto & backend : backends) {
+-                    if (ggml_backend_get_device(backend.get()) == dev_layer) {
+-                        if (ggml_backend_supports_op(backend.get(), cur)) {
+-                            ggml_backend_sched_set_tensor_backend(sched.get(), cur, backend.get());
++                // a CPU layer whose ops an ACCEL backend runs on the same host memory (e.g. PCUDA) keeps
++                // its norms on that backend, so the layer is not split around every norm
++                ggml_backend_t accel = nullptr;
++                if (ggml_backend_dev_type(dev_layer) == GGML_BACKEND_DEVICE_TYPE_CPU) {
++                    for (const auto & backend : backends) {
++                        if (ggml_backend_dev_type(ggml_backend_get_device(backend.get())) == GGML_BACKEND_DEVICE_TYPE_ACCEL &&
++                            ggml_backend_supports_op(backend.get(), cur)) {
++                            accel = backend.get();
++                            break;
++                        }
++                    }
++                }
++                if (accel) {
++                    ggml_backend_sched_set_tensor_backend(sched.get(), cur, accel);
++                } else {
++                    for (const auto & backend : backends) {
++                        if (ggml_backend_get_device(backend.get()) == dev_layer) {
++                            if (ggml_backend_supports_op(backend.get(), cur)) {
++                                ggml_backend_sched_set_tensor_backend(sched.get(), cur, backend.get());
++                            }
+                         }
+                     }
+                 }

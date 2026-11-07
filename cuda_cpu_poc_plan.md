@@ -1150,3 +1150,44 @@ Q6_K covers the 323 MB tied output matrix and half of ffn_down and attn_v, so it
 1. A multi-column matmul kernel (reads each weight once for up to N columns) for prompt processing.
 2. Take over the rest of the layer (rms_norm, rope, attention on the F16 KV cache, silu·mul, add), so a token is one or two pcuda graphs instead of ~141 splits. This also removes the ggml thread contention.
 3. Ollama integration (step 3): build `ggml-pcuda` as a `GGML_BACKEND_DL` module next to the CPU variants.
+
+## 33. The whole layer in pcuda, inside llama.cpp (2026-11-06)
+
+**Decode graph.** From `GGML_SCHED_DEBUG=2` with `llama-server -v`, a layer is:
+
+> RMS_NORM, MUL(attn_norm), MUL_MAT q, ROPE q, MUL_MAT v, MUL_MAT k, ROPE k, SET_ROWS k, SET_ROWS v, FLASH_ATTN_EXT, MUL_MAT o, ADD, RMS_NORM, MUL(ffn_norm), MUL_MAT gate, MUL_MAT up, SWIGLU, MUL_MAT down, ADD
+
+**Backend:**
+- **Ops added:** RMS_NORM, MUL, ADD, ROPE (NORM mode with frequency factors), and SWIGLU. SET_ROWS (fp16 KV cache) and FLASH_ATTN_EXT stay on the CPU.
+- **Host buffers declined:** `supports_buft` accepts only pcuda's own buffers, so ggml copies the few host inputs in and every kernel pointer is pcuda memory. The matmul input staging and early flushes are gone.
+- **Constants:** dims and ones buffers are filled with `memcpy`, because `pcudaMemcpy` is refused during a capture. That was the first prototype's "Compute error".
+- **Quantized-input cache:** keyed by tensor, not by address, because ggml's allocator reuses memory within a graph.
+
+**Scheduler.** The per-layer norms still ran on the CPU, because `llama-context.cpp` pins "norm" and "l_last" to the layer's device (the CPU here). A small patch prefers an ACCEL backend that supports the op; the BLAS backend is unaffected because it doesn't support RMS_NORM. With that, `graph_compute` calls per token fell from ~114 to ~59.
+
+**New kernels** (CudaOnCPUCores), all bit-exact against C++ mirrors on every path:
+- `mul_rows`, a broadcast multiply;
+- `rope_ggml`: one thread per (token, frequency), with the angle reused across heads, as ggml caches it;
+- `add_sumsq_f` / `sumsq_part` + `norm_mul_q8_f`: parallel residual add + RMS norm + weight, with both f32 and 8-bit outputs;
+- `silu_mul_q8x4f`: SwiGLU + quantization.
+
+Booth's 5-parameter limit left no integer slot for a chunk start, so the chunkable ones take it as a float, exact below 2^24.
+
+**Runtime.** `pcudaStreamConcurrentBegin/End`: launches recorded in between share one graph step. Tested, but not used by the backend yet.
+
+`pcuda_llm_real --bench-steps` measured a graph step at 0.5–0.7 µs for tiny kernels, and about 1 µs for a synchronous launch. So the remaining overhead was the small kernels' own work, mainly single-thread norms and quantization through gathers, not step count. That is why fusion (fewer, parallel kernels) helped and the concurrent groups were not needed.
+
+**Results** (llama-bench, same binary, two alternating rounds of 5 repetitions):
+
+| Mode | Generation | Prompt |
+|---|---|---|
+| whole layer | 29.4–29.9 tok/s | pp32 62 |
+| matmuls only | 26.3–27.6 tok/s | pp32 57 |
+| llama.cpp CPU backend, 6 threads | 25.9–26.8 tok/s | pp32 92–94 |
+
+Correctness against the CPU backend: 64/64 tokens on prompt 1, and prompt 2 diverges only at the known near-tie.
+
+**Next:**
+- prompt processing: a matmul kernel that reads each weight once for several columns;
+- the KV write and flash attention on the fp16 cache in pcuda (one graph per token);
+- Ollama integration.

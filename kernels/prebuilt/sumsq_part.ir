@@ -1,0 +1,74 @@
+; Booth IR
+
+func @pcuda_aligned8(i32 %0) __device__ {
+entry:
+    ret i32 %0  ; line 10
+}
+
+func @sumsq_part(ptr<global, f32> %0, ptr<global, i32> %1, ptr<global, i32> %2, f32 %3) __global__ {
+entry:
+    %4 = fptosi f32 %3 to i32  ; line 16
+    %5 = call i32 @pcuda_aligned8(%4)  ; line 16
+    %6 = block_id.x  ; line 16
+    %7 = block_dim.x  ; line 16
+    %8 = mul i32 %6, %7  ; line 16
+    %9 = add i32 %5, %8  ; line 16
+    %10 = thread_id.x  ; line 16
+    %11 = add i32 %9, %10  ; line 16
+    %12 = gep ptr<global, i32>, %2, 0  ; line 17
+    %13 = load i32, %12  ; line 17
+    %14 = call i32 @pcuda_aligned8(%13)  ; line 17
+    %15 = gep ptr<global, i32>, %2, 1  ; line 18
+    %16 = load i32, %15  ; line 18
+    %17 = gep ptr<global, i32>, %2, 2  ; line 19
+    %18 = load i32, %17  ; line 19
+    %19 = mul i32 %14, %18  ; line 20
+    %20 = icmp slt i32 %11, %19  ; line 20
+    br_cond %20, if.then, if.end merge if.end  ; line 20
+
+if.then:
+    %22 = sdiv i32 %11, %14  ; line 21
+    %23 = mul i32 %22, %14  ; line 22
+    %24 = sub i32 %11, %23  ; line 22
+    %25 = mul i32 %22, %16  ; line 23
+    %26 = mul i32 %24, 32  ; line 23
+    %27 = add i32 %25, %26  ; line 23
+    br for.cond  ; line 25
+
+if.end:
+    ret void  ; line 27
+
+for.cond:
+    %30 = phi f32 [if.then: 0], [for.inc: %41]
+    %31 = phi i32 [if.then: 0], [for.inc: %43]
+    %32 = icmp slt i32 %31, 32  ; line 25
+    br_cond %32, for.body, for.end merge for.end  ; line 25
+
+for.body:
+    %34 = add i32 %27, %31  ; line 25
+    %35 = gep ptr<global, f32>, %0, %34  ; line 25
+    %36 = load f32, %35  ; line 25
+    %37 = add i32 %27, %31  ; line 25
+    %38 = gep ptr<global, f32>, %0, %37  ; line 25
+    %39 = load f32, %38  ; line 25
+    %40 = fmul f32 %36, %39  ; line 25
+    %41 = fadd f32 %30, %40  ; line 25
+    br for.inc  ; line 25
+
+for.inc:
+    %43 = add i32 %31, 1  ; line 25
+    br for.cond  ; line 25
+
+for.end:
+    %45 = mul i32 %22, %14  ; line 26
+    %46 = mul i32 %45, 11  ; line 26
+    %47 = gep ptr<global, i32>, %1, %46  ; line 26
+    %48 = mul i32 %14, 10  ; line 26
+    %49 = gep ptr<global, i32>, %47, %48  ; line 26
+    %50 = bitcast ptr<global, i32> %49 to ptr<global, f32>  ; line 26
+    %51 = gep ptr<global, f32>, %50, %24  ; line 27
+    store f32 %30, %51  ; line 27
+    br if.end  ; line 27
+}
+
+; 2 functions, 0 globals, 56 instructions

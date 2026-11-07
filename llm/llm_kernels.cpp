@@ -17,6 +17,12 @@ PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8_q8x2);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4k_q8);
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q6k_q8);
 PCUDA_DECLARE_KERNEL_IMAGE(rope_ff);
+PCUDA_DECLARE_KERNEL_IMAGE(mul_rows);
+PCUDA_DECLARE_KERNEL_IMAGE(rope_ggml);
+PCUDA_DECLARE_KERNEL_IMAGE(add_sumsq_f);
+PCUDA_DECLARE_KERNEL_IMAGE(sumsq_part);
+PCUDA_DECLARE_KERNEL_IMAGE(norm_mul_q8_f);
+PCUDA_DECLARE_KERNEL_IMAGE(silu_mul_q8x4f);
 PCUDA_DECLARE_KERNEL_IMAGE(add_rms_norm);
 PCUDA_DECLARE_KERNEL_IMAGE(silu_mul_q8x4);
 PCUDA_DECLARE_KERNEL_IMAGE(add_sumsq);
@@ -273,6 +279,143 @@ Error ropeFFMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) no
     ArgPacker pk(*out);
     pk.ptr(a.x).ptr(a.ff).i32(a.pairs_per_head).i32(a.pos).i32(a.count).f32(a.log2_base);
     return pk.finish(a.count);
+}
+
+// ---- mul_rows(x, w, y, n, count) ------------------------------------------------------
+
+Error mulRowsMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const MulRowsArgs*>(p);
+    if (a.n <= 0 || a.n % 8 || a.count < 0 || a.count % a.n) return Error::InvalidValue;  // pcuda_aligned8(n)
+    LLM_TRY(check(ctx, a.x, f32Bytes(a.count), "x"));
+    LLM_TRY(check(ctx, a.w, f32Bytes(a.n), "w"));
+    LLM_TRY(check(ctx, a.y, f32Bytes(a.count), "y"));
+    ArgPacker pk(*out);
+    pk.ptr(a.x).ptr(a.w).ptr(a.y).i32(a.n).i32(a.count);
+    return pk.finish(a.count);
+}
+
+// ---- rope_ggml(x, y, pos, ff, dims, log2_base) --------------------------------------------
+
+Error ropeGgmlMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const RopeGgmlArgs*>(p);
+    if (a.head_dim <= 0 || a.head_dim % 16 || a.n_head <= 0 || a.n_tokens < 0) return Error::InvalidValue;  // pairs % 8
+    const int64_t pairs = a.head_dim / 2, count = pairs * a.n_head * a.n_tokens;
+    if (!fitsIndex(count, 2)) return Error::InvalidValue;
+    LLM_TRY(check(ctx, a.x, f32Bytes(count * 2), "x"));
+    LLM_TRY(check(ctx, a.y, f32Bytes(count * 2), "y"));
+    LLM_TRY(check(ctx, a.pos, size_t(a.n_tokens) * sizeof(int), "pos"));
+    LLM_TRY(check(ctx, a.ff, f32Bytes(pairs), "ff"));
+    LLM_TRY(check(ctx, a.dims, 3 * sizeof(int), "dims"));
+    if (a.dims[0] != pairs || a.dims[1] != a.n_head || a.dims[2] != pairs * a.n_tokens) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.x).ptr(a.y).ptr(a.pos).ptr(a.ff).ptr(a.dims).f32(a.log2_base);
+    return pk.finish(pairs * a.n_tokens);  // one thread per (token, pair index)
+}
+
+// ---- add_sumsq_f / sumsq_part / norm_mul_q8_f / silu_mul_q8x4f: ggml fusions, chunk start as a float
+
+Error checkRowsQ(const LaunchContext& ctx, int n, int rows, const int* q, const int* dims, int ndims) {
+    if (n <= 0 || n % 256 || rows <= 0 || !fitsIndex(n, rows) || int64_t(n) * rows >= (1 << 24)) return Error::InvalidValue;
+    LLM_TRY(check(ctx, q, size_t(rows) * size_t(scratchInts(n / 32)) * sizeof(int), "q"));
+    return check(ctx, dims, size_t(ndims) * sizeof(int), "dims");
+}
+bool normDimsOk(const int* d, int n, int rows) { return d[0] == n / 32 && d[1] == n && d[2] == rows; }
+
+Error addSumsqFMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const AddSumsqFArgs*>(p);
+    LLM_TRY(checkRowsQ(ctx, a.n, a.rows, a.q, a.dims, 3));
+    const size_t bytes = f32Bytes(int64_t(a.n) * a.rows);
+    LLM_TRY(check(ctx, a.a, bytes, "a"));
+    LLM_TRY(check(ctx, a.b, bytes, "b"));
+    LLM_TRY(check(ctx, a.out, bytes, "out"));
+    if (!normDimsOk(a.dims, a.n, a.rows)) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.a).ptr(a.b).ptr(a.out).ptr(a.q).ptr(a.dims).f32(0.0f);
+    return pk.finish(int64_t(a.n / 32) * a.rows);
+}
+Error addSumsqFChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const AddSumsqFArgs*>(p);
+    if (!chunkOk(int64_t(a.n / 32) * a.rows, begin, length) || begin % 8) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.a).ptr(a.b).ptr(a.out).ptr(a.q).ptr(a.dims).f32(float(begin));
+    return pk.finish(length);
+}
+Error addSumsqFExtent(const void* p, int64_t* total) noexcept {
+    const auto& a = *static_cast<const AddSumsqFArgs*>(p);
+    *total = int64_t(a.n / 32) * a.rows;
+    return Error::Success;
+}
+
+Error sumsqPartMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const SumsqPartArgs*>(p);
+    LLM_TRY(checkRowsQ(ctx, a.n, a.rows, a.q, a.dims, 3));
+    LLM_TRY(check(ctx, a.x, f32Bytes(int64_t(a.n) * a.rows), "x"));
+    if (!normDimsOk(a.dims, a.n, a.rows)) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.x).ptr(a.q).ptr(a.dims).f32(0.0f);
+    return pk.finish(int64_t(a.n / 32) * a.rows);
+}
+Error sumsqPartChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const SumsqPartArgs*>(p);
+    if (!chunkOk(int64_t(a.n / 32) * a.rows, begin, length) || begin % 8) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.x).ptr(a.q).ptr(a.dims).f32(float(begin));
+    return pk.finish(length);
+}
+Error sumsqPartExtent(const void* p, int64_t* total) noexcept {
+    const auto& a = *static_cast<const SumsqPartArgs*>(p);
+    *total = int64_t(a.n / 32) * a.rows;
+    return Error::Success;
+}
+
+Error normMulQ8Marshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const NormMulQ8Args*>(p);
+    LLM_TRY(checkRowsQ(ctx, a.n, a.rows, a.q, a.dims, 3));
+    const size_t bytes = f32Bytes(int64_t(a.n) * a.rows);
+    LLM_TRY(check(ctx, a.x, bytes, "x"));
+    LLM_TRY(check(ctx, a.w, f32Bytes(a.n), "w"));
+    LLM_TRY(check(ctx, a.y, bytes, "y"));
+    if (!normDimsOk(a.dims, a.n, a.rows)) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.x).ptr(a.w).ptr(a.y).ptr(a.q).ptr(a.dims).f32(a.eps).f32(0.0f);
+    return pk.finish(int64_t(a.n / 32) * a.rows);
+}
+Error normMulQ8Chunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const NormMulQ8Args*>(p);
+    if (!chunkOk(int64_t(a.n / 32) * a.rows, begin, length) || begin % 8) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.x).ptr(a.w).ptr(a.y).ptr(a.q).ptr(a.dims).f32(a.eps).f32(float(begin));
+    return pk.finish(length);
+}
+Error normMulQ8Extent(const void* p, int64_t* total) noexcept {
+    const auto& a = *static_cast<const NormMulQ8Args*>(p);
+    *total = int64_t(a.n / 32) * a.rows;
+    return Error::Success;
+}
+
+Error siluQ8FMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const SiluMulQ8FArgs*>(p);
+    LLM_TRY(checkRowsQ(ctx, a.n, a.cols, a.q, a.dims, 2));
+    const size_t bytes = f32Bytes(int64_t(a.n) * a.cols);
+    LLM_TRY(check(ctx, a.g, bytes, "g"));
+    LLM_TRY(check(ctx, a.u, bytes, "u"));
+    LLM_TRY(check(ctx, a.y, bytes, "y"));
+    if (a.dims[0] != a.n || a.dims[1] != a.cols) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.g).ptr(a.u).ptr(a.y).ptr(a.q).ptr(a.dims).f32(0.0f);
+    return pk.finish(int64_t(a.n / 32) * a.cols);
+}
+Error siluQ8FChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const SiluMulQ8FArgs*>(p);
+    if (!chunkOk(int64_t(a.n / 32) * a.cols, begin, length) || begin % 8) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.g).ptr(a.u).ptr(a.y).ptr(a.q).ptr(a.dims).f32(float(begin));
+    return pk.finish(length);
+}
+Error siluQ8FExtent(const void* p, int64_t* total) noexcept {
+    const auto& a = *static_cast<const SiluMulQ8FArgs*>(p);
+    *total = int64_t(a.n / 32) * a.cols;
+    return Error::Success;
 }
 
 // ---- add_rms_norm(x, t, w, y, n, eps): one row, one thread ------------------------
@@ -545,6 +688,12 @@ const pcuda::KernelEntry kEntries[] = {
     {"matvec_q4k_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4k_q8), &kquantMarshal<37>, &q4q8Extent, &kquantChunk<37>},
     {"matvec_q6k_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q6k_q8), &kquantMarshal<53>, &q4q8Extent, &kquantChunk<53>},
     {"rope_ff", PCUDA_KERNEL_IMAGE_FIELDS(rope_ff), &ropeFFMarshal},
+    {"mul_rows", PCUDA_KERNEL_IMAGE_FIELDS(mul_rows), &mulRowsMarshal},
+    {"rope_ggml", PCUDA_KERNEL_IMAGE_FIELDS(rope_ggml), &ropeGgmlMarshal},
+    {"add_sumsq_f", PCUDA_KERNEL_IMAGE_FIELDS(add_sumsq_f), &addSumsqFMarshal, &addSumsqFExtent, &addSumsqFChunk},
+    {"sumsq_part", PCUDA_KERNEL_IMAGE_FIELDS(sumsq_part), &sumsqPartMarshal, &sumsqPartExtent, &sumsqPartChunk},
+    {"norm_mul_q8_f", PCUDA_KERNEL_IMAGE_FIELDS(norm_mul_q8_f), &normMulQ8Marshal, &normMulQ8Extent, &normMulQ8Chunk},
+    {"silu_mul_q8x4f", PCUDA_KERNEL_IMAGE_FIELDS(silu_mul_q8x4f), &siluQ8FMarshal, &siluQ8FExtent, &siluQ8FChunk},
     {"add_rms_norm", PCUDA_KERNEL_IMAGE_FIELDS(add_rms_norm), &addRmsMarshal},
     {"silu_mul_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(silu_mul_q8x4), &siluQMarshal, &siluQExtent, &siluQChunk},
     {"add_sumsq", PCUDA_KERNEL_IMAGE_FIELDS(add_sumsq), &sumsqMarshal, &sumsqExtent, &sumsqChunk},

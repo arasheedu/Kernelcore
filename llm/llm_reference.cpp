@@ -503,3 +503,103 @@ void ropeFF(float* x, const float* ff, int pairs_per_head, int pos, int count, f
 }
 
 } // namespace llm::ref
+
+namespace llm::ref {
+
+void mulRows(const float* x, const float* w, float* y, int n, int count) {
+    for (int i = 0; i < count; ++i) y[i] = x[i] * w[i % n];
+}
+
+void ropeGgml(const float* x, float* y, const int* pos, const float* ff, int head_dim, int n_head, int n_tokens,
+              float log2_base) {
+    const int pairs = head_dim / 2, count = pairs * n_head * n_tokens;
+    for (int idx = 0; idx < count; ++idx) {
+        const int t = idx / (pairs * n_head), i = idx % pairs;
+        const float theta = static_cast<float>(pos[t]) *
+                            std::exp2(-static_cast<float>(i) / static_cast<float>(pairs) * log2_base) / ff[i];
+        const float turns = theta * 0.159154943f;  // Booth's sin/cos lowering (BOOTH_PIN F11)
+        const float c = std::cos(turns * 6.28318548f), s = std::sin(turns * 6.28318548f);
+        const float x0 = x[2 * idx], x1 = x[2 * idx + 1];
+        y[2 * idx] = x0 * c - x1 * s;
+        y[2 * idx + 1] = x0 * s + x1 * c;
+    }
+}
+
+} // namespace llm::ref
+
+namespace llm::ref {
+
+namespace {
+void quantizeBlockInto(const float* y, int* qr, int nb, int bl) {  // as quantize_q8x4, one block
+    std::vector<int> words(8);
+    std::vector<float> xd(2);
+    quantizeQ8x4(y, words.data(), xd.data(), 1);
+    for (int k = 0; k < 8; ++k) qr[bl * 8 + k] = words[size_t(k)];
+    float* d = reinterpret_cast<float*>(qr + nb * 8);
+    d[bl * 2] = xd[0];
+    d[bl * 2 + 1] = xd[1];
+}
+} // namespace
+
+void addSumsqF(const float* a, const float* b, float* out, int* q, int n, int rows) {
+    const int nb = n / 32;
+    for (int row = 0; row < rows; ++row) {
+        float* ss = reinterpret_cast<float*>(q + size_t(row) * nb * 11 + nb * 10);
+        for (int bl = 0; bl < nb; ++bl) {
+            float s = 0.0f;
+            for (int i = 0; i < 32; ++i) {
+                const size_t o = size_t(row) * n + size_t(bl) * 32 + i;
+                const float v = a[o] + b[o];
+                out[o] = v;
+                s += v * v;
+            }
+            ss[bl] = s;
+        }
+    }
+}
+
+void sumsqPart(const float* x, int* q, int n, int rows) {
+    const int nb = n / 32;
+    for (int row = 0; row < rows; ++row) {
+        float* ss = reinterpret_cast<float*>(q + size_t(row) * nb * 11 + nb * 10);
+        for (int bl = 0; bl < nb; ++bl) {
+            float s = 0.0f;
+            for (int i = 0; i < 32; ++i) {
+                const float v = x[size_t(row) * n + size_t(bl) * 32 + i];
+                s += v * v;
+            }
+            ss[bl] = s;
+        }
+    }
+}
+
+void normMulQ8(const float* x, const float* w, float* y, int* q, int n, int rows, float eps) {
+    const int nb = n / 32;
+    for (int row = 0; row < rows; ++row) {
+        int* qr = q + size_t(row) * nb * 11;
+        const float* ss = reinterpret_cast<const float*>(qr + nb * 10);
+        float tot = 0.0f;
+        for (int j = 0; j < nb; ++j) tot += ss[j];
+        const float r = 1.0f / std::sqrt(tot / static_cast<float>(n) + eps);
+        for (int bl = 0; bl < nb; ++bl) {
+            float* yb = y + size_t(row) * n + size_t(bl) * 32;
+            const float* xb = x + size_t(row) * n + size_t(bl) * 32;
+            for (int i = 0; i < 32; ++i) yb[i] = xb[i] * r * w[bl * 32 + i];
+            quantizeBlockInto(yb, qr, nb, bl);
+        }
+    }
+}
+
+void siluMulQ8F(const float* g, const float* u, float* y, int* q, int n, int cols) {
+    const int nb = n / 32;
+    for (int c = 0; c < cols; ++c) {
+        int* qc = q + size_t(c) * nb * 11;
+        for (int bl = 0; bl < nb; ++bl) {
+            const size_t o = size_t(c) * n + size_t(bl) * 32;
+            for (int i = 0; i < 32; ++i) y[o + i] = g[o + i] / (1.0f + std::exp2(-g[o + i] * 1.44269504f)) * u[o + i];
+            quantizeBlockInto(y + o, qc, nb, bl);
+        }
+    }
+}
+
+} // namespace llm::ref

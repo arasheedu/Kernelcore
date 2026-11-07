@@ -62,6 +62,10 @@ pcuda::Error pcudaStreamEndCapture(pcudaStream_t stream, pcudaGraph_t* graph) no
 // per kernel. Results match running the launches one by one. After a failing kernel, later
 // kernels are skipped; the error names the graph node. stream == nullptr: synchronous.
 pcuda::Error pcudaGraphLaunch(pcudaGraph_t graph, pcudaStream_t stream = nullptr) noexcept;
+// While capturing: the launches recorded between Begin and End are independent of each other and
+// run as one step (their chunks are shared out together; the next step waits for all of them).
+pcuda::Error pcudaStreamConcurrentBegin(pcudaStream_t stream = nullptr) noexcept;
+pcuda::Error pcudaStreamConcurrentEnd(pcudaStream_t stream = nullptr) noexcept;
 pcuda::Error pcudaGraphDestroy(pcudaGraph_t graph) noexcept;  // a pending launch keeps its data
 
 // ---- code generation path ---------------------------------------------------

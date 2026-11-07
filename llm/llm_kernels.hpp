@@ -137,6 +137,70 @@ struct RopeFFArgs {  // in place; count = heads * pairs_per_head
     float        log2_base;
 };
 
+// y[i] = x[i] * w[i % n] (row vector broadcast), n % 8 == 0. Not chunked.
+struct MulRowsArgs {
+    const float* x;
+    const float* w;
+    float*       y;
+    int          n;
+    int          count;
+};
+
+// ggml ROPE, NORM mode, out of place; pos[n_tokens] per-token positions, ff[head_dim / 2]
+// frequency factors (ones when the model has none); dims -> device int[3]
+// {head_dim / 2, n_head, n_tokens * head_dim / 2}; head_dim % 16 == 0. Not chunked.
+struct RopeGgmlArgs {
+    const float* x;
+    float*       y;
+    const int*   pos;
+    const float* ff;
+    const int*   dims;
+    int          head_dim;
+    int          n_head;
+    int          n_tokens;
+    float        log2_base;
+};
+
+// Parallel residual add + RMS norm + weight + 8-bit quantization for ggml graphs (kernels
+// add_sumsq_f / sumsq_part, then norm_mul_q8_f), and SwiGLU + quantization (silu_mul_q8x4f).
+// Rows of n values (n % 256 == 0); q: one scratch slot of llm::scratchInts(n / 32) ints per row.
+// dims -> device int[3] {n / 32, n, rows} (silu: int[2] {n, cols}). All chunkable.
+struct AddSumsqFArgs {  // out = a + b, partial sums of out^2 into q
+    const float* a;
+    const float* b;
+    float*       out;
+    int*         q;
+    const int*   dims;
+    int          n;
+    int          rows;
+};
+struct SumsqPartArgs {  // partial sums of x^2 into q
+    const float* x;
+    int*         q;
+    const int*   dims;
+    int          n;
+    int          rows;
+};
+struct NormMulQ8Args {  // y = x / rms * w (rms from q's partial sums), quantized into q
+    const float* x;
+    const float* w;
+    float*       y;
+    int*         q;
+    const int*   dims;
+    int          n;
+    int          rows;
+    float        eps;
+};
+struct SiluMulQ8FArgs {  // y = silu(g) * u, quantized into q
+    const float* g;
+    const float* u;
+    float*       y;
+    int*         q;
+    const int*   dims;
+    int          n;
+    int          cols;
+};
+
 struct AttnScoresArgs {  // scores[n_heads][ctx_pad]; dims -> device int[7] matching d
     const float* q;
     const float* k;

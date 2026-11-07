@@ -38,6 +38,16 @@ void  repackQ6K(const uint8_t* src, int rows, int k, int* qw);  // rows * k / 25
 void  matvecQ4KQ8(const int* qw, const int* xq, const float* xd, float* y, int rows, int k);
 void  matvecQ6KQ8(const int* qw, const int* xq, const float* xd, float* y, int rows, int k);
 void  ropeFF(float* x, const float* ff, int pairs_per_head, int pos, int count, float log2_base);
+// ggml ops used by the llama.cpp backend (kernels mul_rows, rope_ggml).
+void  mulRows(const float* x, const float* w, float* y, int n, int count);
+void  ropeGgml(const float* x, float* y, const int* pos, const float* ff, int head_dim, int n_head, int n_tokens,
+               float log2_base);
+// ggml fusions (kernels add_sumsq_f, sumsq_part, norm_mul_q8_f, silu_mul_q8x4f): q holds one scratch slot
+// of llm::scratchInts(n / 32) ints per row (column).
+void  addSumsqF(const float* a, const float* b, float* out, int* q, int n, int rows);
+void  sumsqPart(const float* x, int* q, int n, int rows);
+void  normMulQ8(const float* x, const float* w, float* y, int* q, int n, int rows, float eps);
+void  siluMulQ8F(const float* g, const float* u, float* y, int* q, int n, int cols);
 void rope(float* x, int pairs_per_head, int pos, int count, float log2_base);
 // Layouts as in AttnDims: kt[kv_stride][k_stride] (K transposed), v[ctx][kv_stride],
 // scores/p[n_heads][ctx_pad] (entries t >= ctx untouched).

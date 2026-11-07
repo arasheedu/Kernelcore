@@ -81,12 +81,14 @@ struct GraphNode {
     const pcuda::KernelEntry*      entry;
     std::string                    name;
     std::vector<pcuda::LaunchArgs> parts;
+    bool                           join_previous = false;  // recorded in a concurrent group: same step
 };
 // Immutable once captured; a running launch keeps it alive after pcudaGraphDestroy.
 struct GraphData {
     std::vector<GraphNode>                        nodes;
-    std::vector<std::vector<pcuda::Stream::Task>> tasks;  // per node: one task per part
+    std::vector<std::vector<pcuda::Stream::Task>> tasks;      // per step: one task per part of its nodes
     std::vector<pcuda::WorkerPool::Step>          steps;
+    std::vector<size_t>                           step_node;  // per step: its first node (error messages)
 };
 } // namespace
 
@@ -147,6 +149,8 @@ struct Runtime {
     std::mutex                                                 capture_mutex;
     std::map<Stream*, std::shared_ptr<std::vector<GraphNode>>> captures;
     std::atomic<int>                                           capture_count{0};
+    // Streams inside pcudaStreamConcurrentBegin/End: 1 = open, 2 = open and a node recorded.
+    std::map<Stream*, int>                                     concurrent;
 
     std::mutex                                kernels_mutex;
     std::map<std::string, const KernelEntry*> kernels;
@@ -384,6 +388,7 @@ size_t stopDevice(Runtime& r) {
     {
         std::lock_guard lk(r.capture_mutex);
         r.captures.clear();
+        r.concurrent.clear();
         r.capture_count.store(0);
     }
     const auto blocks = r.registry.drain();
@@ -497,7 +502,12 @@ Error launchCommon(const char* name, const void* typed_args, pcudaStream_t strea
     if (r.capture_count.load() != 0) {  // recorded, not run
         std::lock_guard lk(r.capture_mutex);
         if (auto it = r.captures.find(target); it != r.captures.end()) {
-            it->second->push_back(GraphNode{entry, name, std::move(parts)});
+            bool join = false;
+            if (auto c = r.concurrent.find(target); c != r.concurrent.end()) {
+                join = c->second == 2;
+                c->second = 2;
+            }
+            it->second->push_back(GraphNode{entry, name, std::move(parts), join});
             return Error::Success;
         }
     }
@@ -886,21 +896,65 @@ Error pcudaStreamEndCapture(pcudaStream_t stream, pcudaGraph_t* graph) noexcept 
             r.captures.erase(it);
             r.capture_count.fetch_sub(1);
         }
+        {
+            std::lock_guard lk(r.capture_mutex);
+            r.concurrent.erase(s);
+        }
         auto data = std::make_shared<GraphData>();
         data->nodes = std::move(*nodes);
-        data->tasks.resize(data->nodes.size());
-        data->steps.reserve(data->nodes.size());
+        // One step per node, except nodes recorded in a concurrent group, which share a step.
         for (size_t k = 0; k < data->nodes.size(); ++k) {  // nodes and parts no longer move
             const GraphNode& n = data->nodes[k];
-            for (const LaunchArgs& a : n.parts) data->tasks[k].push_back(partTask(n.entry, &a));
-            data->steps.push_back({data->tasks[k].data(), data->tasks[k].size()});
+            if (!n.join_previous || data->tasks.empty()) {
+                data->tasks.emplace_back();
+                data->step_node.push_back(k);
+            }
+            for (const LaunchArgs& a : n.parts) data->tasks.back().push_back(partTask(n.entry, &a));
         }
+        for (const auto& t : data->tasks) data->steps.push_back({t.data(), t.size()});
         auto g = std::make_unique<pcudaGraph_st>();
         g->data = std::move(data);
         pcudaGraph_t h = g.get();
         std::lock_guard lk(r.objects_mutex);
         r.graphs.emplace(h, std::move(g));
         *graph = h;
+        return Error::Success;
+    });
+}
+
+Error pcudaStreamConcurrentBegin(pcudaStream_t stream) noexcept {
+    return api("pcudaStreamConcurrentBegin", [&] {
+        Runtime& r = R();
+        std::shared_lock life(r.lifecycle);
+        if (Error e = requireInit(r); e != Error::Success) return e;
+        Stream* s = nullptr;
+        if (Error e = findStream(r, stream, &s); e != Error::Success) return e;
+        std::lock_guard lk(r.capture_mutex);
+        if (!r.captures.count(s)) {
+            setDetail("the stream is not capturing");
+            return Error::InvalidValue;
+        }
+        if (r.concurrent.count(s)) {
+            setDetail("a concurrent group is already open");
+            return Error::InvalidValue;
+        }
+        r.concurrent[s] = 1;
+        return Error::Success;
+    });
+}
+
+Error pcudaStreamConcurrentEnd(pcudaStream_t stream) noexcept {
+    return api("pcudaStreamConcurrentEnd", [&] {
+        Runtime& r = R();
+        std::shared_lock life(r.lifecycle);
+        if (Error e = requireInit(r); e != Error::Success) return e;
+        Stream* s = nullptr;
+        if (Error e = findStream(r, stream, &s); e != Error::Success) return e;
+        std::lock_guard lk(r.capture_mutex);
+        if (!r.concurrent.erase(s)) {
+            setDetail("no concurrent group is open");
+            return Error::InvalidValue;
+        }
         return Error::Success;
     });
 }
@@ -930,7 +984,8 @@ Error pcudaGraphLaunch(pcudaGraph_t graph, pcudaStream_t stream) noexcept {
             size_t failed = 0;
             const Error e = pool->runSteps(data->steps, &failed);
             if (e != Error::Success)
-                setDetail(std::format("graph node {} ('{}'), {}", failed, data->nodes[failed].name,
+                setDetail(std::format("graph node {} ('{}'), {}", data->step_node[failed],
+                                      data->nodes[data->step_node[failed]].name,
                                       detail::lastDetail()));
             return e;
         };

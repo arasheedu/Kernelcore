@@ -270,6 +270,89 @@ TEST_CASE(kquant_matvecs_match_reference_and_dequantized_floats) {
     CHECK(bitEqual(hostCopy(dx, x.size()), rx));
 }
 
+
+// ggml ops for the llama.cpp backend: broadcast multiply and rope with positions from a tensor.
+TEST_CASE(ggml_op_kernels_match_reference) {
+    LlmFixture fx;
+    REQUIRE(fx.ok);
+    const int n = 3072, rows = 3;
+    const auto x = randomFloats(size_t(n) * rows, 71, -2, 2), w = randomFloats(size_t(n), 72, 0.5f, 1.5f);
+    std::vector<float> ry(x.size());
+    llm::ref::mulRows(x.data(), w.data(), ry.data(), n, n * rows);
+    auto *dx = devCopy(x), *dw = devCopy(w), *dy = devCopy(std::vector<float>(x.size(), 0.0f));
+    REQUIRE(dx && dw && dy);
+    const llm::MulRowsArgs ma{dx, dw, dy, n, n * rows};
+    CHECK_OK(pcudaLaunchKernel("mul_rows", &ma));
+    CHECK(bitEqual(hostCopy(dy, ry.size()), ry));
+    const llm::MulRowsArgs bad{dx, dw, dy, 100, 300};  // n must be a multiple of 8
+    CHECK_ERR(pcudaLaunchKernel("mul_rows", &bad), Error::InvalidValue);
+
+    const int hd = 128, nh = 6, nt = 3, pairs = hd / 2;
+    const auto q = randomFloats(size_t(hd) * nh * nt, 73, -1, 1), ff = randomFloats(size_t(pairs), 74, 1.0f, 8.0f);
+    const std::vector<int> pos{5, 300, 4097};
+    std::vector<float> rq(q.size());
+    llm::ref::ropeGgml(q.data(), rq.data(), pos.data(), ff.data(), hd, nh, nt, std::log2(500000.0f));
+    auto *dq = devCopy(q), *dout = devCopy(std::vector<float>(q.size(), 0.0f)), *dff = devCopy(ff);
+    auto *dpos = devCopy(pos), *ddims = devCopy(std::vector<int>{pairs, nh, pairs * nt});
+    REQUIRE(dq && dout && dff && dpos && ddims);
+    const llm::RopeGgmlArgs ra{dq, dout, dpos, dff, ddims, hd, nh, nt, std::log2(500000.0f)};
+    CHECK_OK(pcudaLaunchKernel("rope_ggml", &ra));
+    CHECK(bitEqual(hostCopy(dout, rq.size()), rq));
+}
+
+
+// ggml fusions: residual add + RMS norm + weight + quantize, and SwiGLU + quantize; chunked or not.
+TEST_CASE(ggml_fused_kernels_match_reference_and_chunk) {
+    LlmFixture fx;
+    REQUIRE(fx.ok);
+    const int n = 3072, rows = 2, slot = llm::scratchInts(n / 32);
+    const auto a = randomFloats(size_t(n) * rows, 81, -2, 2), b = randomFloats(size_t(n) * rows, 82, -2, 2);
+    const auto w = randomFloats(size_t(n), 83, 0.9f, 1.1f);
+    std::vector<float> rout(a.size()), ry(a.size());
+    std::vector<int> rq(size_t(slot) * rows, 0);
+    llm::ref::addSumsqF(a.data(), b.data(), rout.data(), rq.data(), n, rows);
+    llm::ref::normMulQ8(rout.data(), w.data(), ry.data(), rq.data(), n, rows, 1e-5f);
+    std::vector<float> ry2(a.size());
+    std::vector<int> rq2(size_t(slot) * rows, 0);
+    llm::ref::sumsqPart(a.data(), rq2.data(), n, rows);
+    llm::ref::normMulQ8(a.data(), w.data(), ry2.data(), rq2.data(), n, rows, 1e-5f);
+    for (bool chunked : {false, true}) {
+        auto *da = devCopy(a), *db = devCopy(b), *dw = devCopy(w);
+        auto *dout = devCopy(std::vector<float>(a.size())), *dy = devCopy(std::vector<float>(a.size()));
+        auto* dq = devCopy(std::vector<int>(rq.size()));
+        auto* dd = devCopy(std::vector<int>{n / 32, n, rows});
+        REQUIRE(da && db && dw && dout && dy && dq && dd);
+        auto run = [&](const char* k, const auto& args) {
+            return chunked ? pcudaLaunchKernelChunked(k, &args, workers(), 16) : pcudaLaunchKernel(k, &args);
+        };
+        CHECK_OK(run("add_sumsq_f", llm::AddSumsqFArgs{da, db, dout, dq, dd, n, rows}));
+        CHECK_OK(run("norm_mul_q8_f", llm::NormMulQ8Args{dout, dw, dy, dq, dd, n, rows, 1e-5f}));
+        CHECK(bitEqual(hostCopy(dout, rout.size()), rout));
+        CHECK(bitEqual(hostCopy(dy, ry.size()), ry));
+        CHECK(hostCopy(dq, rq.size()) == rq);
+        CHECK_OK(run("sumsq_part", llm::SumsqPartArgs{da, dq, dd, n, rows}));
+        CHECK_OK(run("norm_mul_q8_f", llm::NormMulQ8Args{da, dw, dy, dq, dd, n, rows, 1e-5f}));
+        CHECK(bitEqual(hostCopy(dy, ry2.size()), ry2));
+        CHECK(hostCopy(dq, rq2.size()) == rq2);
+    }
+    // SwiGLU + quantize equals silu_mul then quantize_q8x4
+    const int m = 8192, cols = 2, mslot = llm::scratchInts(m / 32);
+    const auto g = randomFloats(size_t(m) * cols, 84, -6, 6), u = randomFloats(size_t(m) * cols, 85, -2, 2);
+    std::vector<float> rs(g.size());
+    std::vector<int> rsq(size_t(mslot) * cols, 0);
+    llm::ref::siluMulQ8F(g.data(), u.data(), rs.data(), rsq.data(), m, cols);
+    for (bool chunked : {false, true}) {
+        auto *dg = devCopy(g), *du = devCopy(u), *dy = devCopy(std::vector<float>(g.size()));
+        auto* dq = devCopy(std::vector<int>(rsq.size()));
+        auto* dd = devCopy(std::vector<int>{m, cols});
+        REQUIRE(dg && du && dy && dq && dd);
+        const llm::SiluMulQ8FArgs sa{dg, du, dy, dq, dd, m, cols};
+        CHECK_OK(chunked ? pcudaLaunchKernelChunked("silu_mul_q8x4f", &sa, workers(), 16) : pcudaLaunchKernel("silu_mul_q8x4f", &sa));
+        CHECK(bitEqual(hostCopy(dy, rs.size()), rs));
+        CHECK(hostCopy(dq, rsq.size()) == rsq);
+    }
+}
+
 // Fused kernels give exactly the results of the sequences they replace.
 TEST_CASE(fused_kernels_equal_unfused_sequences) {
     LlmFixture fx;

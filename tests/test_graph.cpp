@@ -156,3 +156,32 @@ TEST_CASE(fault_in_a_graph_stops_it_and_names_the_node) {
     REQUIRE_OK(pcudaDeviceReset());  // frees the buffers and the graph
     CHECK_ERR(pcudaGraphLaunch(g), Error::InvalidResourceHandle);
 }
+
+TEST_CASE(concurrent_group_runs_independent_launches_in_one_step) {
+    RuntimeFixture fx;
+    REQUIRE(fx.ok);
+    const int n = 50000;
+    std::vector<float> a(n), b(n);
+    for (int i = 0; i < n; ++i) a[i] = float(i % 31), b[i] = float(i % 7) - 3.0f;
+    float *da = devFill(a), *db = devFill(b), *o1 = devFill(std::vector<float>(n, 0.0f)),
+          *o2 = devFill(std::vector<float>(n, 0.0f)), *o3 = devFill(std::vector<float>(n, 0.0f));
+    REQUIRE(da && db && o1 && o2 && o3);
+    CHECK_ERR(pcudaStreamConcurrentBegin(nullptr), Error::InvalidValue);  // not capturing
+    REQUIRE_OK(pcudaStreamBeginCapture(nullptr));
+    REQUIRE_OK(pcudaStreamConcurrentBegin(nullptr));
+    CHECK_ERR(pcudaStreamConcurrentBegin(nullptr), Error::InvalidValue);  // already open
+    const pcuda::kernels::VectorAddArgs s1{da, db, o1, n}, s2{db, db, o2, n};
+    CHECK_OK(pcudaLaunchKernelChunked("vector_add", &s1, 4, 1024));  // independent: one step
+    CHECK_OK(pcudaLaunchKernelChunked("vector_add", &s2, 4, 1024));
+    REQUIRE_OK(pcudaStreamConcurrentEnd(nullptr));
+    CHECK_ERR(pcudaStreamConcurrentEnd(nullptr), Error::InvalidValue);
+    const pcuda::kernels::VectorAddArgs s3{o1, o2, o3, n};  // reads both: the next step
+    CHECK_OK(pcudaLaunchKernelChunked("vector_add", &s3, 4, 1024));
+    pcudaGraph_t g = nullptr;
+    REQUIRE_OK(pcudaStreamEndCapture(nullptr, &g));
+    CHECK_OK(pcudaGraphLaunch(g));
+    std::vector<float> want(n);
+    for (int i = 0; i < n; ++i) want[i] = (a[i] + b[i]) + (b[i] + b[i]);
+    CHECK(host(o3, n) == want);
+    CHECK_OK(pcudaGraphDestroy(g));
+}

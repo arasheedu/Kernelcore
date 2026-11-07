@@ -19,6 +19,7 @@
 #include "llm_reference.hpp"
 
 #include <pcuda/api.hpp>
+#include <pcuda/kernels.hpp>
 
 #include <algorithm>
 #include <bit>
@@ -162,12 +163,49 @@ int benchMatvec(unsigned workers) {
     return 0;
 }
 
+// --bench-steps: cost of one graph step: graphs of 500 tiny launches (8-element vector_add), each its
+// own step, or 10 per concurrent step.
+int benchSteps() {
+    llm::PcudaAllocator pa;
+    auto* a = static_cast<float*>(pa.alloc(4096));
+    auto* b = static_cast<float*>(pa.alloc(4096));
+    auto* o = static_cast<float*>(pa.alloc(4096));
+    const pcuda::kernels::VectorAddArgs args{a, b, o, 8};
+    for (int group : {1, 10}) {
+        std::vector<double> runs;
+        for (int r = 0; r < 7; ++r) {
+            if (pcudaStreamBeginCapture(nullptr) != pcuda::Error::Success) throw std::runtime_error("capture");
+            for (int i = 0; i < 500; i += group) {
+                if (group > 1) pcudaStreamConcurrentBegin(nullptr);
+                for (int j = 0; j < group; ++j) pcudaLaunchKernel("vector_add", &args);
+                if (group > 1) pcudaStreamConcurrentEnd(nullptr);
+            }
+            pcudaGraph_t g = nullptr;
+            pcudaStreamEndCapture(nullptr, &g);
+            const auto t = Clock::now();
+            if (pcudaGraphLaunch(g) != pcuda::Error::Success) throw std::runtime_error("graph launch");
+            runs.push_back(std::chrono::duration<double, std::micro>(Clock::now() - t).count());
+            pcudaGraphDestroy(g);
+        }
+        std::sort(runs.begin(), runs.end());
+        const int steps = 500 / group;
+        std::printf("  500 launches in %3d steps: %8.1f us per graph, %6.2f us per step\n", steps, runs[3], runs[3] / steps);
+    }
+    // the same launches without a graph (synchronous, each through the stream)
+    const auto t = Clock::now();
+    for (int i = 0; i < 500; ++i) pcudaLaunchKernel("vector_add", &args);
+    std::printf("  500 synchronous launches: %8.1f us, %6.2f us each\n",
+                std::chrono::duration<double, std::micro>(Clock::now() - t).count(),
+                std::chrono::duration<double, std::micro>(Clock::now() - t).count() / 500);
+    return 0;
+}
+
 int run(int argc, char** argv) {
     std::string path, ref_path;
     bool list = false, graphs = true;
     unsigned workers = 0;
     int mirror = 2;
-    bool bench_mv = false;
+    bool bench_mv = false, bench_steps = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -178,17 +216,18 @@ int run(int argc, char** argv) {
         else if (a == "--ref") ref_path = next();
         else if (a == "--list") list = true;
         else if (a == "--bench-matvec") bench_mv = true;
+        else if (a == "--bench-steps") bench_steps = true;
         else if (a == "--workers") workers = unsigned(std::atoi(next().c_str()));
         else if (a == "--mirror") mirror = std::atoi(next().c_str());
         else if (a == "--graphs") graphs = next() == "on";
         else throw std::invalid_argument("unknown argument " + a);
     }
-    if (bench_mv) {
+    if (bench_mv || bench_steps) {
         if (pcudaInit() != pcuda::Error::Success || llm::registerKernels() != pcuda::Error::Success)
             throw std::runtime_error("pcuda init");
         pcuda::DeviceProperties pr{};
         pcudaGetDeviceProperties(&pr, 0);
-        const int r = benchMatvec(workers ? workers : pr.worker_count + 1);
+        const int r = bench_steps ? benchSteps() : benchMatvec(workers ? workers : pr.worker_count + 1);
         pcudaShutdown();
         return r;
     }

@@ -33,4 +33,12 @@ cudaError_t kvAppend(const float* k, const float* v, float* kt, float* vc, const
 cudaError_t attnValues(const float* p, const float* v, float* out, const int* dims, int total, cudaStream_t s);
 cudaError_t siluMul(const float* g, const float* u, float* out, int count, cudaStream_t s);
 
+// K-quant kernels of the ggml backend. dims as in the kernels: quantize_cols {nb, ncols}; matvec
+// {rows, k}; matmul {rows, k, ncols, row_block}. tile: 4 or 8 columns per thread.
+cudaError_t quantizeCols(const float* x, int* q, const int* dims, int nb, int ncols, cudaStream_t s);
+cudaError_t matvecKQ8(bool q6, const int* qw, const int* xq, const float* xd, float* y, const int* dims, int rows,
+                      cudaStream_t s);
+cudaError_t matmulKQ8(bool q6, int tile, const int* qw, const int* xq, float* y, const int* dims, int rows, int ncols,
+                      cudaStream_t s);
+
 } // namespace gpu::llm

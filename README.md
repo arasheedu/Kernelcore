@@ -420,6 +420,34 @@ Results with Llama 3.2 3B Q4_K_M from Ollama's store, in llama-bench (same binar
   159 / 176 / 169 / 27.9, `-t 6` 153 / 167 / 159 / 27.8 tok/s. llama-bench has no `-tb`: run prompts
   and generation separately (as `scripts/bench_chart.ps1` does).
 
+### The same K-quant kernels on the GPU (`pcuda_kquant_vs_cuda`)
+
+The ggml backend's kernels (`quantize_cols`, `matvec_q4k_q8` / `matvec_q6k_q8`, the 4- and
+8-column matmuls) also build with `nvcc`, unchanged. `pcuda_kquant_vs_cuda` (preset
+`windows-msvc-nvidia`) runs one Llama 3.2 3B layer's matmuls on both: q, k, o, gate and up in
+Q4_K, v and down in Q6_K, random weights, two input quantizations and seven matrices per batch.
+
+- **Same results.** The 8-bit activations are identical. The outputs agree to within 3e-7 of the
+  largest value, and about a third are bit-identical. The rest differ because `nvcc` contracts
+  `a * b + c` into FMA. `--check` (ctest) checks this on small shapes.
+- **Speed** (i5-13400F vs RTX 4060, best of 5; tok/s = tokens / (28 layers × one layer's time),
+  matmuls only):
+
+| Tokens per batch | pcuda | GPU, same kernels | GPU / pcuda | llama.cpp, whole model (CPU / GPU) |
+|---|---|---|---|---|
+| 1 (generation) | 29.7 | 56 | 1.9× | 27.6 / 111 |
+| 32 | 154 | 760 | 4.9× | 116 / 2,339 |
+| 128 | 176 | 899 | 5.1× | 125 / 5,200 |
+| 512 | 179 | 951 | 5.3× | 120 / 5,954 |
+
+- On the CPU these kernels are close to the limit of the end-to-end numbers: pcuda's whole model
+  runs prompts at about 180 tok/s, and its matmuls alone at 179.
+- On the GPU the same source is 5× faster than on the CPU, but llama.cpp's CUDA backend is about
+  6× faster again on prompts and 2× on generation. Its matmuls tile through shared memory and
+  use tensor cores; these kernels use one thread per row and no shared memory, so that they run
+  on CPU cores. They are written for the CPU (8 interleaved rows, 8 tokens per thread), not tuned
+  for the GPU.
+
 ## Runtime settings (environment variables)
 
 | Variable | Default | Meaning |

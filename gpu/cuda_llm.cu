@@ -23,6 +23,14 @@
 #include "kernels/llm/kv_append.cu"
 #include "kernels/llm/attn_values.cu"
 #include "kernels/llm/silu_mul.cu"
+// K-quant kernels of the ggml backend (prompt processing and decode)
+#include "kernels/llm/quantize_cols.cu"
+#include "kernels/llm/matvec_q4k_q8.cu"
+#include "kernels/llm/matvec_q6k_q8.cu"
+#include "kernels/llm/matmul_q4k_q8x4.cu"
+#include "kernels/llm/matmul_q6k_q8x4.cu"
+#include "kernels/llm/matmul_q4k_q8x8.cu"
+#include "kernels/llm/matmul_q6k_q8x8.cu"
 
 namespace gpu::llm {
 namespace {
@@ -129,6 +137,35 @@ cudaError_t kvAppend(const float* k, const float* v, float* kt, float* vc, const
 cudaError_t attnValues(const float* p, const float* v, float* out, const int* dims, int total, cudaStream_t s) {
     if (total <= 0) return cudaSuccess;
     attn_values<<<blocksFor(total), kBlockSize, 0, s>>>(p, v, out, dims, 0);
+    return cudaGetLastError();
+}
+
+cudaError_t quantizeCols(const float* x, int* q, const int* dims, int nb, int ncols, cudaStream_t s) {
+    if (nb <= 0 || ncols <= 0) return cudaSuccess;
+    quantize_cols<<<blocksFor(nb * ncols), kBlockSize, 0, s>>>(x, q, dims, 0);
+    return cudaGetLastError();
+}
+
+cudaError_t matvecKQ8(bool q6, const int* qw, const int* xq, const float* xd, float* y, const int* dims, int rows,
+                      cudaStream_t s) {
+    if (rows <= 0) return cudaSuccess;
+    if (q6) matvec_q6k_q8<<<blocksFor(rows), kBlockSize, 0, s>>>(qw, xq, xd, y, dims);
+    else matvec_q4k_q8<<<blocksFor(rows), kBlockSize, 0, s>>>(qw, xq, xd, y, dims);
+    return cudaGetLastError();
+}
+
+cudaError_t matmulKQ8(bool q6, int tile, const int* qw, const int* xq, float* y, const int* dims, int rows, int ncols,
+                      cudaStream_t s) {
+    if (rows <= 0 || ncols <= 0) return cudaSuccess;
+    if (tile != 4 && tile != 8) return cudaErrorInvalidValue;
+    const unsigned b = blocksFor(rows * ((ncols + tile - 1) / tile));
+    if (tile == 8) {
+        if (q6) matmul_q6k_q8x8<<<b, kBlockSize, 0, s>>>(qw, xq, y, dims, 0);
+        else matmul_q4k_q8x8<<<b, kBlockSize, 0, s>>>(qw, xq, y, dims, 0);
+    } else {
+        if (q6) matmul_q6k_q8x4<<<b, kBlockSize, 0, s>>>(qw, xq, y, dims, 0);
+        else matmul_q4k_q8x4<<<b, kBlockSize, 0, s>>>(qw, xq, y, dims, 0);
+    }
     return cudaGetLastError();
 }
 

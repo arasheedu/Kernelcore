@@ -51,7 +51,8 @@ set_property(SOURCE gpu/cuda_kernels.cu APPEND PROPERTY OBJECT_DEPENDS
   "${PROJECT_SOURCE_DIR}/kernels/vector_add.cu"
   "${PROJECT_SOURCE_DIR}/kernels/test/scale_add.cu"
   "${PROJECT_SOURCE_DIR}/kernels/test/trig_mix.cu")
-foreach(k matvec_q8 matvec_q4 matvec_q4x8 quantize_q8x4 matvec_q4x8_q8 add_rms_norm silu_mul_q8x4 rms_norm rope attn_scores softmax attn_values silu_mul)
+foreach(k matvec_q8 matvec_q4 matvec_q4x8 quantize_q8x4 matvec_q4x8_q8 add_rms_norm silu_mul_q8x4 rms_norm rope attn_scores softmax attn_values silu_mul
+        quantize_cols matvec_q4k_q8 matvec_q6k_q8 matmul_q4k_q8x4 matmul_q6k_q8x4 matmul_q4k_q8x8 matmul_q6k_q8x8)
   set_property(SOURCE gpu/cuda_llm.cu APPEND PROPERTY OBJECT_DEPENDS "${PROJECT_SOURCE_DIR}/kernels/llm/${k}.cu")
 endforeach()
 
@@ -69,3 +70,11 @@ target_link_libraries(pcuda_llm_bench PRIVATE pcuda pcuda_llm pcuda_gpu_kernels)
 set_property(TARGET pcuda_llm_bench PROPERTY LINKER_LANGUAGE CXX)
 add_test(NAME pcuda_llm_bench_check COMMAND pcuda_llm_bench --check)
 set_tests_properties(pcuda_llm_bench_check PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+
+# The ggml backend's K-quant kernels (quantize_cols, matvec, 4/8-column matmuls) on pcuda and on
+# the GPU: results compared, one Llama 3.2 3B layer's matmuls timed per batch size.
+add_executable(pcuda_kquant_vs_cuda app/kquant_vs_cuda.cpp)
+target_link_libraries(pcuda_kquant_vs_cuda PRIVATE pcuda pcuda_llm pcuda_gpu_kernels)
+set_property(TARGET pcuda_kquant_vs_cuda PROPERTY LINKER_LANGUAGE CXX)
+add_test(NAME pcuda_kquant_vs_cuda_check COMMAND pcuda_kquant_vs_cuda --check)
+set_tests_properties(pcuda_kquant_vs_cuda_check PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)

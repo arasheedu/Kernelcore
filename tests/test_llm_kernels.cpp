@@ -339,6 +339,86 @@ TEST_CASE(kquant_matmuls_equal_per_column_matvecs) {
     }
 }
 
+// Activations quantized per 256 values (quantize_cols_k) and the matmul_*_q8kx* kernels: bit-identical
+// to the C++ reference, and as close to the exact float product as the per-32 path.
+TEST_CASE(kquant_q8k_matmuls_match_reference) {
+    LlmFixture fx;
+    REQUIRE(fx.ok);
+    const int rows = 40, k = 768, nsb = k / 256, nb = k / 32, slot = llm::scratchKInts(nsb);
+    for (int q6 = 0; q6 < 2; ++q6) {
+        const int bb = q6 ? 210 : 144, words = q6 ? 53 : 37;
+        std::mt19937 rng(unsigned(1901 + q6));
+        std::vector<uint8_t> src(size_t(rows) * nsb * bb);
+        for (auto& v : src) v = static_cast<uint8_t>(rng());
+        auto setHalf = [&](uint8_t* p) {
+            const uint16_t h = static_cast<uint16_t>(0x1800 + rng() % 0x0C00);
+            p[0] = uint8_t(h & 0xFF), p[1] = uint8_t(h >> 8);
+        };
+        for (int r = 0; r < rows * nsb; ++r) {
+            uint8_t* b = src.data() + size_t(r) * bb;
+            if (q6) setHalf(b + 208);
+            else setHalf(b), setHalf(b + 2);
+        }
+        std::vector<int> qw(size_t(rows) * nsb * words);
+        if (q6) llm::ref::repackQ6K(src.data(), rows, k, qw.data());
+        else llm::ref::repackQ4K(src.data(), rows, k, qw.data());
+        std::vector<float> wf(size_t(rows) * k);  // dequantized weights, for the exact product
+        for (int r = 0; r < rows; ++r) {
+            if (q6) llm::ref::dequantRowQ6K(src.data() + size_t(r) * nsb * bb, k, wf.data() + size_t(r) * k);
+            else llm::ref::dequantRowQ4K(src.data() + size_t(r) * nsb * bb, k, wf.data() + size_t(r) * k);
+        }
+        auto* dqw = devCopy(qw);
+        REQUIRE(dqw);
+        for (int ncols : {1, 3, 4, 7, 8, 9, 13}) {
+            const auto x = randomFloats(size_t(k) * ncols, unsigned(1950 + ncols), -3, 3);
+            std::vector<int>   want_q(size_t(slot) * ncols);
+            std::vector<float> want(size_t(rows) * ncols);
+            double err_k = 0, err_32 = 0, scale = 0;
+            for (int c = 0; c < ncols; ++c) {
+                int* s = want_q.data() + size_t(c) * slot;
+                llm::ref::quantizeQ8K(x.data() + size_t(c) * k, s, nsb);
+                float* yc = want.data() + size_t(c) * rows;
+                if (q6) llm::ref::matvecQ6KQ8K(qw.data(), s, yc, rows, k);
+                else llm::ref::matvecQ4KQ8K(qw.data(), s, yc, rows, k);
+                std::vector<int> s32(size_t(llm::scratchInts(nb)));  // the per-32 path, for comparison
+                std::vector<float> y32(rows);
+                llm::ref::quantizeQ8x4(x.data() + size_t(c) * k, s32.data(), llm::scratchScales(s32.data(), nb), nb);
+                if (q6) llm::ref::matvecQ6KQ8(qw.data(), s32.data(), llm::scratchScales(s32.data(), nb), y32.data(), rows, k);
+                else llm::ref::matvecQ4KQ8(qw.data(), s32.data(), llm::scratchScales(s32.data(), nb), y32.data(), rows, k);
+                for (int r = 0; r < rows; ++r) {
+                    double exact = 0;
+                    for (int i = 0; i < k; ++i) exact += double(wf[size_t(r) * k + i]) * x[size_t(c) * k + i];
+                    scale = std::max(scale, std::fabs(exact));
+                    err_k = std::max(err_k, std::fabs(yc[r] - exact));
+                    err_32 = std::max(err_32, std::fabs(y32[r] - exact));
+                }
+            }
+            CHECK(err_k < 0.02 * scale);       // 8-bit activations: well under 2% of the largest output
+            CHECK(err_k < 4 * err_32 + 1e-6);  // coarser scales: same order of error as per 32
+            auto* dx = devCopy(x);
+            auto* dq = devCopy(std::vector<int>(want_q.size(), 0));
+            auto* dy = devCopy(std::vector<float>(want.size(), 0.0f));
+            auto* dqd = devCopy(std::vector<int>{nsb, ncols});
+            REQUIRE(dx && dq && dy && dqd);
+            const llm::QuantizeColsArgs qa{dx, dq, dqd, k, ncols};
+            CHECK_OK(pcudaLaunchKernelChunked("quantize_cols_k", &qa, workers(), 8));
+            CHECK(hostCopy(dq, want_q.size()) == want_q);
+            for (const char* kn : {q6 ? "matmul_q6k_q8kx4" : "matmul_q4k_q8kx4", q6 ? "matmul_q6k_q8kx8" : "matmul_q4k_q8kx8"})
+                for (int rb : {1, 3, 1000}) {
+                    auto* dmd = devCopy(std::vector<int>{rows, k, ncols, rb});
+                    REQUIRE(dmd);
+                    const llm::MatmulKQ8Args a{dqw, dq, dy, dmd, rows, k, ncols, rb};
+                    CHECK_OK(pcudaMemset(dy, 0xFF, want.size() * 4));
+                    CHECK_OK(pcudaLaunchKernel(kn, &a));
+                    CHECK(bitEqual(hostCopy(dy, want.size()), want));
+                    CHECK_OK(pcudaMemset(dy, 0xFF, want.size() * 4));
+                    CHECK_OK(pcudaLaunchKernelChunked(kn, &a, workers(), 8));
+                    CHECK(bitEqual(hostCopy(dy, want.size()), want));
+                }
+        }
+    }
+}
+
 // ggml ops for the llama.cpp backend: broadcast multiply and rope with positions from a tensor.
 TEST_CASE(ggml_op_kernels_match_reference) {
     LlmFixture fx;

@@ -31,6 +31,11 @@
 #include "kernels/llm/matmul_q6k_q8x4.cu"
 #include "kernels/llm/matmul_q4k_q8x8.cu"
 #include "kernels/llm/matmul_q6k_q8x8.cu"
+#include "kernels/llm/quantize_cols_k.cu"
+#include "kernels/llm/matmul_q4k_q8kx4.cu"
+#include "kernels/llm/matmul_q6k_q8kx4.cu"
+#include "kernels/llm/matmul_q4k_q8kx8.cu"
+#include "kernels/llm/matmul_q6k_q8kx8.cu"
 
 namespace gpu::llm {
 namespace {
@@ -151,6 +156,27 @@ cudaError_t matvecKQ8(bool q6, const int* qw, const int* xq, const float* xd, fl
     if (rows <= 0) return cudaSuccess;
     if (q6) matvec_q6k_q8<<<blocksFor(rows), kBlockSize, 0, s>>>(qw, xq, xd, y, dims);
     else matvec_q4k_q8<<<blocksFor(rows), kBlockSize, 0, s>>>(qw, xq, xd, y, dims);
+    return cudaGetLastError();
+}
+
+cudaError_t quantizeColsK(const float* x, int* q, const int* dims, int nsb, int ncols, cudaStream_t s) {
+    if (nsb <= 0 || ncols <= 0) return cudaSuccess;
+    quantize_cols_k<<<blocksFor(nsb * ncols), kBlockSize, 0, s>>>(x, q, dims, 0);
+    return cudaGetLastError();
+}
+
+cudaError_t matmulKQ8K(bool q6, int tile, const int* qw, const int* xq, float* y, const int* dims, int rows, int ncols,
+                       cudaStream_t s) {
+    if (rows <= 0 || ncols <= 0) return cudaSuccess;
+    if (tile != 4 && tile != 8) return cudaErrorInvalidValue;
+    const unsigned b = blocksFor(rows * ((ncols + tile - 1) / tile));
+    if (tile == 8) {
+        if (q6) matmul_q6k_q8kx8<<<b, kBlockSize, 0, s>>>(qw, xq, y, dims, 0);
+        else matmul_q4k_q8kx8<<<b, kBlockSize, 0, s>>>(qw, xq, y, dims, 0);
+    } else {
+        if (q6) matmul_q6k_q8kx4<<<b, kBlockSize, 0, s>>>(qw, xq, y, dims, 0);
+        else matmul_q4k_q8kx4<<<b, kBlockSize, 0, s>>>(qw, xq, y, dims, 0);
+    }
     return cudaGetLastError();
 }
 

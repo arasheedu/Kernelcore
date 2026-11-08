@@ -488,6 +488,113 @@ void matvecQ6KQ8(const int* qw, const int* xq, const float* xd, float* y, int ro
     }
 }
 
+void quantizeQ8K(const float* x, int* q, int nsb) {
+    float* sc = reinterpret_cast<float*>(q + size_t(nsb) * 64);
+    int*   bs = q + size_t(nsb) * 65;
+    for (int s = 0; s < nsb; ++s) {
+        const float* xs = x + size_t(s) * 256;
+        float amax = 0.0f;
+        for (int i = 0; i < 256; ++i) {  // fmaxf as maxss: a > b ? a : b
+            const float a = xs[i] > 0.0f - xs[i] ? xs[i] : 0.0f - xs[i];
+            amax = amax > a ? amax : a;
+        }
+        const float d = amax / 127.0f;
+        const float id = d > 0.0f ? 1.0f / d : 0.0f;
+        for (int g = 0; g < 16; ++g) {
+            int sum = 0;
+            for (int w = 0; w < 4; ++w) {
+                uint32_t word = 0;
+                for (int i = 0; i < 4; ++i) {
+                    const float t = xs[g * 16 + w * 4 + i] * id;
+                    int v = t >= 0.0f ? static_cast<int>(t + 0.5f) : static_cast<int>(t - 0.5f);
+                    v = v > 127 ? 127 : v < -127 ? -127 : v;
+                    sum += v;
+                    word |= (static_cast<uint32_t>(v) & 255u) << (i * 8);
+                }
+                q[size_t(s) * 64 + g * 4 + w] = static_cast<int>(word);
+            }
+            bs[size_t(s) * 16 + g] = sum;
+        }
+        sc[s] = d;
+        uint32_t pw[4] = {};  // sums of 32 as bytes: B >> 6 (sums 0-3, 4-7), then B & 63
+        for (int i = 0; i < 8; ++i) {
+            const int b = bs[size_t(s) * 16 + 2 * i] + bs[size_t(s) * 16 + 2 * i + 1];
+            pw[i / 4] |= (static_cast<uint32_t>(sar(b, 6)) & 255u) << (8 * (i % 4));
+            pw[2 + i / 4] |= static_cast<uint32_t>(b & 63) << (8 * (i % 4));
+        }
+        for (int i = 0; i < 4; ++i) q[size_t(nsb) * 81 + size_t(s) * 4 + i] = static_cast<int>(pw[i]);
+    }
+}
+
+void matvecQ4KQ8K(const int* qw, const int* xq, float* y, int rows, int k) {
+    const int    nsb = k / 256;
+    const float* xd = reinterpret_cast<const float*>(xq + size_t(nsb) * 64);
+    const int*   bs = xq + size_t(nsb) * 65;
+    for (int row = 0; row < rows; ++row) {
+        const int g = row / 8, l = row % 8;
+        float acc = 0.0f;
+        for (int s = 0; s < nsb; ++s) {
+            const int* blk = qw + (size_t(g) * nsb + s) * 296;
+            const float d = bitsF32(blk[l]), dmin = bitsF32(blk[8 + l]);
+            const int s0 = blk[16 + l], s1 = blk[24 + l], s2 = blk[32 + l];
+            const int sclo = s0 & 0x3F3F3F3F, mlo = s1 & 0x3F3F3F3F;
+            const int schi = (s2 & 0x0F0F0F0F) | (sar(s0, 2) & 0x30303030);
+            const int mhi = (sar(s2, 4) & 0x0F0F0F0F) | (sar(s1, 2) & 0x30303030);
+            int is = 0, im = 0;
+            for (int j = 0; j < 4; ++j) {
+                const int* xs = xq + size_t(s) * 64 + j * 16;  // sub-blocks 2j and 2j+1
+                int da = 0, db = 0;
+                for (int w = 0; w < 8; ++w) {
+                    const int q = blk[(5 + j * 8 + w) * 8 + l];
+                    da = dp4a(q & 0x0F0F0F0F, xs[w], da);
+                    db = dp4a(sar(q, 4) & 0x0F0F0F0F, xs[8 + w], db);
+                }
+                const int sh = 16 * (j & 1);
+                const int scw = j < 2 ? sclo : schi, mw = j < 2 ? mlo : mhi;
+                is += (sar(scw, sh) & 255) * da + (sar(scw, sh + 8) & 255) * db;
+                const int* b = bs + size_t(s) * 16 + j * 4;
+                im += (sar(mw, sh) & 255) * (b[0] + b[1]) + (sar(mw, sh + 8) & 255) * (b[2] + b[3]);
+            }
+            acc += (d * xd[s]) * float(is) - (dmin * xd[s]) * float(im);
+        }
+        y[row] = acc;
+    }
+}
+
+void matvecQ6KQ8K(const int* qw, const int* xq, float* y, int rows, int k) {
+    const int    nsb = k / 256;
+    const float* xd = reinterpret_cast<const float*>(xq + size_t(nsb) * 64);
+    const int*   bs = xq + size_t(nsb) * 65;
+    auto byteS = [](int w, int i) { return sar(shl(w, 24 - 8 * i), 24); };  // signed byte i
+    for (int row = 0; row < rows; ++row) {
+        const int g = row / 8, l = row % 8;
+        float acc = 0.0f;
+        for (int s = 0; s < nsb; ++s) {
+            const int* blk = qw + (size_t(g) * nsb + s) * 424;
+            const float d = bitsF32(blk[52 * 8 + l]);
+            int is = 0;
+            for (int n = 0; n < 2; ++n) {
+                for (int t = 0; t < 4; ++t) {
+                    const int* xs = xq + size_t(s) * 64 + (n * 4 + t) * 8;  // this block of 32
+                    int da = 0, db = 0;
+                    for (int w = 0; w < 8; ++w) {
+                        const int qa = blk[(16 * n + 8 * (t & 1) + w) * 8 + l];
+                        const int h = blk[(32 + 8 * n + w) * 8 + l];
+                        const int q = (sar(qa, 4 * (t >> 1)) & 0x0F0F0F0F) | (shl(sar(h, 2 * t), 4) & 0x30303030);
+                        if (w < 4) da = dp4a(q, xs[w], da);
+                        else db = dp4a(q, xs[w], db);
+                    }
+                    const int sw = blk[(48 + 2 * n + (t >> 1)) * 8 + l], lo = 2 * (t & 1);
+                    const int* b = bs + size_t(s) * 16 + (n * 4 + t) * 2;
+                    is += byteS(sw, lo) * (da - 32 * b[0]) + byteS(sw, lo + 1) * (db - 32 * b[1]);
+                }
+            }
+            acc += (d * xd[s]) * float(is);
+        }
+        y[row] = acc;
+    }
+}
+
 void ropeFF(float* x, const float* ff, int pairs_per_head, int pos, int count, float log2_base) {
     for (int idx = 0; idx < count; ++idx) {
         const int i = idx % pairs_per_head;

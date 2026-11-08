@@ -4,7 +4,10 @@
 // random weights. For each batch size it checks the GPU results against pcuda's and times the
 // layer's matmuls (two input quantizations, seven matrices) on both.
 //
-//   pcuda_kquant_vs_cuda [--ncols 1,32,128,512] [--reps N] [--check]
+//   pcuda_kquant_vs_cuda [--ncols 1,32,128,512] [--reps N] [--format per32|per256|both] [--check]
+//
+// --format: activation scales per 32 values (quantize_cols, matvec, matmul_*_q8x*) or per 256
+// (quantize_cols_k, matmul_*_q8kx*: the ggml backend's batches; 1 token uses the 4-column kernel).
 //
 // Integer parts are exact on both. Floats may differ slightly: nvcc contracts a * b + c into FMA.
 // --check: small shapes, correctness only (ctest); exit 77 when there is no CUDA device.
@@ -134,13 +137,15 @@ int main(int argc, char** argv) try {
     std::vector<int> ncols_list = {1, 32, 128, 512};
     int  reps = 5;
     bool check = false;
+    std::string format = "both";
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--ncols" && i + 1 < argc) ncols_list = parseList(argv[++i]);
         else if (a == "--reps" && i + 1 < argc) reps = std::max(1, std::atoi(argv[++i]));
         else if (a == "--check") check = true;
+        else if (a == "--format" && i + 1 < argc) format = argv[++i];
         else {
-            std::fprintf(stderr, "usage: pcuda_kquant_vs_cuda [--ncols 1,32,128,512] [--reps N] [--check]\n");
+            std::fprintf(stderr, "usage: pcuda_kquant_vs_cuda [--ncols 1,32,128,512] [--reps N] [--format per32|per256|both] [--check]\n");
             return 2;
         }
     }
@@ -180,6 +185,9 @@ int main(int argc, char** argv) try {
     const int ins[2] = {hidden, ffn};
 
     bool ok = true;
+    for (int q8k = 0; q8k < 2; ++q8k) {
+    if ((q8k && format == "per32") || (!q8k && format == "per256")) continue;
+    std::printf("Activations scaled per %s:\n", q8k ? "256 values (quantize_cols_k, matmul_*_q8kx*)" : "32 values (quantize_cols, matvec, matmul_*_q8x*)");
     std::printf("%6s | %-34s | %10s %10s | %12s %12s | %8s\n", "tokens", "GPU vs pcuda (all 7 matrices)", "pcuda ms", "GPU ms",
                 "pcuda tok/s", "GPU tok/s", "GPU/pcuda");
     for (int ncols : ncols_list) {
@@ -195,7 +203,8 @@ int main(int argc, char** argv) try {
             std::vector<float> x(size_t(ins[j]) * ncols);
             for (auto& v : x) v = u(rng);
             const int nb = ins[j] / 32;
-            const std::vector<int> zero(size_t(llm::scratchInts(nb)) * ncols, 0), dims = {nb, ncols};
+            const int slot = q8k ? llm::scratchKInts(ins[j] / 256) : llm::scratchInts(nb);
+            const std::vector<int> zero(size_t(slot) * ncols, 0), dims = {q8k ? ins[j] / 256 : nb, ncols};
             in[j] = {ins[j], nb, pcudaUpload(x), gpuUpload(x), pcudaUpload(zero), gpuUpload(zero), pcudaUpload(dims), gpuUpload(dims)};
         }
         std::vector<float*> pc_y, gp_y;
@@ -207,32 +216,37 @@ int main(int argc, char** argv) try {
             pc_md.push_back(pcudaUpload(dims)), gp_md.push_back(gpuUpload(dims));
         }
         const int tile = ncols > 4 ? 8 : 4;
-        const char* const mm[2][2] = {{"matmul_q4k_q8x4", "matmul_q6k_q8x4"}, {"matmul_q4k_q8x8", "matmul_q6k_q8x8"}};
+        const char* const mm[2][2][2] = {{{"matmul_q4k_q8x4", "matmul_q6k_q8x4"}, {"matmul_q4k_q8x8", "matmul_q6k_q8x8"}},
+                                         {{"matmul_q4k_q8kx4", "matmul_q6k_q8kx4"}, {"matmul_q4k_q8kx8", "matmul_q6k_q8kx8"}}};
 
         // One layer's matmuls, as the ggml backend launches them.
         auto run_pcuda = [&] {
             for (auto& x : in) {
                 const llm::QuantizeColsArgs a{x.pc_x, x.pc_q, x.pc_dims, x.k, ncols};
-                pk(pcudaLaunchKernelChunked("quantize_cols", &a, fast_workers, 16), "quantize_cols");
+                pk(pcudaLaunchKernelChunked(q8k ? "quantize_cols_k" : "quantize_cols", &a, fast_workers, q8k ? 8 : 16), "quantize");
             }
             for (size_t i = 0; i < ws.size(); ++i) {
                 const auto& w = ws[i];
                 const auto& x = in[w.m.input];
-                if (ncols == 1) {
+                if (ncols == 1 && !q8k) {
                     const llm::MatvecQ4Q8Args a{w.pc, x.pc_q, llm::scratchScales(x.pc_q, x.nb), pc_y[i], pc_md[i], w.m.rows, w.m.k};
                     pk(pcudaLaunchKernelChunked(w.m.q6 ? "matvec_q6k_q8" : "matvec_q4k_q8", &a, fast_workers, 16), "matvec");
                 } else {
                     const llm::MatmulKQ8Args a{w.pc, x.pc_q, pc_y[i], pc_md[i], w.m.rows, w.m.k, ncols, 8};
-                    pk(pcudaLaunchKernelChunked(mm[tile == 8][w.m.q6], &a, all_workers * 4, 16), "matmul");
+                    pk(pcudaLaunchKernelChunked(mm[q8k][tile == 8][w.m.q6], &a, all_workers * 4, 16), "matmul");
                 }
             }
         };
         auto run_gpu = [&] {
-            for (auto& x : in) ck(gpu::llm::quantizeCols(x.gp_x, x.gp_q, x.gp_dims, x.nb, ncols, nullptr), "quantize_cols");
+            for (auto& x : in)
+                ck(q8k ? gpu::llm::quantizeColsK(x.gp_x, x.gp_q, x.gp_dims, x.k / 256, ncols, nullptr)
+                       : gpu::llm::quantizeCols(x.gp_x, x.gp_q, x.gp_dims, x.nb, ncols, nullptr), "quantize");
             for (size_t i = 0; i < ws.size(); ++i) {
                 const auto& w = ws[i];
                 const auto& x = in[w.m.input];
-                if (ncols == 1)
+                if (q8k)
+                    ck(gpu::llm::matmulKQ8K(w.m.q6, tile, w.gp, x.gp_q, gp_y[i], gp_md[i], w.m.rows, ncols, nullptr), "matmul");
+                else if (ncols == 1)
                     ck(gpu::llm::matvecKQ8(w.m.q6, w.gp, x.gp_q, llm::scratchScales(x.gp_q, x.nb), gp_y[i], gp_md[i], w.m.rows, nullptr), "matvec");
                 else
                     ck(gpu::llm::matmulKQ8(w.m.q6, tile, w.gp, x.gp_q, gp_y[i], gp_md[i], w.m.rows, ncols, nullptr), "matmul");
@@ -243,13 +257,14 @@ int main(int argc, char** argv) try {
         run_gpu();
         ck(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
 
-        // Correctness: quantized words and {scale, sum} must match exactly; outputs closely.
+        // Correctness: the 8-bit activations must match exactly (per 32: words and {scale, sum}, the
+        // partial-sum floats are not written; per 256: the whole slot); outputs closely.
         size_t qbad = 0;
         for (auto& x : in) {
-            const size_t n = size_t(llm::scratchInts(x.nb)) * ncols;
-            const auto a = pcudaDownload(x.pc_q, n), b = gpuDownload(x.gp_q, n);
+            const int  slot = q8k ? llm::scratchKInts(x.k / 256) : llm::scratchInts(x.nb), used = q8k ? slot : x.nb * 10;
+            const auto a = pcudaDownload(x.pc_q, size_t(slot) * ncols), b = gpuDownload(x.gp_q, size_t(slot) * ncols);
             for (int c = 0; c < ncols; ++c)
-                for (int i = 0; i < x.nb * 10; ++i) qbad += a[size_t(c) * llm::scratchInts(x.nb) + i] != b[size_t(c) * llm::scratchInts(x.nb) + i];
+                for (int i = 0; i < used; ++i) qbad += a[size_t(c) * slot + i] != b[size_t(c) * slot + i];
         }
         Diff all;
         for (size_t i = 0; i < ws.size(); ++i) {
@@ -292,7 +307,9 @@ int main(int argc, char** argv) try {
         }
         for (size_t i = 0; i < ws.size(); ++i) pcudaFree(pc_y[i]), pcudaFree(pc_md[i]), cudaFree(gp_y[i]), cudaFree(gp_md[i]);
     }
-    std::printf("\nms: one layer's 2 quantizations + 7 matmuls (%.1f MB of weights), best of %d.\n", weight_bytes / 1e6, reps);
+    std::printf("\n");
+    }
+    std::printf("ms: one layer's 2 quantizations + 7 matmuls (%.1f MB of weights), best of %d.\n", weight_bytes / 1e6, reps);
     std::printf("tok/s: tokens / (28 layers x ms), matmuls only (no attention, norms or output layer).\n");
     for (auto& w : ws) pcudaFree(w.pc), cudaFree(w.gp);
     pcudaShutdown();

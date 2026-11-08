@@ -49,6 +49,7 @@ struct PcudaRuntime {
     bool     matvec_cols = false;  // GGML_PCUDA_MATVEC_COLS=1: one matvec per column for batches (no matmul kernel)
     int      row_block = 8;        // GGML_PCUDA_ROW_BLOCK: 8-row groups per matmul block (cache blocking)
     int      tile = 8;             // GGML_PCUDA_TILE=4 or 8: columns per matmul thread (batches of <= 4 use 4)
+    bool     q8k = true;           // GGML_PCUDA_Q8K=0: batches use per-32 activation scales (bit-identical to the matvec)
     int      matmul_chunks = 4;    // GGML_PCUDA_MATMUL_CHUNKS: chunk factor for batched matmuls (fast cores take more chunks)
 };
 
@@ -77,6 +78,7 @@ PcudaRuntime & runtime() {
         r.matvec_cols = mc && std::strcmp(mc, "1") == 0;
         if (const char * rb = std::getenv("GGML_PCUDA_ROW_BLOCK")) r.row_block = std::max(1, std::atoi(rb));
         if (const char * mc = std::getenv("GGML_PCUDA_MATMUL_CHUNKS")) r.matmul_chunks = std::clamp(std::atoi(mc), 1, 16);
+        if (const char * qk = std::getenv("GGML_PCUDA_Q8K")) r.q8k = std::strcmp(qk, "0") != 0;
         if (const char * tl = std::getenv("GGML_PCUDA_TILE")) r.tile = std::atoi(tl) == 4 ? 4 : 8;
         r.ok = true;
         GGML_LOG_INFO("pcuda: %s, pool of %u threads + caller (%u for bandwidth-bound launches), graphs %s\n", p.name,
@@ -246,6 +248,7 @@ struct BackendCtx {
         const ggml_tensor * t;
         int64_t      ncols;
         int          k;
+        bool         k256;  // quantize_cols_k slots (one scale per 256 values)
         int *        q;
     };
     std::vector<Quantized>            quantized;
@@ -341,8 +344,8 @@ bool  is_row_vector_of(const ggml_tensor * v, const ggml_tensor * x);
 
 // Scratch slots for the 8-bit form of tensor x (ncols columns of k values), registered so that the
 // matmuls reading x find it. The caller records the kernel that fills them.
-int * quantized_slots(BackendCtx & ctx, const ggml_tensor * x, int k, int64_t ncols) {
-    const size_t slot = size_t(llm::scratchInts(k / 32));
+int * quantized_slots(BackendCtx & ctx, const ggml_tensor * x, int k, int64_t ncols, bool k256 = false) {
+    const size_t slot = size_t(k256 ? llm::scratchKInts(k / 256) : llm::scratchInts(k / 32));
     if (ctx.scratch_used + slot * size_t(ncols) > ctx.scratch_ints) {  // grow: run what is recorded first
         if (!flush(ctx)) return nullptr;
         const size_t need = std::max(slot * size_t(ncols) * 4, ctx.scratch_ints * 2);
@@ -356,17 +359,24 @@ int * quantized_slots(BackendCtx & ctx, const ggml_tensor * x, int k, int64_t nc
     }
     int * base = ctx.scratch + ctx.scratch_used;
     ctx.scratch_used += slot * size_t(ncols);
-    ctx.quantized.push_back({x, ncols, k, base});
+    ctx.quantized.push_back({x, ncols, k, k256, base});
     return base;
 }
 
-int * quantized_input(BackendCtx & ctx, const ggml_tensor * x, int k, int64_t ncols) {
+// k256: one scale per 256 values (quantize_cols_k; contiguous columns only).
+int * quantized_input(BackendCtx & ctx, const ggml_tensor * x, int k, int64_t ncols, bool k256 = false) {
     const int nb = k / 32;
     const size_t slot = size_t(llm::scratchInts(nb));
     for (const auto & qi : ctx.quantized)
-        if (qi.t == x && qi.ncols == ncols && qi.k == k) return qi.q;
-    int * base = quantized_slots(ctx, x, k, ncols);
+        if (qi.t == x && qi.ncols == ncols && qi.k == k && qi.k256 == k256) return qi.q;
+    int * base = quantized_slots(ctx, x, k, ncols, k256);
     if (!base) return nullptr;
+    if (k256) {
+        const int * dims = ctx.ints({k / 256, int(ncols)});
+        if (!dims) return nullptr;
+        const llm::QuantizeColsArgs a{static_cast<const float *>(x->data), base, dims, k, int(ncols)};
+        return launch(ctx, "quantize_cols_k", a, 8) ? base : nullptr;
+    }
     if (ncols > 1 && x->nb[1] == size_t(k) * sizeof(float)) {  // contiguous columns: one launch
         const int * dims = ctx.ints({nb, int(ncols)});
         if (!dims) return nullptr;
@@ -419,11 +429,14 @@ bool mul_mat(BackendCtx & ctx, ggml_tensor * dst) {
     const int rows = int(w->ne[1]), k = int(w->ne[0]), nb = k / 32;
     const int64_t ncols = ggml_nrows(x);
     const int * dims = ctx.ints({rows, k, int(ncols), runtime().row_block});
-    int * base = dims ? quantized_input(ctx, x, k, ncols) : nullptr;
+    // Batches: activations scaled per 256 values (integer sums over whole super-blocks), unless off.
+    const bool k256 = ncols > 1 && !runtime().matvec_cols && runtime().q8k && x->nb[1] == size_t(k) * sizeof(float);
+    int * base = dims ? quantized_input(ctx, x, k, ncols, k256) : nullptr;
     if (!base) return false;
-    if (ncols > 1 && !runtime().matvec_cols) {  // several tokens: each weight word read once per 4 columns
-        const bool  q4 = w->type == GGML_TYPE_Q4_K;
-        const char * kernel = runtime().tile == 8 && ncols > 4 ? (q4 ? "matmul_q4k_q8x8" : "matmul_q6k_q8x8") : (q4 ? "matmul_q4k_q8x4" : "matmul_q6k_q8x4");
+    if (ncols > 1 && !runtime().matvec_cols) {  // several tokens: each weight word read once per 4 or 8 columns
+        const bool  q4 = w->type == GGML_TYPE_Q4_K, x8 = runtime().tile == 8 && ncols > 4;
+        const char * kernel = k256 ? (x8 ? (q4 ? "matmul_q4k_q8kx8" : "matmul_q6k_q8kx8") : (q4 ? "matmul_q4k_q8kx4" : "matmul_q6k_q8kx4"))
+                                   : (x8 ? (q4 ? "matmul_q4k_q8x8" : "matmul_q6k_q8x8") : (q4 ? "matmul_q4k_q8x4" : "matmul_q6k_q8x4"));
         const llm::MatmulKQ8Args a{static_cast<const int *>(w->data), base, static_cast<float *>(dst->data), dims,
                                    rows, k, int(ncols), runtime().row_block};
         return launch(ctx, kernel, a, 16, runtime().workers * unsigned(runtime().matmul_chunks));

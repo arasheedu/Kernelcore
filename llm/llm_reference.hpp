@@ -37,6 +37,12 @@ void  repackQ4K(const uint8_t* src, int rows, int k, int* qw);  // rows * k / 25
 void  repackQ6K(const uint8_t* src, int rows, int k, int* qw);  // rows * k / 256 * 53 ints
 void  matvecQ4KQ8(const int* qw, const int* xq, const float* xd, float* y, int rows, int k);
 void  matvecQ6KQ8(const int* qw, const int* xq, const float* xd, float* y, int rows, int k);
+// Activations with one scale per 256 values (quantize_cols_k): one slot of nsb * 85 ints per column
+// ([nsb * 64 words | nsb float scales | nsb * 16 sums of 16 | nsb * 4 words of sums of 32 as bytes]), and one column of the matmul_*_q8kx*
+// kernels on it.
+void  quantizeQ8K(const float* x, int* q, int nsb);
+void  matvecQ4KQ8K(const int* qw, const int* xq, float* y, int rows, int k);
+void  matvecQ6KQ8K(const int* qw, const int* xq, float* y, int rows, int k);
 void  ropeFF(float* x, const float* ff, int pairs_per_head, int pos, int count, float log2_base);
 // ggml ops used by the llama.cpp backend (kernels mul_rows, rope_ggml).
 void  mulRows(const float* x, const float* w, float* y, int n, int count);

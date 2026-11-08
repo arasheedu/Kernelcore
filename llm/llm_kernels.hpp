@@ -83,6 +83,10 @@ struct AddRmsNormArgs {
 //   [nb * 8] packed words | [nb * 2] floats {scale, sum} | [nb] floats (RMS-norm partial sums)
 inline int    scratchInts(int nb) { return nb * 11; }
 inline float* scratchScales(int* q, int nb) { return reinterpret_cast<float*>(q + nb * 8); }
+// 8-bit activations with one scale per 256 values (quantize_cols_k, matmul_*_q8kx*), per column:
+//   [nsb * 64] packed words | [nsb] float scales | [nsb * 16] int sums of 16 values |
+//   [nsb * 4] the sums of 32 as bytes (high parts B >> 6, then low parts B & 63)
+inline int    scratchKInts(int nsb) { return nsb * 85; }
 
 // Parallel residual add + RMS norm + 8-bit quantization, in two launches (both chunkable):
 //   add_sumsq:  x += t; per-block sums of squares into the scratch
@@ -244,7 +248,9 @@ struct SiluMulArgs {
 // Y = W X for GGUF K-quant weights and ncols 8-bit activation columns (kernels/llm/
 // matmul_q4k_q8x4.cu, matmul_q6k_q8x4.cu): each weight word is read once per 4 columns. Column c's
 // activations are the scratch slot xq + c * scratchInts(k / 32); its output is y + c * rows.
-// Bit-identical to matvec_q4k_q8 / matvec_q6k_q8 per column. dims -> device int[4]
+// Bit-identical to matvec_q4k_q8 / matvec_q6k_q8 per column. matmul_q4k_q8kx4/x8 and
+// matmul_q6k_q8kx4/x8 take the same arguments with quantize_cols_k slots (scratchKInts(k / 256)).
+// dims -> device int[4]
 // {rows, k, ncols, row_block}: threads run in blocks of row_block 8-row groups, tile by tile.
 struct MatmulKQ8Args {
     const int* qw;
@@ -259,7 +265,8 @@ struct MatmulKQ8Args {
 
 // 8-bit quantization of ncols columns of k floats (x + c * k) into scratch slots
 // q + c * scratchInts(k / 32), as quantize_q8x4 does (kernels/llm/quantize_cols.cu).
-// dims -> device int[2] {k / 32, ncols}.
+// dims -> device int[2] {k / 32, ncols}. quantize_cols_k takes the same arguments: slots of
+// scratchKInts(k / 256), one scale per 256 values, dims {k / 256, ncols}.
 struct QuantizeColsArgs {
     const float* x;
     int*         q;

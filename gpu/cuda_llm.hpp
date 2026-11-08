@@ -40,5 +40,9 @@ cudaError_t matvecKQ8(bool q6, const int* qw, const int* xq, const float* xd, fl
                       cudaStream_t s);
 cudaError_t matmulKQ8(bool q6, int tile, const int* qw, const int* xq, float* y, const int* dims, int rows, int ncols,
                       cudaStream_t s);
+// One activation scale per 256 values: quantize_cols_k (dims {k / 256, ncols}) and matmul_*_q8kx*.
+cudaError_t quantizeColsK(const float* x, int* q, const int* dims, int nsb, int ncols, cudaStream_t s);
+cudaError_t matmulKQ8K(bool q6, int tile, const int* qw, const int* xq, float* y, const int* dims, int rows, int ncols,
+                       cudaStream_t s);
 
 } // namespace gpu::llm

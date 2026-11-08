@@ -19,6 +19,14 @@
   after one warm-up request. It records the server's own prompt and reply speeds and the time for
   the whole answer, and checks that both backends give the same reply.
 
+  pcuda on the GPU (skip with -NoKernels; also skipped by -NoGpu): there is no llama.cpp backend
+  that runs pcuda's kernels on the GPU, so this compares the kernels alone. Each round runs
+  pcuda_kquant_vs_cuda (-KernelApp, from the windows-msvc-nvidia preset): one Llama 3.2 3B layer's
+  matmuls (2 activation quantizations + 7 matrices, random weights) with the same .cu files on
+  pcuda (CPU) and compiled by nvcc (GPU), checked against each other. tok/s = tokens / (28 layers x
+  layer time): matmuls only, not comparable with the llama-bench bars. 1 token uses activations
+  scaled per 32 values and batches per 256, as the ggml backend does.
+
   Writes results.json (raw records + system info), results.csv and bench_chart.png to -OutDir.
 
 .EXAMPLE
@@ -52,8 +60,12 @@ param(
     [int]$ChatPort = 8093,
     [string]$PcudaServer = '',                      # default: llama-server.exe next to -PcudaBench
     [switch]$ChatThink,                             # let the model think first (Qwen3); default: --reasoning-budget 0
-    [switch]$NoChat
+    [switch]$NoChat,
+    # pcuda's kernels on the GPU (kernel-only comparison)
+    [string]$KernelApp = (Join-Path (Split-Path $PSScriptRoot -Parent) 'build\windows-msvc-nvidia\pcuda_kquant_vs_cuda.exe'),
+    [switch]$NoKernels
 )
+if ($NoGpu) { $NoKernels = $true }
 $ErrorActionPreference = 'Stop'
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $jsonPath = Join-Path $OutDir 'results.json'
@@ -185,8 +197,31 @@ function Invoke-Chat($cb) {
     }
 }
 
+# pcuda_kquant_vs_cuda rows: "tokens | ok ... | pcuda ms  GPU ms | pcuda tok/s  GPU tok/s | ratio",
+# in a section per activation format; keep the ggml backend's choice (1 token: per 32, batches: per 256).
+function Invoke-Kernels {
+    $ErrorActionPreference = 'Continue'
+    $out = & $KernelApp 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "pcuda_kquant_vs_cuda exited with $LASTEXITCODE" }
+    $fmt = 0; $rows = @()
+    foreach ($line in $out) {
+        $l = [string]$line
+        if ($l -match '^Activations scaled per (\d+)') { $fmt = [int]$Matches[1]; continue }
+        if ($l -match '^\s*(\d+)\s*\|\s*(ok|BAD)\b.*\|\s*([\d.]+)\s+([\d.]+)\s*\|\s*([\d.]+)\s+([\d.]+)\s*\|') {
+            $n = [int]$Matches[1]
+            if (($n -eq 1 -and $fmt -eq 32) -or ($n -gt 1 -and $fmt -eq 256)) {
+                $rows += , [ordered]@{ tokens = $n; ok = ($Matches[2] -eq 'ok'); pcuda_tps = [double]$Matches[5]; gpu_tps = [double]$Matches[6] }
+            }
+        }
+    }
+    if (-not $rows.Count) { throw "pcuda_kquant_vs_cuda: no results (no CUDA device?)" }
+    return $rows
+}
+
 if (-not $RenderOnly) {
     if (-not (Test-Path $Model)) { throw "model not found: $Model" }
+    if (-not $NoKernels -and -not (Test-Path $KernelApp)) { throw "pcuda_kquant_vs_cuda not found at $KernelApp (build the windows-msvc-nvidia preset, or use -NoKernels)" }
+    $kernelOk = $true
     if (-not $NoChat) {
         if (-not (Test-Path $ChatModel)) { throw "chat model not found: $ChatModel" }
         if (-not (Test-Path $PcudaServer)) { throw "llama-server not found at $PcudaServer (or use -NoChat)" }
@@ -206,6 +241,16 @@ if (-not $RenderOnly) {
                 if (-not $meta[$b.key]) { $meta[$b.key] = @{ build_commit = $t.build_commit; model_type = $t.model_type; model_size = $t.model_size; model_n_params = $t.model_n_params; cpu_info = $t.cpu_info; gpu_info = $t.gpu_info } }
             }
             Start-Sleep -Seconds $CooldownSeconds
+        }
+        if (-not $NoKernels) {
+            Write-Host "round $r/${Rounds}: pcuda kernels on CPU and GPU ..."
+            foreach ($kr in (Invoke-Kernels)) {
+                $test = if ($kr.tokens -eq 1) { 'kern tg1' } else { "kern pp$($kr.tokens)" }
+                if (-not $kr.ok) { $kernelOk = $false }
+                [void]$records.Add([ordered]@{ backend = 'pcuda'; round = $r; test = $test; avg_ts = $kr.pcuda_tps; stddev_ts = 0.0 })
+                [void]$records.Add([ordered]@{ backend = 'pcudagpu'; round = $r; test = $test; avg_ts = $kr.gpu_tps; stddev_ts = 0.0 })
+                Write-Host ("  {0,-6} pcuda {1,8:N1}  GPU {2,8:N1} tok/s{3}" -f ($test -replace '^kern ', ''), $kr.pcuda_tps, $kr.gpu_tps, $(if ($kr.ok) { '' } else { '  RESULTS DIFFER' }))
+            }
         }
         if (-not $NoChat) {
             foreach ($cb in $chatBackends) {
@@ -244,9 +289,11 @@ if (-not $RenderOnly) {
     $doc = [ordered]@{
         system   = Get-SystemInfo
         settings = [ordered]@{ model = $Model; prompt = $Prompt; gen = $Gen; reps = $Reps; rounds = $Rounds; cpu_threads = $CpuThreads; pcuda_threads = $PcudaThreads; pcuda_batch_threads = $PcudaBatchThreads }
-        backends = @($backends | ForEach-Object { [ordered]@{ key = $_.key; label = $_.label; detail = $_.detail } })
+        backends = @(@($backends | ForEach-Object { [ordered]@{ key = $_.key; label = $_.label; detail = $_.detail } }) +
+                     $(if (-not $NoKernels) { , [ordered]@{ key = 'pcudagpu'; label = 'pcuda on GPU'; detail = 'the same .cu kernels, nvcc (matmuls only)' } } else { @() }))
         meta     = $meta
         chat     = $chat
+        kernels  = $(if (-not $NoKernels) { [ordered]@{ app = $KernelApp; results_match = $kernelOk } } else { $null })
         records  = $records
     }
     $doc | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 $jsonPath
@@ -267,11 +314,15 @@ $genTests = @($tests | Where-Object { $_ -like 'tg*' })
 $ppTests = @($tests | Where-Object { $_ -like 'pp*' } | Sort-Object { [int]($_.Substring(2)) })
 $chatTests = @('chat reply', 'chat prompt' | Where-Object { $tests -contains $_ })
 $chatBks = @($bks | Where-Object { $_.key -eq 'cpu' -or $_.key -eq 'pcuda' })
+$kernTests = @($tests | Where-Object { $_ -like 'kern *' } | Sort-Object { if ($_ -eq 'kern tg1') { 0 } else { [int]($_ -replace '^kern pp', '') } })
+$kernBks = @($bks | Where-Object { $_.key -eq 'pcuda' -or $_.key -eq 'pcudagpu' })
+$allBks = $bks                                            # legend and table
+$bks = @($bks | Where-Object { $_.key -ne 'pcudagpu' })   # llama-bench charts
 
 # table view next to the image
-$rows = foreach ($t in $genTests + $ppTests + $chatTests) {
+$rows = foreach ($t in $genTests + $ppTests + $chatTests + $kernTests) {
     $row = [ordered]@{ test = $t }
-    foreach ($b in $bks) { $k = "$($b.key)|$t"; $row[$b.label] = if ($best.ContainsKey($k)) { [math]::Round($best[$k].avg_ts, 1) } else { '' } }
+    foreach ($b in $allBks) { $k = "$($b.key)|$t"; $row[$b.label] = if ($best.ContainsKey($k)) { [math]::Round($best[$k].avg_ts, 1) } else { '' } }
     [pscustomobject]$row
 }
 $rows | Export-Csv -NoTypeInformation -Encoding UTF8 (Join-Path $OutDir 'results.csv')
@@ -281,7 +332,8 @@ Add-Type -AssemblyName System.Drawing
 function C([string]$hex) { [System.Drawing.ColorTranslator]::FromHtml($hex) }
 $surface = C '#fcfcfb'; $ink = C '#0b0b0b'; $ink2 = C '#52514e'; $grid = C '#e6e5e1'; $card = C '#f4f3f0'
 # categorical slots 1-3 (validated all-pairs, light mode); values are always labeled on the bars
-$seriesColor = @{ cpu = C '#2a78d6'; pcuda = C '#eb6834'; gpu = C '#1baf7a' }
+# pcuda on GPU: slot 7 (violet), only ever charted next to pcuda's orange (that pair passes all checks)
+$seriesColor = @{ cpu = C '#2a78d6'; pcuda = C '#eb6834'; gpu = C '#1baf7a'; pcudagpu = C '#6250d6' }
 
 function F([float]$px, [string]$face = 'Segoe UI', [System.Drawing.FontStyle]$style = 'Regular') {
     New-Object System.Drawing.Font($face, $px, $style, [System.Drawing.GraphicsUnit]::Pixel)
@@ -322,6 +374,8 @@ function ChartHeight($n, $nbk = $nb) { 46 + $n * ($nbk * $barH + ($nbk - 1) * $b
 $hGen = ChartHeight $genTests.Count; $hPP = ChartHeight $ppTests.Count
 $hChat = 0
 if ($chatTests.Count) { $hChat = 40 + (ChartHeight $chatTests.Count $chatBks.Count) + 56 }
+$hKern = 0
+if ($kernTests.Count) { $hKern = 40 + (ChartHeight $kernTests.Count $kernBks.Count) + 56 }
 $top = 150
 
 # system card contents, measured before the canvas size is fixed
@@ -336,9 +390,19 @@ $items = @($items)
 $tmpBmp = New-Object System.Drawing.Bitmap(1, 1)
 $tmpG = [System.Drawing.Graphics]::FromImage($tmpBmp)
 $itemH = @(foreach ($it in $items) { 21 + $tmpG.MeasureString($it[1], $fValue, [int]($leftW - 56)).Height + 16 })
+# legend entries (swatch + name + detail), wrapped to the chart width
+function LegendWidth($gr, $b) { 26 + $gr.MeasureString($b.label, $fValueB).Width + $gr.MeasureString($b.detail, $fLabel).Width }
+$legendPos = @{}; $lx = 0; $lrow = 0
+foreach ($b in $allBks) {
+    $lw = LegendWidth $tmpG $b
+    if ($lx -gt 0 -and $lx + $lw -gt $W - $M - $chartX) { $lx = 0; $lrow++ }
+    $legendPos[$b.key] = @($lx, $lrow)
+    $lx += $lw + 28
+}
+$legendExtra = 32 * $lrow
 $tmpG.Dispose(); $tmpBmp.Dispose()
 $cardH = 72 + ($itemH | Measure-Object -Sum).Sum + 10
-$H = [int]([math]::Max($top + 60 + $hGen + 40 + $hPP + $hChat, $top + $cardH) + 120)
+$H = [int]([math]::Max($top + 60 + $legendExtra + $hGen + 40 + $hPP + $hChat + $hKern, $top + $cardH) + 120)
 
 $bmp = New-Object System.Drawing.Bitmap($W, $H)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
@@ -371,16 +435,15 @@ foreach ($it in $items) {
 }
 
 # legend: one row above the charts, swatch + name + what it is
-$lx = $chartX; $ly = $top + 4
-foreach ($b in $bks) {
+foreach ($b in $allBks) {
+    $lx = $chartX + $legendPos[$b.key][0]; $ly = $top + 4 + 32 * $legendPos[$b.key][1]
     Bar $g $lx ($ly + 4) 18 18 $seriesColor[$b.key]
     $g.DrawString($b.label, $fValueB, $bInk, $lx + 26, $ly)
     $w1 = $g.MeasureString($b.label, $fValueB).Width
     $g.DrawString($b.detail, $fLabel, $bInk2, $lx + 26 + $w1, $ly + 3)
-    $lx += 26 + $w1 + $g.MeasureString($b.detail, $fLabel).Width + 28
 }
 
-function Draw-Chart($title, $testList, [float]$y0, $bkList = $bks) {
+function Draw-Chart($title, $testList, [float]$y0, $bkList = $bks, $baseKey = 'cpu', $baseLabel = 'CPU') {
     $nb = $bkList.Count
     $g.DrawString($title, $fHead, $bInk, $chartX, $y0)
     $px = $chartX + $catW; $pw = $chartW - $catW - $labelRoom
@@ -401,10 +464,10 @@ function Draw-Chart($title, $testList, [float]$y0, $bkList = $bks) {
     $yy = $py
     foreach ($t in $testList) {
         $gh = $nb * $barH + ($nb - 1) * $barGap
-        $tn = $t -replace '^chat ', ''
+        $tn = $t -replace '^(chat|kern) ', ''
         $cs = $g.MeasureString($tn, $fCat)
         $g.DrawString($tn, $fCat, $bInk, $chartX, $yy + ($gh - $cs.Height) / 2)
-        $cpuV = $null; $kc = "cpu|$t"; if ($best.ContainsKey($kc)) { $cpuV = $best[$kc].avg_ts }
+        $cpuV = $null; $kc = "$baseKey|$t"; if ($best.ContainsKey($kc)) { $cpuV = $best[$kc].avg_ts }
         foreach ($b in $bkList) {
             $k = "$($b.key)|$t"
             if ($best.ContainsKey($k)) {
@@ -414,9 +477,9 @@ function Draw-Chart($title, $testList, [float]$y0, $bkList = $bks) {
                 $label = Fmt $v
                 $lw = $g.MeasureString($label, $fValueB).Width
                 $g.DrawString($label, $fValueB, $bInk, $px + $bw + 8, $yy + ($barH - 24) / 2)
-                if ($b.key -ne 'cpu' -and $cpuV) {
+                if ($b.key -ne $baseKey -and $cpuV) {
                     $ratio = $v / $cpuV
-                    $note = if ($ratio -ge 2) { '{0:N1}x CPU' -f $ratio } else { '{0:+0;-0}% vs CPU' -f (($ratio - 1) * 100) }
+                    $note = if ($ratio -ge 2) { ('{0:N1}x ' -f $ratio) + $baseLabel } else { ('{0:+0;-0}% vs ' -f (($ratio - 1) * 100)) + $baseLabel }
                     $g.DrawString($note, $fLabel, $bInk2, $px + $bw + 12 + $lw, $yy + ($barH - 20) / 2)
                 }
             }
@@ -425,7 +488,7 @@ function Draw-Chart($title, $testList, [float]$y0, $bkList = $bks) {
         $yy += $groupGap - $barGap
     }
 }
-$yc = $top + 60
+$yc = $top + 60 + $legendExtra
 Draw-Chart "Generation (tokens/s)" $genTests $yc
 Draw-Chart "Prompt processing (tokens/s, by prompt length)" $ppTests ($yc + $hGen + 40)
 
@@ -449,6 +512,17 @@ if ($chatTests.Count) {
             else { 'The replies differ (both in results.json).' }
     $noteRect = New-Object System.Drawing.RectangleF($chartX, ($y0 + (ChartHeight $chatTests.Count $chatBks.Count) - 6), $chartW, 48)
     $g.DrawString("Whole answer, fastest request (prompt + reply tokens): $($parts -join ', '). $same", $fLabel, $bInk2, $noteRect)
+}
+
+# pcuda's kernels on the CPU and on the GPU (nvcc): one layer's matmuls, not a llama.cpp run
+if ($kernTests.Count) {
+    $y0 = $yc + $hGen + 40 + $hPP + $hChat + 40
+    Draw-Chart "pcuda kernels on the CPU vs the GPU: matmuls only (tokens/s)" $kernTests $y0 $kernBks 'pcuda' 'pcuda'
+    $match = if ($doc.kernels.results_match) { 'GPU results checked against pcuda: same 8-bit activations, outputs within 3e-7.' } else { 'GPU and pcuda results DIFFER (see pcuda_kquant_vs_cuda).' }
+    $kn = "pcuda_kquant_vs_cuda: one Llama 3.2 3B layer's 2 quantizations + 7 matmuls (random weights), tok/s = tokens / (28 x layer time); " +
+          "no attention, norms or output layer, so not comparable with the bars above. $match"
+    $kRect = New-Object System.Drawing.RectangleF($chartX, ($y0 + (ChartHeight $kernTests.Count $kernBks.Count) - 6), $chartW, 48)
+    $g.DrawString($kn, $fLabel, $bInk2, $kRect)
 }
 
 # footer

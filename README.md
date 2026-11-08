@@ -413,7 +413,12 @@ Results with Llama 3.2 3B Q4_K_M from Ollama's store, in llama-bench (same binar
   stays scalar and `l` is lane + uniform, and every weight word is one plain prefetched load, with no
   run-time index check (the inner loop of `matmul_q4k_q8x8`: 54 instructions per pass, was 67).
   Prompts: about 30% faster, results bit-identical.
-- Use 1 ggml thread (`-t 1`). More ggml threads compete with pcuda's pool.
+- **ggml threads: 1 for generation, 4 for prompts** (`llama-server -t 1 -tb 4`). Attention and the
+  other ops pcuda leaves to the CPU backend run on the ggml threads; for prompts they need several.
+  For generation, more ggml threads only compete with pcuda's pool. pcuda in llama-bench, medians of
+  3 alternating rounds (pp32 / pp128 / pp512 / tg64): `-t 1` 150 / 161 / 138 / 29.1, `-t 4`
+  159 / 176 / 169 / 27.9, `-t 6` 153 / 167 / 159 / 27.8 tok/s. llama-bench has no `-tb`: run prompts
+  and generation separately (as `scripts/bench_chart.ps1` does).
 
 ## Runtime settings (environment variables)
 

@@ -6,7 +6,9 @@
 .DESCRIPTION
   Backends:
     CPU    llama.cpp's CPU backend    pcuda build, GGML_PCUDA_DISABLE=1, -t <CpuThreads>
-    pcuda  CUDA C kernels on CPU cores  pcuda build, -t 1
+    pcuda  CUDA C kernels on CPU cores  pcuda build, -t <PcudaThreads> for generation and
+                                        -t <PcudaBatchThreads> for prompts (as llama-server
+                                        -t 1 -tb 4: llama-bench has no -tb)
     GPU    llama.cpp's CUDA backend   CUDA build, -ngl 99
   Each round runs every backend once (llama-bench -r <Reps>); rounds alternate the backends so
   that heat and turbo state hit all of them alike. The chart shows each test's best round.
@@ -23,6 +25,8 @@ param(
     [string]$PcudaBench = 'C:\BitsPlus\VisOllamInference\build-pcuda\bin\llama-bench.exe',
     [string]$GpuBench = 'C:\BitsPlus\VisOllamInference\build-gpu\bin\llama-bench.exe',
     [int]$CpuThreads = 6,
+    [int]$PcudaThreads = 1,        # pcuda generation: ggml threads (more compete with pcuda's pool)
+    [int]$PcudaBatchThreads = 4,   # pcuda prompts: ggml threads for the ops pcuda leaves to the CPU (attention)
     [string]$Prompt = '32,128,512',
     [int]$Gen = 64,
     [int]$Reps = 3,
@@ -72,7 +76,8 @@ function Get-SystemInfo {
 # ---------------------------------------------------------------- benchmark runs
 $backends = @(
     [ordered]@{ key = 'cpu'; label = 'CPU'; detail = "llama.cpp CPU backend, $CpuThreads threads"; exe = $PcudaBench; env = @{ GGML_PCUDA_DISABLE = '1' }; args = @('-t', "$CpuThreads") },
-    [ordered]@{ key = 'pcuda'; label = 'pcuda'; detail = 'CUDA C kernels on the CPU cores'; exe = $PcudaBench; env = @{}; args = @('-t', '1') },
+    [ordered]@{ key = 'pcuda'; label = 'pcuda'; detail = 'CUDA C kernels on the CPU cores'; exe = $PcudaBench; env = @{}; args = @();
+      gen_args = @('-t', "$PcudaThreads"); prompt_args = @('-t', "$PcudaBatchThreads") },
     [ordered]@{ key = 'gpu'; label = 'GPU'; detail = 'llama.cpp CUDA backend, all layers on the GPU'; exe = $GpuBench; env = @{}; args = @('-ngl', '99') }
 )
 if ($NoGpu) { $backends = @($backends | Where-Object { $_.key -ne 'gpu' }) }
@@ -83,9 +88,22 @@ function Invoke-Bench($b) {
     try {
         # Windows PowerShell turns a native program's stderr lines into errors under 'Stop'
         $ErrorActionPreference = 'Continue'
-        $out = & $b.exe -m $Model -p $Prompt -n "$Gen" -r "$Reps" -o json @($b.args) 2>$null
-        if ($LASTEXITCODE -ne 0) { throw "llama-bench exited with $LASTEXITCODE" }
-        return @(($out -join "`n") | ConvertFrom-Json)
+        # Separate thread counts for prompts and generation: two runs (prompts, then generation)
+        $runs = New-Object System.Collections.ArrayList
+        if ($b.prompt_args) {
+            [void]$runs.Add(@('-p', $Prompt, '-n', '0') + $b.prompt_args)
+            [void]$runs.Add(@('-p', '0', '-n', "$Gen") + $b.gen_args)
+        } else {
+            [void]$runs.Add(@('-p', $Prompt, '-n', "$Gen") + $b.args)
+        }
+        $all = @()
+        foreach ($a in $runs) {
+            $out = & $b.exe -m $Model -r "$Reps" -o json @a 2>$null
+            if ($LASTEXITCODE -ne 0) { throw "llama-bench exited with $LASTEXITCODE" }
+            $parsed = ($out -join "`n") | ConvertFrom-Json
+            foreach ($o in $parsed) { foreach ($x in @($o)) { $all += ,$x } }  # Windows PowerShell may nest the array
+        }
+        return $all
     } finally {
         foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
     }
@@ -110,7 +128,7 @@ if (-not $RenderOnly) {
     }
     $doc = [ordered]@{
         system   = Get-SystemInfo
-        settings = [ordered]@{ model = $Model; prompt = $Prompt; gen = $Gen; reps = $Reps; rounds = $Rounds; cpu_threads = $CpuThreads }
+        settings = [ordered]@{ model = $Model; prompt = $Prompt; gen = $Gen; reps = $Reps; rounds = $Rounds; cpu_threads = $CpuThreads; pcuda_threads = $PcudaThreads; pcuda_batch_threads = $PcudaBatchThreads }
         backends = @($backends | ForEach-Object { [ordered]@{ key = $_.key; label = $_.label; detail = $_.detail } })
         meta     = $meta
         records  = $records
@@ -292,8 +310,13 @@ Draw-Chart "Prompt processing (tokens/s, by prompt length)" $ppTests ($yc + $hGe
 # footer
 $set = $doc.settings
 $roundsText = if ([int]$set.rounds -eq 1) { '1 round' } else { "the best of $($set.rounds) rounds" }
+$pt = if ($set.pcuda_threads) { [int]$set.pcuda_threads } else { 1 }
+$pbt = if ($set.pcuda_batch_threads) { [int]$set.pcuda_batch_threads } else { $pt }
+$pcudaText = if ($pt -eq $pbt) { "pcuda runs llama.cpp with $pt ggml thread$(if ($pt -ne 1) { 's' })" }
+             else { "pcuda runs llama.cpp with $pt ggml thread$(if ($pt -ne 1) { 's' }) for generation and $pbt for prompts (llama-server -t $pt -tb $pbt)" }
 $foot = "Each bar: $roundsText of llama-bench -r $($set.reps); the backends alternate within each round. " +
-        "tgN = generating N tokens, ppN = processing an N-token prompt. pcuda runs llama.cpp with 1 ggml thread; its own pool uses the P-cores."
+        "tgN = generating N tokens, ppN = processing an N-token prompt. $pcudaText; " +
+        "its own thread pool runs prompt matmuls on all cores and everything else on the P-cores."
 $g.DrawString($foot, $fFoot, $bInk2, (New-Object System.Drawing.RectangleF($M, ($H - 80), ($W - 2 * $M), 60)))
 
 $png = Join-Path $OutDir 'bench_chart.png'

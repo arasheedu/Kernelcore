@@ -6,8 +6,8 @@
                    "graphics":  "NVIDIA GeForce RTX 4060, 8 GB, driver 610.88",
                    "os":  "Windows 11 Home (build 26300)",
                    "computer":  "ASRock B760M-C R2.0",
-                   "pcuda":  "9284646",
-                   "date":  "2026-11-07 13:44"
+                   "pcuda":  "ee91f85",
+                   "date":  "2026-11-07 19:13"
                },
     "settings":  {
                      "model":  "C:\\Users\\uaras\\.ollama\\models\\blobs\\sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff",
@@ -15,7 +15,9 @@
                      "gen":  64,
                      "reps":  3,
                      "rounds":  2,
-                     "cpu_threads":  6
+                     "cpu_threads":  6,
+                     "pcuda_threads":  1,
+                     "pcuda_batch_threads":  4
                  },
     "backends":  [
                      {
@@ -46,7 +48,7 @@
                  "cpu":  {
                              "model_size":  2011539712,
                              "model_type":  "llama 3B Q4_K - Medium",
-                             "build_commit":  "8689723bd",
+                             "build_commit":  "fd2fa043a",
                              "cpu_info":  "pcuda: CUDA C kernels on CPU cores (Q4_K/Q6_K matmul), 13th Gen Intel(R) Core(TM) i5-13400F",
                              "model_n_params":  3212749888,
                              "gpu_info":  ""
@@ -54,7 +56,7 @@
                  "pcuda":  {
                                "model_size":  2011539712,
                                "model_type":  "llama 3B Q4_K - Medium",
-                               "build_commit":  "8689723bd",
+                               "build_commit":  "fd2fa043a",
                                "cpu_info":  "pcuda: CUDA C kernels on CPU cores (Q4_K/Q6_K matmul), 13th Gen Intel(R) Core(TM) i5-13400F",
                                "model_n_params":  3212749888,
                                "gpu_info":  ""
@@ -65,169 +67,169 @@
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "pp32",
-                        "avg_ts":  115.363616,
-                        "stddev_ts":  4.999005
+                        "avg_ts":  115.602857,
+                        "stddev_ts":  9.18169
                     },
                     {
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "pp128",
-                        "avg_ts":  120.647246,
-                        "stddev_ts":  1.415641
+                        "avg_ts":  124.773308,
+                        "stddev_ts":  0.519463
                     },
                     {
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "pp512",
-                        "avg_ts":  121.704172,
-                        "stddev_ts":  0.748835
+                        "avg_ts":  119.986109,
+                        "stddev_ts":  1.874137
                     },
                     {
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "tg64",
-                        "avg_ts":  27.696649,
-                        "stddev_ts":  0.248453
+                        "avg_ts":  27.576711,
+                        "stddev_ts":  0.125272
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "pp32",
-                        "avg_ts":  123.925805,
-                        "stddev_ts":  0.798949
+                        "avg_ts":  163.593286,
+                        "stddev_ts":  1.247568
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "pp128",
-                        "avg_ts":  127.863253,
-                        "stddev_ts":  0.23358
+                        "avg_ts":  179.863172,
+                        "stddev_ts":  0.710627
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "pp512",
-                        "avg_ts":  108.04381,
-                        "stddev_ts":  6.376954
+                        "avg_ts":  178.460394,
+                        "stddev_ts":  2.649295
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "tg64",
-                        "avg_ts":  30.307457,
-                        "stddev_ts":  0.063671
+                        "avg_ts":  28.597176,
+                        "stddev_ts":  2.809618
                     },
                     {
                         "backend":  "gpu",
                         "round":  1,
                         "test":  "pp32",
-                        "avg_ts":  2326.157277,
-                        "stddev_ts":  191.606375
+                        "avg_ts":  2338.810436,
+                        "stddev_ts":  211.70754
                     },
                     {
                         "backend":  "gpu",
                         "round":  1,
                         "test":  "pp128",
-                        "avg_ts":  4770.357928,
-                        "stddev_ts":  88.140257
+                        "avg_ts":  5200.196564,
+                        "stddev_ts":  107.399149
                     },
                     {
                         "backend":  "gpu",
                         "round":  1,
                         "test":  "pp512",
-                        "avg_ts":  6017.086755,
-                        "stddev_ts":  103.436496
+                        "avg_ts":  5954.498586,
+                        "stddev_ts":  22.548045
                     },
                     {
                         "backend":  "gpu",
                         "round":  1,
                         "test":  "tg64",
-                        "avg_ts":  111.415498,
-                        "stddev_ts":  0.229922
+                        "avg_ts":  111.228051,
+                        "stddev_ts":  0.362473
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "pp32",
-                        "avg_ts":  118.150349,
-                        "stddev_ts":  6.610712
+                        "avg_ts":  96.022134,
+                        "stddev_ts":  4.818048
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "pp128",
-                        "avg_ts":  123.094235,
-                        "stddev_ts":  3.552009
+                        "avg_ts":  116.371041,
+                        "stddev_ts":  6.681454
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "pp512",
-                        "avg_ts":  120.128812,
-                        "stddev_ts":  2.787916
+                        "avg_ts":  120.3511,
+                        "stddev_ts":  0.81745
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "tg64",
-                        "avg_ts":  27.961042,
-                        "stddev_ts":  0.118055
+                        "avg_ts":  27.602035,
+                        "stddev_ts":  0.159143
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "pp32",
-                        "avg_ts":  121.905592,
-                        "stddev_ts":  0.865489
+                        "avg_ts":  155.973452,
+                        "stddev_ts":  3.183208
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "pp128",
-                        "avg_ts":  128.395321,
-                        "stddev_ts":  0.107542
+                        "avg_ts":  176.412952,
+                        "stddev_ts":  1.196313
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "pp512",
-                        "avg_ts":  115.111421,
-                        "stddev_ts":  0.242336
+                        "avg_ts":  180.359312,
+                        "stddev_ts":  0.40104
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "tg64",
-                        "avg_ts":  30.277809,
-                        "stddev_ts":  0.041047
+                        "avg_ts":  28.054204,
+                        "stddev_ts":  2.489426
                     },
                     {
                         "backend":  "gpu",
                         "round":  2,
                         "test":  "pp32",
-                        "avg_ts":  2334.866386,
-                        "stddev_ts":  203.736582
+                        "avg_ts":  2330.055026,
+                        "stddev_ts":  217.842736
                     },
                     {
                         "backend":  "gpu",
                         "round":  2,
                         "test":  "pp128",
-                        "avg_ts":  5067.474297,
-                        "stddev_ts":  223.61901
+                        "avg_ts":  5057.473558,
+                        "stddev_ts":  121.457864
                     },
                     {
                         "backend":  "gpu",
                         "round":  2,
                         "test":  "pp512",
-                        "avg_ts":  5931.604844,
-                        "stddev_ts":  67.858366
+                        "avg_ts":  5927.289339,
+                        "stddev_ts":  26.781079
                     },
                     {
                         "backend":  "gpu",
                         "round":  2,
                         "test":  "tg64",
-                        "avg_ts":  111.509136,
-                        "stddev_ts":  0.248129
+                        "avg_ts":  111.31935,
+                        "stddev_ts":  0.091272
                     }
                 ]
 }

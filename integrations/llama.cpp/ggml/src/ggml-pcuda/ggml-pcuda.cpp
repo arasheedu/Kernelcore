@@ -342,13 +342,17 @@ bool launch(BackendCtx & ctx, const char * kernel, const Args & a, int64_t min_c
 float op_param_f32(const ggml_tensor * t, int i);
 bool  is_row_vector_of(const ggml_tensor * v, const ggml_tensor * x);
 
+// Batches whose matmuls read activations scaled per 256 values (quantize_cols_k slots).
+bool batch_k256(int64_t ncols) { return ncols > 1 && !runtime().matvec_cols && runtime().q8k; }
+
 // Scratch slots for the 8-bit form of tensor x (ncols columns of k values), registered so that the
-// matmuls reading x find it. The caller records the kernel that fills them.
-int * quantized_slots(BackendCtx & ctx, const ggml_tensor * x, int k, int64_t ncols, bool k256 = false) {
+// matmuls reading x find it, then extra ints for the caller. The caller records the kernel that fills them.
+int * quantized_slots(BackendCtx & ctx, const ggml_tensor * x, int k, int64_t ncols, bool k256 = false, size_t extra = 0) {
     const size_t slot = size_t(k256 ? llm::scratchKInts(k / 256) : llm::scratchInts(k / 32));
-    if (ctx.scratch_used + slot * size_t(ncols) > ctx.scratch_ints) {  // grow: run what is recorded first
+    const size_t total = slot * size_t(ncols) + extra;
+    if (ctx.scratch_used + total > ctx.scratch_ints) {  // grow: run what is recorded first
         if (!flush(ctx)) return nullptr;
-        const size_t need = std::max(slot * size_t(ncols) * 4, ctx.scratch_ints * 2);
+        const size_t need = std::max(total * 4, ctx.scratch_ints * 2);
         if (ctx.scratch) pcudaFree(ctx.scratch);
         ctx.scratch = nullptr;
         void * p = nullptr;
@@ -358,7 +362,7 @@ int * quantized_slots(BackendCtx & ctx, const ggml_tensor * x, int k, int64_t nc
         if (!begin(ctx)) return nullptr;
     }
     int * base = ctx.scratch + ctx.scratch_used;
-    ctx.scratch_used += slot * size_t(ncols);
+    ctx.scratch_used += total;
     ctx.quantized.push_back({x, ncols, k, k256, base});
     return base;
 }
@@ -393,13 +397,18 @@ int * quantized_input(BackendCtx & ctx, const ggml_tensor * x, int k, int64_t nc
 }
 
 // ADD (optional) + RMS_NORM + MUL by the norm weight, in two parallel kernels, with the result also
-// quantized for the matmuls that read it. n % 256 == 0.
+// quantized for the matmuls that read it (batches: per 256 values, the partial sums of squares
+// after the slots). n % 256 == 0.
 bool fused_norm(BackendCtx & ctx, ggml_tensor * add, ggml_tensor * norm, ggml_tensor * mul) {
     const ggml_tensor * x = norm->src[0];
     const int n = int(x->ne[0]), rows = int(ggml_nrows(x));
+    const bool k256 = batch_k256(rows);
+    const int  off = k256 ? rows * llm::scratchKInts(n / 256) : 0;
     const int * dims = ctx.ints({n / 32, n, rows});
-    int * q = dims ? quantized_slots(ctx, mul, n, rows) : nullptr;
-    if (!q) return false;
+    const int * dimsk = k256 ? ctx.ints({n / 256, n, rows, off}) : dims;
+    int * qk = dims && dimsk ? quantized_slots(ctx, mul, n, rows, k256, k256 ? size_t(rows) * llm::scratchInts(n / 32) : 0) : nullptr;
+    if (!qk) return false;
+    int * q = qk + off;  // the partial sums (and, per 32, the quantized slots)
     if (add) {
         const llm::AddSumsqFArgs a{static_cast<const float *>(add->src[0]->data), static_cast<const float *>(add->src[1]->data),
                                    static_cast<float *>(add->data), q, dims, n, rows};
@@ -408,19 +417,20 @@ bool fused_norm(BackendCtx & ctx, ggml_tensor * add, ggml_tensor * norm, ggml_te
         if (!launch(ctx, "sumsq_part", llm::SumsqPartArgs{static_cast<const float *>(x->data), q, dims, n, rows}, 16)) return false;
     }
     const llm::NormMulQ8Args nm{static_cast<const float *>(x->data), static_cast<const float *>(mul->src[1]->data),
-                                static_cast<float *>(mul->data), q, dims, n, rows, op_param_f32(norm, 0)};
-    return launch(ctx, "norm_mul_q8_f", nm, 16);
+                                static_cast<float *>(mul->data), qk, dimsk, n, rows, op_param_f32(norm, 0)};
+    return k256 ? launch(ctx, "norm_mul_q8k_f", nm, 8) : launch(ctx, "norm_mul_q8_f", nm, 16);
 }
 
-// SwiGLU with the result also quantized for the down projection. ne0 % 256 == 0.
+// SwiGLU with the result also quantized for the down projection (batches: per 256 values). ne0 % 256 == 0.
 bool fused_swiglu(BackendCtx & ctx, ggml_tensor * dst) {
     const int n = int(dst->ne[0]), cols = int(ggml_nrows(dst));
+    const bool k256 = batch_k256(cols);
     const int * dims = ctx.ints({n, cols});
-    int * q = dims ? quantized_slots(ctx, dst, n, cols) : nullptr;
+    int * q = dims ? quantized_slots(ctx, dst, n, cols, k256) : nullptr;
     if (!q) return false;
     const llm::SiluMulQ8FArgs a{static_cast<const float *>(dst->src[0]->data), static_cast<const float *>(dst->src[1]->data),
                                 static_cast<float *>(dst->data), q, dims, n, cols};
-    return launch(ctx, "silu_mul_q8x4f", a, 16);
+    return k256 ? launch(ctx, "silu_mul_q8kf", a, 8) : launch(ctx, "silu_mul_q8x4f", a, 16);
 }
 
 bool mul_mat(BackendCtx & ctx, ggml_tensor * dst) {
@@ -430,7 +440,7 @@ bool mul_mat(BackendCtx & ctx, ggml_tensor * dst) {
     const int64_t ncols = ggml_nrows(x);
     const int * dims = ctx.ints({rows, k, int(ncols), runtime().row_block});
     // Batches: activations scaled per 256 values (integer sums over whole super-blocks), unless off.
-    const bool k256 = ncols > 1 && !runtime().matvec_cols && runtime().q8k && x->nb[1] == size_t(k) * sizeof(float);
+    const bool k256 = batch_k256(ncols) && x->nb[1] == size_t(k) * sizeof(float);
     int * base = dims ? quantized_input(ctx, x, k, ncols, k256) : nullptr;
     if (!base) return false;
     if (ncols > 1 && !runtime().matvec_cols) {  // several tokens: each weight word read once per 4 or 8 columns

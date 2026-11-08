@@ -380,7 +380,9 @@ Results with Llama 3.2 3B Q4_K_M from Ollama's store, in llama-bench (same binar
 
 | Backend | Generation (tg64) | Prompt pp32 | pp128 | pp512 |
 |---|---|---|---|---|
-| **pcuda, batches with activation scales per 256 values** (4 ggml threads; 4 alternating rounds, medians) | 28–29 tok/s | **186** | **195** | **200** |
+| **pcuda, norm and SwiGLU write the per-256 activations** (4 ggml threads; 4 alternating rounds, medians) | 28–29 tok/s | **198** | **226** | **208** |
+| pcuda, same rounds, separate per-256 quantize | | 191 | 220 | 189 |
+| pcuda, batches with activation scales per 256 values (4 ggml threads; 4 alternating rounds, medians) | 28–29 tok/s | 186 | 195 | 200 |
 | pcuda, same rounds, scales per 32 (`GGML_PCUDA_Q8K=0`) | | 153 | 157 | 151 |
 | pcuda, prompt matmuls on all cores, consecutive-lane weight loads (6 ggml threads; 4 alternating rounds, medians) | 27.9 tok/s | 155 | 166 | 160 |
 | pcuda, same, before the load fix (same rounds) | | 124 | 128 | 123 |
@@ -430,6 +432,10 @@ Results with Llama 3.2 3B Q4_K_M from Ollama's store, in llama-bench (same binar
   - Results move by the coarser activation rounding, as in llama.cpp: against its CPU backend both
     prompts now give 64/64 identical greedy tokens (mean |Δ log-prob| 0.010 and 0.015). Generation
     (one token) keeps the per-32 path and its fused kernels unchanged.
+  - In batches the fused norm and SwiGLU write these slots directly (`norm_mul_q8k_f`,
+    `silu_mul_q8kf`, bit-identical to `quantize_cols_k` on their output), so only the attention
+    output still needs a separate quantize: 276 -> 112 `quantize_cols_k` launches at pp512, prompts
+    +3-4%. SwiGLU stays at about 3.8 ms per launch at pp512: its `exp2f` is one scalar call per lane.
 - **ggml threads: 1 for generation, 4 for prompts** (`llama-server -t 1 -tb 4`). Attention and the
   other ops pcuda leaves to the CPU backend run on the ggml threads; for prompts they need several.
   For generation, more ggml threads only compete with pcuda's pool. pcuda in llama-bench, medians of

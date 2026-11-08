@@ -499,6 +499,41 @@ TEST_CASE(ggml_fused_kernels_match_reference_and_chunk) {
         CHECK(bitEqual(hostCopy(dy, rs.size()), rs));
         CHECK(hostCopy(dq, rsq.size()) == rsq);
     }
+    // Per 256 values (batches): norm_mul_q8k_f and silu_mul_q8kf; 5 rows so that chunks split rows.
+    {
+        const int kr = 5, off = kr * llm::scratchKInts(n / 256);
+        const auto ka = randomFloats(size_t(n) * kr, 86, -2, 2), kb = randomFloats(size_t(n) * kr, 87, -2, 2);
+        std::vector<float> kout(ka.size()), ky(ka.size());
+        std::vector<int> ksq(size_t(slot) * kr, 0), kq(size_t(off), 0);
+        llm::ref::addSumsqF(ka.data(), kb.data(), kout.data(), ksq.data(), n, kr);
+        llm::ref::normMulQ8K(kout.data(), w.data(), ky.data(), kq.data(), ksq.data(), n, kr, 1e-5f);
+        const auto ks = randomFloats(size_t(m) * kr, 88, -6, 6), ku = randomFloats(size_t(m) * kr, 89, -2, 2);
+        std::vector<float> ksy(ks.size());
+        std::vector<int> ksq8(size_t(kr) * llm::scratchKInts(m / 256), 0);
+        llm::ref::siluMulQ8K(ks.data(), ku.data(), ksy.data(), ksq8.data(), m, kr);
+        for (bool chunked : {false, true}) {
+            auto *da = devCopy(ka), *db = devCopy(kb), *dw = devCopy(w);
+            auto *dout = devCopy(std::vector<float>(ka.size())), *dy = devCopy(std::vector<float>(ka.size()));
+            auto* dq = devCopy(std::vector<int>(size_t(off) + ksq.size()));
+            auto* dd = devCopy(std::vector<int>{n / 32, n, kr});
+            auto* ddk = devCopy(std::vector<int>{n / 256, n, kr, off});
+            REQUIRE(da && db && dw && dout && dy && dq && dd && ddk);
+            auto run = [&](const char* k, const auto& args) {
+                return chunked ? pcudaLaunchKernelChunked(k, &args, workers(), 8) : pcudaLaunchKernel(k, &args);
+            };
+            CHECK_OK(run("add_sumsq_f", llm::AddSumsqFArgs{da, db, dout, dq + off, dd, n, kr}));
+            CHECK_OK(run("norm_mul_q8k_f", llm::NormMulQ8Args{dout, dw, dy, dq, ddk, n, kr, 1e-5f}));
+            CHECK(bitEqual(hostCopy(dy, ky.size()), ky));
+            CHECK(hostCopy(dq, kq.size()) == kq);
+            auto *dg = devCopy(ks), *du = devCopy(ku), *dsy = devCopy(std::vector<float>(ks.size()));
+            auto* dsq = devCopy(std::vector<int>(ksq8.size()));
+            auto* dsd = devCopy(std::vector<int>{m, kr});
+            REQUIRE(dg && du && dsy && dsq && dsd);
+            CHECK_OK(run("silu_mul_q8kf", llm::SiluMulQ8FArgs{dg, du, dsy, dsq, dsd, m, kr}));
+            CHECK(bitEqual(hostCopy(dsy, ksy.size()), ksy));
+            CHECK(hostCopy(dsq, ksq8.size()) == ksq8);
+        }
+    }
 }
 
 // Fused kernels give exactly the results of the sequences they replace.

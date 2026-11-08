@@ -205,6 +205,12 @@ struct SiluMulQ8FArgs {  // y = silu(g) * u, quantized into q
     int          cols;
 };
 
+// For batches, norm_mul_q8k_f and silu_mul_q8kf take the same arguments and quantize per 256 values
+// into quantize_cols_k slots (scratchKInts(n / 256) ints per row/column). norm_mul_q8k_f: q holds
+// rows * scratchKInts(n / 256) ints of those slots, then rows * scratchInts(n / 32) ints whose partial
+// sums add_sumsq_f / sumsq_part fill (pass them q + rows * scratchKInts(n / 256));
+// dims -> int[4] {n / 256, n, rows, rows * scratchKInts(n / 256)}.
+
 struct AttnScoresArgs {  // scores[n_heads][ctx_pad]; dims -> device int[7] matching d
     const float* q;
     const float* k;

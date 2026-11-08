@@ -1,0 +1,344 @@
+; Booth IR
+
+func @pcuda_aligned8(i32 %0) __device__ {
+entry:
+    ret i32 %0  ; line 14
+}
+
+func @norm_mul_q8k_f(ptr<global, f32> %0, ptr<global, f32> %1, ptr<global, f32> %2, ptr<global, i32> %3, ptr<global, i32> %4, f32 %5, f32 %6) __global__ {
+entry:
+    %7 = fptosi f32 %6 to i32  ; line 21
+    %8 = call i32 @pcuda_aligned8(%7)  ; line 21
+    %9 = block_id.x  ; line 21
+    %10 = block_dim.x  ; line 21
+    %11 = mul i32 %9, %10  ; line 21
+    %12 = add i32 %8, %11  ; line 21
+    %13 = thread_id.x  ; line 21
+    %14 = add i32 %12, %13  ; line 21
+    %15 = gep ptr<global, i32>, %4, 0  ; line 22
+    %16 = load i32, %15  ; line 22
+    %17 = gep ptr<global, i32>, %4, 1  ; line 23
+    %18 = load i32, %17  ; line 23
+    %19 = gep ptr<global, i32>, %4, 2  ; line 24
+    %20 = load i32, %19  ; line 24
+    %21 = mul i32 %16, %20  ; line 25
+    %22 = icmp slt i32 %14, %21  ; line 25
+    br_cond %22, if.then, if.end merge if.end  ; line 25
+
+if.then:
+    %24 = sdiv i32 %14, %16  ; line 26
+    %25 = mul i32 %24, %16  ; line 27
+    %26 = sub i32 %14, %25  ; line 27
+    %27 = mul i32 %16, 8  ; line 28
+    %28 = gep ptr<global, i32>, %4, 3  ; line 29
+    %29 = load i32, %28  ; line 29
+    %30 = gep ptr<global, i32>, %3, %29  ; line 29
+    %31 = mul i32 %24, %27  ; line 29
+    %32 = mul i32 %31, 11  ; line 29
+    %33 = gep ptr<global, i32>, %30, %32  ; line 29
+    %34 = mul i32 %27, 10  ; line 29
+    %35 = gep ptr<global, i32>, %33, %34  ; line 29
+    %36 = bitcast ptr<global, i32> %35 to ptr<global, f32>  ; line 29
+    br for.cond  ; line 31
+
+if.end:
+    ret void  ; line 81
+
+for.cond:
+    %39 = phi f32 [if.then: 0], [for.inc: %45]
+    %40 = phi i32 [if.then: 0], [for.inc: %47]
+    %41 = icmp slt i32 %40, %27  ; line 31
+    br_cond %41, for.body, for.end merge for.end  ; line 31
+
+for.body:
+    %43 = gep ptr<global, f32>, %36, %40  ; line 31
+    %44 = load f32, %43  ; line 31
+    %45 = fadd f32 %39, %44  ; line 31
+    br for.inc  ; line 31
+
+for.inc:
+    %47 = add i32 %40, 1  ; line 31
+    br for.cond  ; line 31
+
+for.end:
+    %49 = sitofp i32 %18 to f32  ; line 32
+    %50 = fdiv f32 %39, %49  ; line 32
+    %51 = fadd f32 %50, %5  ; line 32
+    %52 = sqrt %51  ; line 32
+    %53 = fdiv f32 1, %52  ; line 32
+    %54 = mul i32 %24, %18  ; line 33
+    %55 = mul i32 %26, 256  ; line 33
+    %56 = add i32 %54, %55  ; line 33
+    br for.cond  ; line 35
+
+for.cond:
+    %58 = phi f32 [for.end: 0], [for.inc: %76]
+    %59 = phi i32 [for.end: 0], [for.inc: %78]
+    %60 = icmp slt i32 %59, 256  ; line 35
+    br_cond %60, for.body, for.end merge for.end  ; line 35
+
+for.body:
+    %62 = add i32 %56, %59  ; line 36
+    %63 = gep ptr<global, f32>, %0, %62  ; line 36
+    %64 = load f32, %63  ; line 36
+    %65 = fmul f32 %64, %53  ; line 36
+    %66 = mul i32 %26, 256  ; line 36
+    %67 = add i32 %66, %59  ; line 36
+    %68 = gep ptr<global, f32>, %1, %67  ; line 36
+    %69 = load f32, %68  ; line 36
+    %70 = fmul f32 %65, %69  ; line 36
+    %71 = add i32 %56, %59  ; line 37
+    %72 = gep ptr<global, f32>, %2, %71  ; line 37
+    store f32 %70, %72  ; line 37
+    %74 = fsub f32 0, %70  ; line 38
+    %75 = fmax %70 %74  ; line 38
+    %76 = fmax %58 %75  ; line 38
+    br for.inc  ; line 38
+
+for.inc:
+    %78 = add i32 %59, 1  ; line 35
+    br for.cond  ; line 35
+
+for.end:
+    %80 = fdiv f32 %58, 127  ; line 40
+    %81 = fcmp ogt f32 %80, 0  ; line 42
+    br_cond %81, if.then, if.else merge if.end  ; line 42
+
+if.then:
+    %83 = fdiv f32 1, %80  ; line 42
+    br if.end  ; line 42
+
+if.else:
+    br if.end  ; line 43
+
+if.end:
+    %86 = phi f32 [if.then: %83], [if.else: 0]
+    %87 = mul i32 %24, %16  ; line 44
+    %88 = mul i32 %87, 85  ; line 44
+    %89 = gep ptr<global, i32>, %3, %88  ; line 44
+    br for.cond  ; line 45
+
+for.cond:
+    %91 = phi i32 [if.end: 0], [for.inc: %100]
+    %92 = phi i32 [if.end: undef], [for.inc: %105]
+    %93 = phi i32 [if.end: undef], [for.inc: %106]
+    %94 = phi f32 [if.end: undef], [for.inc: %107]
+    %95 = phi i32 [if.end: undef], [for.inc: %108]
+    %96 = phi i32 [if.end: undef], [for.inc: %109]
+    %97 = icmp slt i32 %91, 16  ; line 45
+    br_cond %97, for.body, for.end merge for.end  ; line 45
+
+for.body:
+    br for.cond  ; line 47
+
+for.inc:
+    %100 = add i32 %91, 1  ; line 45
+    br for.cond  ; line 45
+
+for.end:
+    br for.cond  ; line 69
+
+for.cond:
+    %103 = phi i32 [for.body: 0], [for.inc: %122]
+    %104 = phi i32 [for.body: 0], [for.inc: %113]
+    %105 = phi i32 [for.body: %92], [for.inc: %123]
+    %106 = phi i32 [for.body: %93], [for.inc: %124]
+    %107 = phi f32 [for.body: %94], [for.inc: %125]
+    %108 = phi i32 [for.body: %95], [for.inc: %126]
+    %109 = phi i32 [for.body: %96], [for.inc: %127]
+    %110 = icmp slt i32 %104, 4  ; line 47
+    br_cond %110, for.body, for.end merge for.end  ; line 47
+
+for.body:
+    br for.cond  ; line 49
+
+for.inc:
+    %113 = add i32 %104, 1  ; line 47
+    br for.cond  ; line 47
+
+for.end:
+    %115 = mul i32 %16, 65  ; line 63
+    %116 = mul i32 %26, 16  ; line 63
+    %117 = add i32 %115, %116  ; line 63
+    %118 = add i32 %117, %91  ; line 63
+    %119 = gep ptr<global, i32>, %89, %118  ; line 63
+    store i32 %103, %119  ; line 63
+    br for.inc  ; line 63
+
+for.cond:
+    %122 = phi i32 [for.body: %103], [for.inc: %162]
+    %123 = phi i32 [for.body: 0], [for.inc: %166]
+    %124 = phi i32 [for.body: 0], [for.inc: %140]
+    %125 = phi f32 [for.body: %107], [for.inc: %137]
+    %126 = phi i32 [for.body: %108], [for.inc: %155]
+    %127 = phi i32 [for.body: %109], [for.inc: %161]
+    %128 = icmp slt i32 %124, 4  ; line 49
+    br_cond %128, for.body, for.end merge for.end  ; line 49
+
+for.body:
+    %130 = mul i32 %91, 16  ; line 50
+    %131 = add i32 %56, %130  ; line 50
+    %132 = mul i32 %104, 4  ; line 50
+    %133 = add i32 %131, %132  ; line 50
+    %134 = add i32 %133, %124  ; line 50
+    %135 = gep ptr<global, f32>, %2, %134  ; line 50
+    %136 = load f32, %135  ; line 50
+    %137 = fmul f32 %136, %86  ; line 50
+    %138 = fcmp oge f32 %137, 0  ; line 52
+    br_cond %138, if.then, if.else merge if.end  ; line 52
+
+for.inc:
+    %140 = add i32 %124, 1  ; line 49
+    br for.cond  ; line 49
+
+for.end:
+    %142 = mul i32 %26, 64  ; line 61
+    %143 = mul i32 %91, 4  ; line 61
+    %144 = add i32 %142, %143  ; line 61
+    %145 = add i32 %144, %104  ; line 61
+    %146 = gep ptr<global, i32>, %89, %145  ; line 61
+    store i32 %123, %146  ; line 61
+    br for.inc  ; line 61
+
+if.then:
+    %149 = fadd f32 %137, 0.5  ; line 52
+    %150 = fptosi f32 %149 to i32  ; line 52
+    br if.end  ; line 52
+
+if.else:
+    %152 = fsub f32 %137, 0.5  ; line 53
+    %153 = fptosi f32 %152 to i32  ; line 53
+    br if.end  ; line 53
+
+if.end:
+    %155 = phi i32 [if.then: %150], [if.else: %153]
+    %156 = icmp sgt i32 %155, 127  ; line 55
+    br_cond %156, if.then, if.else merge if.end  ; line 55
+
+if.then:
+    br if.end  ; line 55
+
+if.else:
+    %159 = icmp slt i32 %155, 4294967169  ; line 56
+    br_cond %159, if.then, if.else merge if.end  ; line 56
+
+if.end:
+    %161 = phi i32 [if.then: 127], [if.end: %170]
+    %162 = add i32 %122, %161  ; line 58
+    %163 = and i32 %161, 255  ; line 59
+    %164 = mul i32 %124, 8  ; line 59
+    %165 = shl i32 %163, %164  ; line 59
+    %166 = or i32 %123, %165  ; line 59
+    br for.inc  ; line 59
+
+if.then:
+    br if.end  ; line 56
+
+if.else:
+    br if.end  ; line 57
+
+if.end:
+    %170 = phi i32 [if.then: 4294967169], [if.else: %155]
+    br if.end  ; line 57
+
+for.cond:
+    %172 = phi i32 [for.end: 0], [for.inc: %217]
+    %173 = phi i32 [for.end: 0], [for.inc: %222]
+    %174 = phi i32 [for.end: 0], [for.inc: %226]
+    %175 = phi i32 [for.end: 0], [for.inc: %230]
+    %176 = phi i32 [for.end: 0], [for.inc: %232]
+    %177 = icmp slt i32 %176, 4  ; line 69
+    br_cond %177, for.body, for.end merge for.end  ; line 69
+
+for.body:
+    %179 = mul i32 %16, 65  ; line 70
+    %180 = mul i32 %26, 16  ; line 70
+    %181 = add i32 %179, %180  ; line 70
+    %182 = mul i32 %176, 2  ; line 70
+    %183 = add i32 %181, %182  ; line 70
+    %184 = gep ptr<global, i32>, %89, %183  ; line 70
+    %185 = load i32, %184  ; line 70
+    %186 = mul i32 %16, 65  ; line 70
+    %187 = mul i32 %26, 16  ; line 70
+    %188 = add i32 %186, %187  ; line 70
+    %189 = mul i32 %176, 2  ; line 70
+    %190 = add i32 %188, %189  ; line 70
+    %191 = add i32 %190, 1  ; line 70
+    %192 = gep ptr<global, i32>, %89, %191  ; line 70
+    %193 = load i32, %192  ; line 70
+    %194 = add i32 %185, %193  ; line 70
+    %195 = mul i32 %16, 65  ; line 71
+    %196 = mul i32 %26, 16  ; line 71
+    %197 = add i32 %195, %196  ; line 71
+    %198 = add i32 %197, 8  ; line 71
+    %199 = mul i32 %176, 2  ; line 71
+    %200 = add i32 %198, %199  ; line 71
+    %201 = gep ptr<global, i32>, %89, %200  ; line 71
+    %202 = load i32, %201  ; line 71
+    %203 = mul i32 %16, 65  ; line 71
+    %204 = mul i32 %26, 16  ; line 71
+    %205 = add i32 %203, %204  ; line 71
+    %206 = add i32 %205, 8  ; line 71
+    %207 = mul i32 %176, 2  ; line 71
+    %208 = add i32 %206, %207  ; line 71
+    %209 = add i32 %208, 1  ; line 71
+    %210 = gep ptr<global, i32>, %89, %209  ; line 71
+    %211 = load i32, %210  ; line 71
+    %212 = add i32 %202, %211  ; line 71
+    %213 = ashr i32 %194, 6  ; line 72
+    %214 = and i32 %213, 255  ; line 72
+    %215 = mul i32 %176, 8  ; line 72
+    %216 = shl i32 %214, %215  ; line 72
+    %217 = or i32 %172, %216  ; line 72
+    %218 = ashr i32 %212, 6  ; line 73
+    %219 = and i32 %218, 255  ; line 73
+    %220 = mul i32 %176, 8  ; line 73
+    %221 = shl i32 %219, %220  ; line 73
+    %222 = or i32 %173, %221  ; line 73
+    %223 = and i32 %194, 63  ; line 74
+    %224 = mul i32 %176, 8  ; line 74
+    %225 = shl i32 %223, %224  ; line 74
+    %226 = or i32 %174, %225  ; line 74
+    %227 = and i32 %212, 63  ; line 75
+    %228 = mul i32 %176, 8  ; line 75
+    %229 = shl i32 %227, %228  ; line 75
+    %230 = or i32 %175, %229  ; line 75
+    br for.inc  ; line 75
+
+for.inc:
+    %232 = add i32 %176, 1  ; line 69
+    br for.cond  ; line 69
+
+for.end:
+    %234 = mul i32 %16, 81  ; line 77
+    %235 = mul i32 %26, 4  ; line 77
+    %236 = add i32 %234, %235  ; line 77
+    %237 = gep ptr<global, i32>, %89, %236  ; line 77
+    store i32 %172, %237  ; line 77
+    %239 = mul i32 %16, 81  ; line 78
+    %240 = mul i32 %26, 4  ; line 78
+    %241 = add i32 %239, %240  ; line 78
+    %242 = add i32 %241, 1  ; line 78
+    %243 = gep ptr<global, i32>, %89, %242  ; line 78
+    store i32 %173, %243  ; line 78
+    %245 = mul i32 %16, 81  ; line 79
+    %246 = mul i32 %26, 4  ; line 79
+    %247 = add i32 %245, %246  ; line 79
+    %248 = add i32 %247, 2  ; line 79
+    %249 = gep ptr<global, i32>, %89, %248  ; line 79
+    store i32 %174, %249  ; line 79
+    %251 = mul i32 %16, 81  ; line 80
+    %252 = mul i32 %26, 4  ; line 80
+    %253 = add i32 %251, %252  ; line 80
+    %254 = add i32 %253, 3  ; line 80
+    %255 = gep ptr<global, i32>, %89, %254  ; line 80
+    store i32 %175, %255  ; line 80
+    %257 = mul i32 %16, 64  ; line 81
+    %258 = gep ptr<global, i32>, %89, %257  ; line 81
+    %259 = bitcast ptr<global, i32> %258 to ptr<global, f32>  ; line 81
+    %260 = gep ptr<global, f32>, %259, %26  ; line 81
+    store f32 %80, %260  ; line 81
+    br if.end  ; line 81
+}
+
+; 2 functions, 0 globals, 265 instructions

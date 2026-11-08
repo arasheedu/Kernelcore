@@ -697,6 +697,21 @@ void normMulQ8(const float* x, const float* w, float* y, int* q, int n, int rows
     }
 }
 
+void normMulQ8K(const float* x, const float* w, float* y, int* q, const int* sq, int n, int rows, float eps) {
+    const int nb = n / 32;
+    for (int row = 0; row < rows; ++row) {
+        const float* ss = reinterpret_cast<const float*>(sq + size_t(row) * nb * 11 + nb * 10);
+        float tot = 0.0f;
+        for (int j = 0; j < nb; ++j) tot += ss[j];
+        const float r = 1.0f / std::sqrt(tot / static_cast<float>(n) + eps);
+        for (int i = 0; i < n; ++i) y[size_t(row) * n + i] = x[size_t(row) * n + i] * r * w[i];
+        quantizeQ8K(y + size_t(row) * n, q + size_t(row) * (n / 256 * 85), n / 256);
+    }
+}
+void siluMulQ8K(const float* g, const float* u, float* y, int* q, int n, int cols) {
+    for (size_t i = 0; i < size_t(n) * cols; ++i) y[i] = g[i] / (1.0f + std::exp2(-g[i] * 1.44269504f)) * u[i];
+    for (int c = 0; c < cols; ++c) quantizeQ8K(y + size_t(c) * n, q + size_t(c) * (n / 256 * 85), n / 256);
+}
 void siluMulQ8F(const float* g, const float* u, float* y, int* q, int n, int cols) {
     const int nb = n / 32;
     for (int c = 0; c < cols; ++c) {

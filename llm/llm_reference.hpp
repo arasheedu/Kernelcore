@@ -54,6 +54,10 @@ void  addSumsqF(const float* a, const float* b, float* out, int* q, int n, int r
 void  sumsqPart(const float* x, int* q, int n, int rows);
 void  normMulQ8(const float* x, const float* w, float* y, int* q, int n, int rows, float eps);
 void  siluMulQ8F(const float* g, const float* u, float* y, int* q, int n, int cols);
+// The same quantized per 256 values (norm_mul_q8k_f, silu_mul_q8kf): q holds quantizeQ8K slots;
+// sq: the scratchInts(n / 32) slots holding the partial sums.
+void  normMulQ8K(const float* x, const float* w, float* y, int* q, const int* sq, int n, int rows, float eps);
+void  siluMulQ8K(const float* g, const float* u, float* y, int* q, int n, int cols);
 void rope(float* x, int pairs_per_head, int pos, int count, float log2_base);
 // Layouts as in AttnDims: kt[kv_stride][k_stride] (K transposed), v[ctx][kv_stride],
 // scores/p[n_heads][ctx_pad] (entries t >= ctx untouched).

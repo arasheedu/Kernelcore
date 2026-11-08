@@ -379,7 +379,9 @@ Results with Llama 3.2 3B Q4_K_M from Ollama's store, in llama-bench (same binar
 
 | Backend | Generation (tg64) | Prompt pp32 | pp128 | pp512 |
 |---|---|---|---|---|
-| **pcuda, prompt matmuls on all cores** (6 ggml threads; 4 alternating rounds, medians) | **27.9 tok/s** | | **145** | **135** |
+| **pcuda, prompt matmuls on all cores, consecutive-lane weight loads** (6 ggml threads; 4 alternating rounds, medians) | **27.9 tok/s** | **155** | **166** | **160** |
+| pcuda, same, before the load fix (same rounds) | | 124 | 128 | 123 |
+| pcuda, prompt matmuls on all cores (earlier rounds) | 27.9 tok/s | | 145 | 135 |
 | llama.cpp CPU backend, 6 threads (same rounds) | 27.4 tok/s | | 120 | 120 |
 | pcuda, P-cores only (`PCUDA_POOL_THREADS=11`, same rounds) | 28.5 tok/s | | 123 | 108 |
 | **pcuda, whole layer** (1 ggml thread) | **29.4–30.2 tok/s** | **101** | **119** | **115** |
@@ -398,7 +400,7 @@ Results with Llama 3.2 3B Q4_K_M from Ollama's store, in llama-bench (same binar
   - Every column's arithmetic is the matvec's, so results are bit-identical to the one-token path.
   - `quantize_cols` quantizes all of a batch's columns in one launch.
   - This is about 75% faster than one matvec per token. It is level with or ahead of llama.cpp's CPU
-    backend up to pp128 on the P-cores alone; with all cores it is about 20% ahead at pp128 and pp512.
+    backend up to pp128 on the P-cores alone; with all cores and the load fix it is about 35% ahead at pp128 and pp512.
   - 8 tokens per thread beats 4 by about 23%. The matmuls are bound by compute, not memory: the
     order of tiles and rows (`GGML_PCUDA_ROW_BLOCK`) makes no measurable difference.
 - **Prompt matmuls use every core, generation only the P-cores.** The matmuls are bound by
@@ -406,6 +408,11 @@ Results with Llama 3.2 3B Q4_K_M from Ollama's store, in llama-bench (same binar
   i5-13400F) and they run in 16 chunks per thread, so the P-cores take more of the work. Every
   other launch is bound by memory bandwidth and passes `performance_workers` (12): at most that
   many threads take part, the same ones each time. Prompts: about 20% faster than on the P-cores alone.
+- **Weight loads are consecutive lanes.** The matmuls compute a thread's 8-row group `g` and lane
+  `l` directly instead of as `row / 8` and `row % 8`, which pcuda_mslgen cannot prove uniform. So `g`
+  stays scalar and `l` is lane + uniform, and every weight word is one plain prefetched load, with no
+  run-time index check (the inner loop of `matmul_q4k_q8x8`: 54 instructions per pass, was 67).
+  Prompts: about 30% faster, results bit-identical.
 - Use 1 ggml thread (`-t 1`). More ggml threads compete with pcuda's pool.
 
 ## Runtime settings (environment variables)

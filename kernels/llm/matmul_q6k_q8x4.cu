@@ -52,11 +52,13 @@ extern "C" __global__ void matmul_q6k_q8x4(const int* qw, const int* xq, float* 
         else rbn = rb;
         const int within = grp - g0 * tiles;
         const int tile = within / rbn;
-        const int row = (g0 + within - tile * rbn) * 8 + (idx - grp * 8);
+        // g and l directly (not row / 8): g stays uniform across a simd group and l = lane + uniform,
+        // so pcuda_mslgen loads weight words as consecutive lanes (no per-load index checks).
+        const int g = g0 + within - tile * rbn;
+        const int l = idx - grp * 8;
+        const int row = g * 8 + l;
         const int nsb = k / 256;
         const int nb = k / 32;
-        const int g = row / 8;
-        const int l = row - g * 8;
         const int c0 = tile * 4;
         int c1;
         if (c0 + 1 < ncols) c1 = c0 + 1;

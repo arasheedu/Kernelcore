@@ -45,30 +45,42 @@ struct EventState {
 } // namespace
 
 namespace {
-// Logical processors on the fastest cores (P-cores on hybrid Intel CPUs; all of them otherwise).
-// Busy efficiency cores make memory-bound launches slower overall on such CPUs (they share the
-// ring and memory path but finish chunks late), so the pool leaves them alone by default.
-unsigned performanceLogicalProcessors() {
+struct CoreCounts {
+    unsigned all;          // logical processors
+    unsigned performance;  // logical processors on the fastest cores (P-cores on hybrid Intel CPUs; all otherwise)
+    unsigned slow_cores;   // the other cores (E-cores)
+};
+CoreCounts coreCounts() {
     const unsigned all = std::max(1u, std::thread::hardware_concurrency());
+    const CoreCounts plain{all, all, 0};
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
-    if (len == 0) return all;
+    if (len == 0) return plain;
     std::vector<uint8_t> buf(len);
     auto* info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data());
-    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info, &len)) return all;
-    unsigned best_class = 0, count = 0;
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info, &len)) return plain;
+    unsigned best_class = 0, count = 0, cores = 0, best_cores = 0;
     for (DWORD off = 0; off < len;) {
         auto* e = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data() + off);
         const unsigned cls = e->Processor.EfficiencyClass;
         unsigned lps = 0;
         for (WORD g = 0; g < e->Processor.GroupCount; ++g)
             lps += static_cast<unsigned>(__popcnt64(e->Processor.GroupMask[g].Mask));
-        if (cls > best_class) best_class = cls, count = 0;
-        if (cls == best_class) count += lps;
+        if (cls > best_class) best_class = cls, count = 0, best_cores = 0;
+        if (cls == best_class) count += lps, ++best_cores;
+        ++cores;
         off += e->Size;
     }
-    return count ? count : all;
+    if (!count) return plain;
+    return {all, count, cores - best_cores};
 }
+// Launches bound by memory bandwidth do best on the fastest cores only: busy efficiency cores
+// share the ring and memory path but finish chunks late. Compute-bound launches gain from every
+// core. So the pool has a thread per logical processor plus one per efficiency core (on the
+// i5-13400F: 20; prompt matmuls ~10% faster than with 16 and ~20% faster than with the 12 on
+// P-cores), and callers pass DeviceProperties::performance_workers as `workers` for
+// bandwidth-bound launches.
+unsigned performanceLogicalProcessors() { return coreCounts().performance; }
 } // namespace
 
 struct pcudaEvent_st {
@@ -82,6 +94,7 @@ struct GraphNode {
     std::string                    name;
     std::vector<pcuda::LaunchArgs> parts;
     bool                           join_previous = false;  // recorded in a concurrent group: same step
+    unsigned                       threads = 0;            // chunked: the launch's workers (thread cap); 0 = all
 };
 // Immutable once captured; a running launch keeps it alive after pcudaGraphDestroy.
 struct GraphData {
@@ -89,6 +102,7 @@ struct GraphData {
     std::vector<std::vector<pcuda::Stream::Task>> tasks;      // per step: one task per part of its nodes
     std::vector<pcuda::WorkerPool::Step>          steps;
     std::vector<size_t>                           step_node;  // per step: its first node (error messages)
+    std::vector<unsigned>                         step_threads;  // per step: thread cap (0 = all)
 };
 } // namespace
 
@@ -328,12 +342,12 @@ private:
 Error startDevice(Runtime& r) {
     r.guard_pages = envInt("PCUDA_GUARD_PAGES", 1, 0, 1) != 0;
     r.stack_bytes = static_cast<size_t>(envInt("PCUDA_KERNEL_STACK_MB", 8, 1, 1024)) * kMiB;
-    // Threads in the chunked-launch pool. A launch's `workers` argument sets the chunk count.
-    // Default: the performance cores' logical processors, minus one for the launching (stream)
-    // thread, which runs chunks too. More threads than processors made waiting workers take
-    // processors from the threads with work (measured: 16 threads ~13% slower than 12).
+    // Threads in the chunked-launch pool, besides the launching (stream) thread, which runs chunks
+    // too. A launch's `workers` argument sets its chunk count and how many threads take part.
+    // Default: see coreCounts(); without efficiency cores, one thread per logical processor.
+    const CoreCounts cc = coreCounts();
     r.hw_threads = static_cast<unsigned>(
-        envInt("PCUDA_POOL_THREADS", std::max(1u, performanceLogicalProcessors() - 1), 1, 1024));
+        envInt("PCUDA_POOL_THREADS", std::max(1u, cc.all + cc.slow_cores - 1), 1, 1024));
     r.chunks_per_worker = static_cast<unsigned>(envInt("PCUDA_CHUNKS_PER_WORKER", 4, 1, 64));
     r.pool_spin_us = static_cast<unsigned>(envInt("PCUDA_POOL_SPIN_US", 50, 0, 10000));
     if (!r.codegen_set.load()) {
@@ -507,7 +521,7 @@ Error launchCommon(const char* name, const void* typed_args, pcudaStream_t strea
                 join = c->second == 2;
                 c->second = 2;
             }
-            it->second->push_back(GraphNode{entry, name, std::move(parts), join});
+            it->second->push_back(GraphNode{entry, name, std::move(parts), join, chunked ? workers : 0u});
             return Error::Success;
         }
     }
@@ -523,12 +537,12 @@ Error launchCommon(const char* name, const void* typed_args, pcudaStream_t strea
         };
     } else {
         WorkerPool* pool = ensurePool(r);
-        task = [entry, per_chunk = std::move(parts), pool]() -> Error {
+        task = [entry, per_chunk = std::move(parts), pool, workers]() -> Error {
             if (Error e = skipIfPoisoned(R()); e != Error::Success) return e;
             std::vector<Stream::Task> jobs;
             jobs.reserve(per_chunk.size());
             for (const LaunchArgs& a : per_chunk) jobs.push_back(partTask(entry, &a));
-            return pool->run(jobs);
+            return pool->run(jobs, workers);  // at most `workers` threads take part
         };
     }
 
@@ -616,6 +630,7 @@ Error pcudaGetDeviceProperties(DeviceProperties* props, int device) noexcept {
         DeviceProperties p{};
         std::snprintf(p.name, sizeof p.name, "pcuda CPU device (Booth x86-64 backend, %s)", r.backend->name());
         p.worker_count = r.hw_threads;
+        p.performance_workers = std::min(r.hw_threads + 1, performanceLogicalProcessors());
         MEMORYSTATUSEX ms{};
         ms.dwLength = sizeof ms;
         if (GlobalMemoryStatusEx(&ms)) p.total_memory = static_cast<size_t>(ms.ullTotalPhys);
@@ -908,10 +923,14 @@ Error pcudaStreamEndCapture(pcudaStream_t stream, pcudaGraph_t* graph) noexcept 
             if (!n.join_previous || data->tasks.empty()) {
                 data->tasks.emplace_back();
                 data->step_node.push_back(k);
+                data->step_threads.push_back(n.threads);
+            } else if (data->step_threads.back() && (!n.threads || n.threads > data->step_threads.back())) {
+                data->step_threads.back() = n.threads;  // a shared step gets the widest cap
             }
             for (const LaunchArgs& a : n.parts) data->tasks.back().push_back(partTask(n.entry, &a));
         }
-        for (const auto& t : data->tasks) data->steps.push_back({t.data(), t.size()});
+        for (size_t i = 0; i < data->tasks.size(); ++i)
+            data->steps.push_back({data->tasks[i].data(), data->tasks[i].size(), data->step_threads[i]});
         auto g = std::make_unique<pcudaGraph_st>();
         g->data = std::move(data);
         pcudaGraph_t h = g.get();

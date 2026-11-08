@@ -378,8 +378,8 @@ int run(int argc, char** argv) {
         throw std::runtime_error(std::string("registering LLM kernels: ") + pcudaGetLastErrorDetail());
     pcuda::DeviceProperties pprops{};
     if (pcudaGetDeviceProperties(&pprops, 0) != pcuda::Error::Success) throw std::runtime_error("pcuda device properties");
-    // Default: one chunk share per thread that runs chunks (the pool plus the launching thread).
-    const unsigned workers = workers_opt ? workers_opt : pprops.worker_count + 1;
+    // Default: the fastest cores (decode is bound by memory bandwidth).
+    const unsigned workers = workers_opt ? workers_opt : pprops.performance_workers;
 
     const llm::Weights wf = weights == "q4"       ? llm::Weights::Q4
                             : weights == "q4x8"   ? llm::Weights::Q4X8

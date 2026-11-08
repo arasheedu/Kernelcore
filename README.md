@@ -363,6 +363,7 @@ kernel objects, so no Booth compiler is needed. A copy and the hook patch are in
   - `GGML_PCUDA_MATVEC_COLS=1` (batches as one matvec per token);
   - `GGML_PCUDA_TILE=4` (4 tokens per matmul thread instead of 8);
   - `GGML_PCUDA_ROW_BLOCK=<n>` (matmul thread order: 8-row groups per block, default 8);
+  - `GGML_PCUDA_MATMUL_CHUNKS=<n>` (batched matmuls: chunks per pool thread, times the runtime's 4; default 4);
   - `GGML_PCUDA_GRAPHS=0`;
   - `GGML_PCUDA_PROFILE=1` (time breakdown at exit; per kernel with graphs off);
   - `GGML_PCUDA_DEBUG=1` (`supports_op` answers).
@@ -378,6 +379,9 @@ Results with Llama 3.2 3B Q4_K_M from Ollama's store, in llama-bench (same binar
 
 | Backend | Generation (tg64) | Prompt pp32 | pp128 | pp512 |
 |---|---|---|---|---|
+| **pcuda, prompt matmuls on all cores** (6 ggml threads; 4 alternating rounds, medians) | **27.9 tok/s** | | **145** | **135** |
+| llama.cpp CPU backend, 6 threads (same rounds) | 27.4 tok/s | | 120 | 120 |
+| pcuda, P-cores only (`PCUDA_POOL_THREADS=11`, same rounds) | 28.5 tok/s | | 123 | 108 |
 | **pcuda, whole layer** (1 ggml thread) | **29.4–30.2 tok/s** | **101** | **119** | **115** |
 | pcuda, 4 tokens per thread (`GGML_PCUDA_TILE=4`) | same | 81 | 98 | 94 |
 | pcuda, one matvec per prompt token (`GGML_PCUDA_MATVEC_COLS=1`) | same | 58 | 69 | |
@@ -394,9 +398,14 @@ Results with Llama 3.2 3B Q4_K_M from Ollama's store, in llama-bench (same binar
   - Every column's arithmetic is the matvec's, so results are bit-identical to the one-token path.
   - `quantize_cols` quantizes all of a batch's columns in one launch.
   - This is about 75% faster than one matvec per token. It is level with or ahead of llama.cpp's CPU
-    backend up to pp128, and about 5% behind it at pp512.
+    backend up to pp128 on the P-cores alone; with all cores it is about 20% ahead at pp128 and pp512.
   - 8 tokens per thread beats 4 by about 23%. The matmuls are bound by compute, not memory: the
     order of tiles and rows (`GGML_PCUDA_ROW_BLOCK`) makes no measurable difference.
+- **Prompt matmuls use every core, generation only the P-cores.** The matmuls are bound by
+  compute, so the pool has a thread per logical processor plus one per E-core (20 on the
+  i5-13400F) and they run in 16 chunks per thread, so the P-cores take more of the work. Every
+  other launch is bound by memory bandwidth and passes `performance_workers` (12): at most that
+  many threads take part, the same ones each time. Prompts: about 20% faster than on the P-cores alone.
 - Use 1 ggml thread (`-t 1`). More ggml threads compete with pcuda's pool.
 
 ## Runtime settings (environment variables)
@@ -406,7 +415,7 @@ Results with Llama 3.2 3B Q4_K_M from Ollama's store, in llama-bench (same binar
 | `PCUDA_GUARD_PAGES` | `1` | `0` uses `_aligned_malloc` instead of guard-page allocations |
 | `PCUDA_KERNEL_STACK_MB` | `8` | Stack reserve for stream and worker threads (1–1024) |
 | `PCUDA_CODEGEN` | `auto` | Kernel code path: `auto`, `booth`, `native` or `simd` (see Code paths) |
-| `PCUDA_POOL_THREADS` | P-core logical CPUs − 1 | Threads in the chunked-launch pool (1–1024); the launching thread runs chunks too. On non-hybrid CPUs: all logical CPUs − 1 |
+| `PCUDA_POOL_THREADS` | logical CPUs + E-cores − 1 | Threads in the chunked-launch pool (1–1024); the launching thread runs chunks too. A chunked launch runs on at most `workers` threads: pass `DeviceProperties::performance_workers` (the P-cores' logical CPUs) for bandwidth-bound launches. On non-hybrid CPUs: all logical CPUs − 1 |
 | `PCUDA_CHUNKS_PER_WORKER` | `4` | A chunked launch with `workers = N` is split into up to N × this many chunks, so fast cores pick up the slow (efficiency) cores' share |
 | `PCUDA_PREFETCH_BYTES` | `2048` | How far ahead the simd path prefetches streaming loads (0 = off; 1.5–8 KB measured the same) |
 | `PCUDA_LARGE_PAGES` | `0` | `1` backs allocations of 2 MB or more with large pages, for fewer TLB misses. Needs the "Lock pages in memory" right: run `scriptsgrant_lock_pages.ps1` as administrator once, then sign out and in. Without it, normal pages are used. Overruns still fault (a reserved no-access range follows each block). Measured: about 1 ms per token faster with prefetch off, no gain on top of the default prefetch |

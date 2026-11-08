@@ -207,12 +207,15 @@ struct WorkerPool::Group {
         const Stream::Task* tasks;
         uint32_t            count;  // > 0
         size_t              step;   // index in the caller's list
+        uint32_t            threads;  // threads that may run it (slots below this); 0 = all
     };
     std::vector<Span>                        spans;
     std::unique_ptr<std::atomic<uint32_t>[]> next;       // per span: next unclaimed chunk
     std::unique_ptr<std::atomic<uint32_t>[]> remaining;  // per span: chunks not finished
     std::atomic<uint32_t>                    current{0}; // span being run; spans.size() = done
     std::atomic<bool>                        abort{false};
+    uint32_t                                 widest = 0; // the widest step's thread cap (0 = all): higher slots never join
+    std::atomic<uint32_t>                    gate{0};    // bumped when a step admitting more threads opens, or at the end
 
     std::mutex  err_mutex;  // first failure in (step, chunk) order, so results are deterministic
     size_t      err_span = SIZE_MAX, err_chunk = 0;
@@ -220,6 +223,7 @@ struct WorkerPool::Group {
     std::string err_detail;
 
     uint32_t size() const { return static_cast<uint32_t>(spans.size()); }
+    bool admits(uint32_t s, uint32_t slot) const { return !spans[s].threads || slot < spans[s].threads; }
     void fail(uint32_t s, uint32_t i, Error e, std::string why) {
         std::lock_guard lk(err_mutex);
         if (s < err_span || (s == err_span && i < err_chunk)) {
@@ -234,7 +238,7 @@ WorkerPool::WorkerPool(unsigned threads, size_t stack_bytes, unsigned spin_us) :
     threads = std::max(1u, threads);
     try {
         for (unsigned i = 0; i < threads; ++i)
-            threads_.push_back(startThread(stack_bytes, L"pcuda pool worker", [this] { loop(); }));
+            threads_.push_back(startThread(stack_bytes, L"pcuda pool worker", [this, i] { loop(i + 1); }));
     } catch (...) {
         stop();
         throw;
@@ -251,29 +255,49 @@ void WorkerPool::stop() noexcept {
     threads_.clear();
 }
 
-std::shared_ptr<WorkerPool::Group> WorkerPool::grab() {
+std::shared_ptr<WorkerPool::Group> WorkerPool::grab(uint32_t slot) {
     std::lock_guard lk(mutex_);
     for (const auto& g : active_)
-        if (g->current.load(std::memory_order_acquire) < g->size()) return g;
+        if (g->current.load(std::memory_order_acquire) < g->size() && (!g->widest || slot < g->widest)) return g;
     return nullptr;
 }
 
 // Runs chunks of g until the whole job is done (every thread that joins returns only then).
 // The shared_ptr held by a pool worker keeps g alive while it signals, even after the caller
 // has returned. Tasks are touched only while their step is unfinished, so they outlive use.
-void WorkerPool::work(Group& g) const {
+void WorkerPool::work(Group& g, uint32_t slot) const {
     const uint32_t n = g.size();
     for (;;) {
         const uint32_t s = g.current.load(std::memory_order_acquire);
         if (s >= n) return;
+        if (!g.admits(s, slot)) {
+            // Not one of this step's threads: sleep (no spinning, so the threads running it keep
+            // the processors) until a step that admits this thread opens, or the job ends. Waiting
+            // on the gate, not on current, avoids a wake-up per step. The caller has slot 0, so
+            // every step runs.
+            uint32_t t = s;
+            while (t < n && !g.admits(t, slot)) ++t;
+            for (;;) {
+                uint32_t seen = g.gate.load(std::memory_order_acquire);
+                if (g.current.load(std::memory_order_acquire) >= t) break;
+                WaitOnAddress(&g.gate, &seen, sizeof seen, INFINITE);
+            }
+            continue;
+        }
         const uint32_t i = g.next[s].fetch_add(1, std::memory_order_acq_rel);
         if (i < g.spans[s].count) {
             const Error e = runTask(g.spans[s].tasks[i]);
             if (e != Error::Success) g.fail(s, i, e, detailFor(e));
             if (g.remaining[s].fetch_sub(1, std::memory_order_acq_rel) == 1) {
                 // Last chunk of the step: open the next one (or end the job after a failure).
-                g.current.store(g.abort.load() ? n : s + 1, std::memory_order_release);
+                const uint32_t to = g.abort.load() ? n : s + 1;
+                g.current.store(to, std::memory_order_release);
                 WakeByAddressAll(&g.current);
+                const uint32_t was = g.spans[s].threads, now = to < n ? g.spans[to].threads : 0;
+                if (to == n || (was && (!now || now > was))) {  // threads sleeping on the gate may be admitted
+                    g.gate.fetch_add(1, std::memory_order_acq_rel);
+                    WakeByAddressAll(&g.gate);
+                }
             }
             continue;
         }
@@ -286,11 +310,11 @@ void WorkerPool::work(Group& g) const {
     }
 }
 
-void WorkerPool::loop() {
+void WorkerPool::loop(uint32_t slot) {
     for (;;) {
         uint32_t seen = epoch_.load(std::memory_order_acquire);  // before looking for work
-        if (auto g = grab()) {
-            work(*g);
+        if (auto g = grab(slot)) {
+            work(*g, slot);
             continue;
         }
         if (stopping_.load()) return;
@@ -299,14 +323,14 @@ void WorkerPool::loop() {
     }
 }
 
-Error WorkerPool::run(const std::vector<Stream::Task>& tasks) {
+Error WorkerPool::run(const std::vector<Stream::Task>& tasks, unsigned threads) {
     if (tasks.empty()) return Error::Success;
     if (tasks.size() == 1) {  // nothing to share: run inline, wake nobody
         const Error e = runTask(tasks[0]);
         if (e != Error::Success) detail::setDetail(std::format("chunk 0: {}", detailFor(e)));
         return e;
     }
-    const Step one{tasks.data(), tasks.size()};
+    const Step one{tasks.data(), tasks.size(), threads};
     return runSteps(std::span(&one, 1), nullptr);
 }
 
@@ -314,8 +338,15 @@ Error WorkerPool::runSteps(std::span<const Step> steps, size_t* failed_step) {
     auto gp = std::make_shared<Group>();
     Group& g = *gp;
     for (size_t k = 0; k < steps.size(); ++k)
-        if (steps[k].count) g.spans.push_back({steps[k].tasks, static_cast<uint32_t>(steps[k].count), k});
+        if (steps[k].count) g.spans.push_back({steps[k].tasks, static_cast<uint32_t>(steps[k].count), k, steps[k].threads});
     if (g.spans.empty()) return Error::Success;
+    for (const auto& sp : g.spans) {
+        if (!sp.threads) {
+            g.widest = 0;
+            break;
+        }
+        g.widest = std::max(g.widest, sp.threads);
+    }
     g.next = std::make_unique<std::atomic<uint32_t>[]>(g.spans.size());
     g.remaining = std::make_unique<std::atomic<uint32_t>[]>(g.spans.size());
     for (size_t k = 0; k < g.spans.size(); ++k) {
@@ -328,7 +359,7 @@ Error WorkerPool::runSteps(std::span<const Step> steps, size_t* failed_step) {
     }
     epoch_.fetch_add(1, std::memory_order_acq_rel);
     WakeByAddressAll(&epoch_);  // one call wakes every sleeping worker
-    work(g);                    // the caller runs chunks too; returns when the job is done
+    work(g, 0);                 // the caller runs chunks too; returns when the job is done
     {
         std::lock_guard lk(mutex_);
         active_.erase(std::find(active_.begin(), active_.end(), gp));

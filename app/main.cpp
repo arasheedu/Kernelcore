@@ -24,7 +24,7 @@ int run() {
     pcuda::DeviceProperties props{};
     if (!check(pcudaGetDeviceProperties(&props, 0), "pcudaGetDeviceProperties")) return 1;
     std::printf("device 0      : %s\n", props.name);
-    std::printf("workers       : %u\n", props.worker_count);
+    std::printf("workers       : %u (+ caller; %u on the fastest cores)\n", props.worker_count, props.performance_workers);
     std::printf("host memory   : %.1f GiB\n", static_cast<double>(props.total_memory) / (1u << 30));
     std::printf("guard pages   : %s\n", props.guard_pages ? "on" : "off");
     std::printf("kernel stack  : %zu MiB\n", props.kernel_stack_bytes >> 20);

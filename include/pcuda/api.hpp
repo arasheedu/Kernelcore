@@ -34,6 +34,7 @@ pcuda::Error pcudaRegisterKernel(const pcuda::KernelEntry* entry) noexcept; // e
 // stream == nullptr: synchronous, returns the kernel's result. Otherwise async; errors surface at sync.
 pcuda::Error pcudaLaunchKernel(const char* name, const void* typed_args, pcudaStream_t stream = nullptr) noexcept;
 // Splits an opt-in 1-D kernel into disjoint chunks run on a worker pool. Host-side decomposition only.
+// At most `workers` threads (the caller included) run the chunks, also in a recorded graph.
 pcuda::Error pcudaLaunchKernelChunked(const char* name, const void* typed_args, unsigned workers,
                                       int64_t min_chunk = 4096, pcudaStream_t stream = nullptr) noexcept;
 

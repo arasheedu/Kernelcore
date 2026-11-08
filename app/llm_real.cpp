@@ -227,7 +227,7 @@ int run(int argc, char** argv) {
             throw std::runtime_error("pcuda init");
         pcuda::DeviceProperties pr{};
         pcudaGetDeviceProperties(&pr, 0);
-        const int r = bench_steps ? benchSteps() : benchMatvec(workers ? workers : pr.worker_count + 1);
+        const int r = bench_steps ? benchSteps() : benchMatvec(workers ? workers : pr.performance_workers);
         pcudaShutdown();
         return r;
     }
@@ -252,7 +252,7 @@ int run(int argc, char** argv) {
         throw std::runtime_error(std::string("registering kernels: ") + pcudaGetLastErrorDetail());
     pcuda::DeviceProperties props{};
     pcudaGetDeviceProperties(&props, 0);
-    if (!workers) workers = props.worker_count + 1;
+    if (!workers) workers = props.performance_workers;  // decode: bound by memory bandwidth
 
     int rc = 0;
     {

@@ -82,8 +82,9 @@ public:
 
     unsigned size() const noexcept { return static_cast<unsigned>(threads_.size()); }
     // Runs all tasks (concurrently: pool threads plus the caller) and waits. Returns the error
-    // of the lowest-index failing task, so results are deterministic.
-    Error run(const std::vector<Stream::Task>& tasks);
+    // of the lowest-index failing task, so results are deterministic. threads > 0: at most that
+    // many threads (the caller included) run the tasks.
+    Error run(const std::vector<Stream::Task>& tasks, unsigned threads = 0);
 
     // One job of several steps (a graph: one step per kernel). The tasks of a step run
     // concurrently; a step starts when the previous one has finished (a barrier, no wake-up
@@ -92,15 +93,18 @@ public:
     struct Step {
         const Stream::Task* tasks;
         size_t              count;
+        unsigned            threads = 0;  // > 0: at most this many threads (caller included) run the step
     };
     Error runSteps(std::span<const Step> steps, size_t* failed_step);
 
 private:
     struct Group;
-    void                   loop();
+    void                   loop(uint32_t slot);
     void                   stop() noexcept;
-    std::shared_ptr<Group> grab();  // a published launch with chunks left to claim
-    void                   work(Group& g) const;
+    std::shared_ptr<Group> grab(uint32_t slot);  // a published launch with chunks left that admits slot
+    // Slots are fixed: 0 = the caller, pool thread i = i + 1. So the threads of capped (narrow)
+    // steps are always the same ones, and the scheduler keeps them on the same cores.
+    void                   work(Group& g, uint32_t slot) const;
 
     std::mutex                          mutex_;   // guards active_ only
     std::vector<std::shared_ptr<Group>> active_;  // launches in progress (one per calling stream)

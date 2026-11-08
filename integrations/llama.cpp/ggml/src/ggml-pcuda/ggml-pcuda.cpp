@@ -41,13 +41,15 @@ namespace {
 
 struct PcudaRuntime {
     bool     ok = false;
-    unsigned workers = 1;
+    unsigned workers = 1;          // pool threads + caller: compute-bound batched matmuls use them all
+    unsigned fast_workers = 1;     // the fastest cores' logical processors: every other (bandwidth-bound) launch
     bool     graphs = true;
     bool     disabled = false;     // GGML_PCUDA_DISABLE=1: claim nothing (CPU-only comparisons)
     bool     matmul_only = false;  // GGML_PCUDA_MATMUL_ONLY=1: only MUL_MAT (the first prototype)
     bool     matvec_cols = false;  // GGML_PCUDA_MATVEC_COLS=1: one matvec per column for batches (no matmul kernel)
     int      row_block = 8;        // GGML_PCUDA_ROW_BLOCK: 8-row groups per matmul block (cache blocking)
     int      tile = 8;             // GGML_PCUDA_TILE=4 or 8: columns per matmul thread (batches of <= 4 use 4)
+    int      matmul_chunks = 4;    // GGML_PCUDA_MATMUL_CHUNKS: chunk factor for batched matmuls (fast cores take more chunks)
 };
 
 PcudaRuntime & runtime() {
@@ -64,6 +66,7 @@ PcudaRuntime & runtime() {
         pcuda::DeviceProperties p{};
         pcudaGetDeviceProperties(&p, 0);
         r.workers = p.worker_count + 1;
+        r.fast_workers = std::max(1u, p.performance_workers);
         const char * g = std::getenv("GGML_PCUDA_GRAPHS");
         r.graphs = !(g && std::strcmp(g, "0") == 0);
         const char * off = std::getenv("GGML_PCUDA_DISABLE");
@@ -73,9 +76,11 @@ PcudaRuntime & runtime() {
         const char * mc = std::getenv("GGML_PCUDA_MATVEC_COLS");
         r.matvec_cols = mc && std::strcmp(mc, "1") == 0;
         if (const char * rb = std::getenv("GGML_PCUDA_ROW_BLOCK")) r.row_block = std::max(1, std::atoi(rb));
+        if (const char * mc = std::getenv("GGML_PCUDA_MATMUL_CHUNKS")) r.matmul_chunks = std::clamp(std::atoi(mc), 1, 16);
         if (const char * tl = std::getenv("GGML_PCUDA_TILE")) r.tile = std::atoi(tl) == 4 ? 4 : 8;
         r.ok = true;
-        GGML_LOG_INFO("pcuda: %s, pool of %u threads + caller, graphs %s\n", p.name, p.worker_count, r.graphs ? "on" : "off");
+        GGML_LOG_INFO("pcuda: %s, pool of %u threads + caller (%u for bandwidth-bound launches), graphs %s\n", p.name,
+                      p.worker_count, r.fast_workers, r.graphs ? "on" : "off");
         return r;
     }();
     return rt;
@@ -311,9 +316,9 @@ bool begin(BackendCtx & ctx) {  // start recording (graphs on) with an empty scr
 }
 
 template <class Args>
-bool launch(BackendCtx & ctx, const char * kernel, const Args & a, int64_t min_chunk) {
+bool launch(BackendCtx & ctx, const char * kernel, const Args & a, int64_t min_chunk, unsigned workers = 0) {
     const double t0 = ctx.profile && !ctx.capturing ? now() : 0;
-    const pcuda::Error e = min_chunk ? pcudaLaunchKernelChunked(kernel, &a, runtime().workers, min_chunk)
+    const pcuda::Error e = min_chunk ? pcudaLaunchKernelChunked(kernel, &a, workers ? workers : runtime().fast_workers, min_chunk)
                                      : pcudaLaunchKernel(kernel, &a);
     if (e != pcuda::Error::Success) {
         GGML_LOG_ERROR("pcuda: %s failed: %s\n", kernel, pcudaGetLastErrorDetail());
@@ -421,7 +426,7 @@ bool mul_mat(BackendCtx & ctx, ggml_tensor * dst) {
         const char * kernel = runtime().tile == 8 && ncols > 4 ? (q4 ? "matmul_q4k_q8x8" : "matmul_q6k_q8x8") : (q4 ? "matmul_q4k_q8x4" : "matmul_q6k_q8x4");
         const llm::MatmulKQ8Args a{static_cast<const int *>(w->data), base, static_cast<float *>(dst->data), dims,
                                    rows, k, int(ncols), runtime().row_block};
-        return launch(ctx, kernel, a, 16);
+        return launch(ctx, kernel, a, 16, runtime().workers * unsigned(runtime().matmul_chunks));
     }
     const char * kernel = w->type == GGML_TYPE_Q4_K ? "matvec_q4k_q8" : "matvec_q6k_q8";
     for (int64_t c = 0; c < ncols; ++c) {

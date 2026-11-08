@@ -7,8 +7,11 @@
 
 #include <pcuda/kernels.hpp>
 
+#include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cstdint>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -32,6 +35,46 @@ TEST_CASE(planner_covers_exactly_and_respects_limits) {
     CHECK(pcuda::planChunks(0, 4, 64).empty());
     CHECK(!pcuda::chunksCoverExactly({{0, 10}, {9, 5}}, 14));   // overlap
     CHECK(!pcuda::chunksCoverExactly({{0, 10}, {11, 5}}, 16));  // gap
+}
+
+TEST_CASE(pool_steps_respect_their_thread_caps) {
+    pcuda::WorkerPool pool(7, 1 << 20);
+    constexpr int kTasks = 64;
+    struct Log {
+        std::mutex                   m;
+        std::vector<std::thread::id> ids;
+        int                          runs = 0;
+    };
+    // Tasks that last long enough for every pool thread to join; each records its thread.
+    auto make = [](Log& log) {
+        std::vector<pcuda::Stream::Task> t;
+        for (int i = 0; i < kTasks; ++i)
+            t.push_back([&log]() -> Error {
+                std::this_thread::sleep_for(std::chrono::microseconds(300));
+                std::lock_guard lk(log.m);
+                ++log.runs;
+                if (std::find(log.ids.begin(), log.ids.end(), std::this_thread::get_id()) == log.ids.end())
+                    log.ids.push_back(std::this_thread::get_id());
+                return Error::Success;
+            });
+        return t;
+    };
+    for (unsigned cap : {1u, 2u, 5u}) {
+        Log log;
+        CHECK_OK(pool.run(make(log), cap));
+        CHECK(log.runs == kTasks);
+        CHECK(log.ids.size() <= cap);
+    }
+    // A job of steps with different caps (a graph): each step keeps its own cap.
+    Log a, b, c;
+    const auto ta = make(a), tb = make(b), tc = make(c);
+    const pcuda::WorkerPool::Step steps[] = {{ta.data(), ta.size(), 1}, {tb.data(), tb.size(), 0}, {tc.data(), tc.size(), 3}};
+    CHECK_OK(pool.runSteps(steps, nullptr));
+    CHECK(a.runs == kTasks && b.runs == kTasks && c.runs == kTasks);
+    CHECK(a.ids.size() == 1);
+    CHECK(a.ids[0] == std::this_thread::get_id());  // a cap of 1 leaves the step to the caller
+    CHECK(b.ids.size() > 1);                        // uncapped: the pool joins in
+    CHECK(c.ids.size() <= 3);
 }
 
 TEST_CASE(chunked_vector_add_matches_serial_reference) {

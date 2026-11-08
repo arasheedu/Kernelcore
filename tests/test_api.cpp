@@ -40,6 +40,7 @@ TEST_CASE(device_properties_identify_cpu_backend) {
     CHECK(!p.is_hardware_gpu);
     CHECK(std::strstr(p.name, "CPU") != nullptr);
     CHECK(p.worker_count >= 1);
+    CHECK(p.performance_workers >= 1 && p.performance_workers <= p.worker_count + 1);
     CHECK(p.total_memory > 0);
     CHECK(p.kernel_stack_bytes >= 1024 * 1024);
     CHECK_ERR(pcudaGetDeviceProperties(&p, 1), Error::InvalidDevice);

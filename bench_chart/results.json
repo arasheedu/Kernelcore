@@ -6,8 +6,8 @@
                    "graphics":  "NVIDIA GeForce RTX 4060, 8 GB, driver 610.88",
                    "os":  "Windows 11 Home (build 26300)",
                    "computer":  "ASRock B760M-C R2.0",
-                   "pcuda":  "4afc0ce",
-                   "date":  "2026-11-09 02:57"
+                   "pcuda":  "944a356",
+                   "date":  "2026-11-09 08:24"
                },
     "settings":  {
                      "model":  "C:\\Users\\uaras\\.ollama\\models\\blobs\\sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff",
@@ -53,7 +53,7 @@
                  "cpu":  {
                              "model_size":  2011539712,
                              "model_type":  "llama 3B Q4_K - Medium",
-                             "build_commit":  "ce58ef4a4",
+                             "build_commit":  "c2eb060b2",
                              "cpu_info":  "pcuda: CUDA C kernels on CPU cores (Q4_K/Q6_K matmul), 13th Gen Intel(R) Core(TM) i5-13400F",
                              "model_n_params":  3212749888,
                              "gpu_info":  ""
@@ -61,7 +61,7 @@
                  "pcuda":  {
                                "model_size":  2011539712,
                                "model_type":  "llama 3B Q4_K - Medium",
-                               "build_commit":  "ce58ef4a4",
+                               "build_commit":  "c2eb060b2",
                                "cpu_info":  "pcuda: CUDA C kernels on CPU cores (Q4_K/Q6_K matmul), 13th Gen Intel(R) Core(TM) i5-13400F",
                                "model_n_params":  3212749888,
                                "gpu_info":  ""
@@ -80,11 +80,11 @@
                  "same_words":  10,
                  "words":  [
                                181,
-                               191
+                               183
                            ],
                  "replies":  {
                                  "cpu":  "The sky appears blue due to a phenomenon called **Rayleigh scattering**, which is a type of light scattering that occurs when light interacts with particles much smaller than the wavelength of the light itself.\n\nHere\u0027s a simplified explanation:\n\n1. **Sunlight and the Atmosphere**: Sunlight, which appears white, is actually a mixture of all the colors of the visible spectrum (red, orange, yellow, green, blue, indigo, violet). When sunlight enters Earth\u0027s atmosphere, it interacts with molecules and small particles in the air, such as nitrogen and oxygen.\n\n2. **Scattering of Light**: Light waves scatter when they collide with particles in the atmosphere. However, the amount of scattering depends on the **wavelength** of the light. Shorter wavelengths (like blue and violet) scatter more easily than longer wavelengths (like red and yellow).\n\n3. **Blue Light Dominance**: Blue light (with a wavelength of about 400–450 nm) scatters more than red light (about 620–750 nm). This scattered blue light comes from all directions in the atmosphere, making the sky appear blue to our eyes.\n\n4. **Why Not Violet?**: Although violet light scatters even more than blue",
-                                 "pcuda":  "The sky appears blue due to a phenomenon called **Rayleigh scattering**. Here\u0027s a simple explanation:\n\n1. **Sunlight and the Atmosphere**: Sunlight, or white light, is made up of many colors, each with different wavelengths. When sunlight enters Earth\u0027s atmosphere, it interacts with gas molecules and small particles in the air.\n\n2. **Scattering of Light**: Light scatters when it collides with particles in the atmosphere. Shorter wavelengths (like blue and violet) scatter more easily than longer wavelengths (like red and yellow). This is called **Rayleigh scattering**.\n\n3. **Why Blue, Not Violet?**: Although violet light scatters even more than blue, our eyes are more sensitive to blue light, and the sun emits more blue light than violet. Also, some of the violet light is absorbed by the upper atmosphere, so we perceive the sky as blue rather than violet.\n\n4. **Time of Day and Color Changes**: During sunrise or sunset, the sunlight has to pass through more atmosphere, so the blue light is scattered away, leaving the longer wavelengths (reds, oranges, yellows) to dominate, which is why the sky appears reddish or orange at those times.\n\nIn summary, the blue color of the"
+                                 "pcuda":  "The sky appears blue due to a phenomenon called **Rayleigh scattering**. Here\u0027s a simple explanation:\n\n### 1. **Sunlight and the Atmosphere**  \nSunlight, or white light, is made up of many colors, each with different wavelengths. When sunlight enters Earth\u0027s atmosphere, it interacts with gas molecules and small particles in the air.\n\n### 2. **Scattering of Light**  \nThe molecules in the atmosphere (like nitrogen and oxygen) scatter light in all directions. However, **shorter wavelengths** (like blue and violet) are scattered much more than longer wavelengths (like red or yellow). This is called **Rayleigh scattering**.\n\n### 3. **Why Blue, Not Violet?**  \nAlthough violet light has an even shorter wavelength than blue and is scattered more, our eyes are **more sensitive to blue light** and the **sun emits more blue light** than violet. Also, some of the violet light is absorbed by the upper atmosphere. So, we perceive the sky as **blue** rather than violet.\n\n### 4. **During Sunrise or Sunset**  \nAt sunrise or sunset, the sunlight has to pass through more of the atmosphere. This scatters out most of the blue light, leaving the longer"
                              }
              },
     "kernels":  {
@@ -96,521 +96,521 @@
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "pp32",
-                        "avg_ts":  111.052917,
-                        "stddev_ts":  1.750151
+                        "avg_ts":  116.620354,
+                        "stddev_ts":  6.759993
                     },
                     {
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "pp128",
-                        "avg_ts":  123.381012,
-                        "stddev_ts":  2.625273
+                        "avg_ts":  124.586993,
+                        "stddev_ts":  3.020168
                     },
                     {
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "pp512",
-                        "avg_ts":  117.859342,
-                        "stddev_ts":  1.273791
+                        "avg_ts":  119.221425,
+                        "stddev_ts":  1.790734
                     },
                     {
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "tg64",
-                        "avg_ts":  27.767779,
-                        "stddev_ts":  0.116959
+                        "avg_ts":  28.043083,
+                        "stddev_ts":  0.073576
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "pp32",
-                        "avg_ts":  207.028736,
-                        "stddev_ts":  2.676096
+                        "avg_ts":  209.615037,
+                        "stddev_ts":  0.236739
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "pp128",
-                        "avg_ts":  238.723994,
-                        "stddev_ts":  0.879099
+                        "avg_ts":  236.788879,
+                        "stddev_ts":  0.717215
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "pp512",
-                        "avg_ts":  230.893165,
-                        "stddev_ts":  0.369633
+                        "avg_ts":  229.10152,
+                        "stddev_ts":  1.246214
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "tg64",
-                        "avg_ts":  29.032999,
-                        "stddev_ts":  0.189234
+                        "avg_ts":  31.658697,
+                        "stddev_ts":  0.176415
                     },
                     {
                         "backend":  "gpu",
                         "round":  1,
                         "test":  "pp32",
-                        "avg_ts":  2278.125489,
-                        "stddev_ts":  318.914626
+                        "avg_ts":  2250.416185,
+                        "stddev_ts":  332.731568
                     },
                     {
                         "backend":  "gpu",
                         "round":  1,
                         "test":  "pp128",
-                        "avg_ts":  4998.540503,
-                        "stddev_ts":  316.804207
+                        "avg_ts":  4768.98655,
+                        "stddev_ts":  118.966105
                     },
                     {
                         "backend":  "gpu",
                         "round":  1,
                         "test":  "pp512",
-                        "avg_ts":  5941.778626,
-                        "stddev_ts":  122.431653
+                        "avg_ts":  6028.268653,
+                        "stddev_ts":  131.09413
                     },
                     {
                         "backend":  "gpu",
                         "round":  1,
                         "test":  "tg64",
-                        "avg_ts":  111.068687,
-                        "stddev_ts":  0.178078
+                        "avg_ts":  111.174817,
+                        "stddev_ts":  0.064978
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "kern tg1",
-                        "avg_ts":  31.4,
+                        "avg_ts":  36.8,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcudagpu",
                         "round":  1,
-                        "test":  "kern tg1",
-                        "avg_ts":  55.4,
-                        "stddev_ts":  0
-                    },
-                    {
-                        "backend":  "pcuda",
-                        "round":  1,
-                        "test":  "kern pp32",
-                        "avg_ts":  220.8,
-                        "stddev_ts":  0
-                    },
-                    {
-                        "backend":  "pcudagpu",
-                        "round":  1,
-                        "test":  "kern pp32",
-                        "avg_ts":  724.4,
-                        "stddev_ts":  0
-                    },
-                    {
-                        "backend":  "pcuda",
-                        "round":  1,
-                        "test":  "kern pp128",
-                        "avg_ts":  258.7,
-                        "stddev_ts":  0
-                    },
-                    {
-                        "backend":  "pcudagpu",
-                        "round":  1,
-                        "test":  "kern pp128",
-                        "avg_ts":  930.3,
-                        "stddev_ts":  0
-                    },
-                    {
-                        "backend":  "pcuda",
-                        "round":  1,
-                        "test":  "kern pp512",
-                        "avg_ts":  275.6,
-                        "stddev_ts":  0
-                    },
-                    {
-                        "backend":  "pcudagpu",
-                        "round":  1,
-                        "test":  "kern pp512",
-                        "avg_ts":  1002.9,
-                        "stddev_ts":  0
-                    },
-                    {
-                        "backend":  "cpu",
-                        "round":  1,
-                        "test":  "chat reply",
-                        "avg_ts":  11.144380120733407,
-                        "stddev_ts":  0,
-                        "prompt_n":  14,
-                        "predicted_n":  256,
-                        "seconds":  23.3648182
-                    },
-                    {
-                        "backend":  "cpu",
-                        "round":  1,
-                        "test":  "chat prompt",
-                        "avg_ts":  29.1082076829035,
-                        "stddev_ts":  0,
-                        "prompt_n":  14,
-                        "predicted_n":  256,
-                        "seconds":  23.3648182
-                    },
-                    {
-                        "backend":  "cpu",
-                        "round":  1,
-                        "test":  "chat reply",
-                        "avg_ts":  11.560179506467376,
-                        "stddev_ts":  0,
-                        "prompt_n":  14,
-                        "predicted_n":  256,
-                        "seconds":  22.5058301
-                    },
-                    {
-                        "backend":  "cpu",
-                        "round":  1,
-                        "test":  "chat prompt",
-                        "avg_ts":  32.111712058865358,
-                        "stddev_ts":  0,
-                        "prompt_n":  14,
-                        "predicted_n":  256,
-                        "seconds":  22.5058301
-                    },
-                    {
-                        "backend":  "cpu",
-                        "round":  1,
-                        "test":  "chat reply",
-                        "avg_ts":  11.564126049336734,
-                        "stddev_ts":  0,
-                        "prompt_n":  14,
-                        "predicted_n":  256,
-                        "seconds":  22.5027923
-                    },
-                    {
-                        "backend":  "cpu",
-                        "round":  1,
-                        "test":  "chat prompt",
-                        "avg_ts":  31.481685529443247,
-                        "stddev_ts":  0,
-                        "prompt_n":  14,
-                        "predicted_n":  256,
-                        "seconds":  22.5027923
-                    },
-                    {
-                        "backend":  "pcuda",
-                        "round":  1,
-                        "test":  "chat reply",
-                        "avg_ts":  12.43741298688326,
-                        "stddev_ts":  0,
-                        "prompt_n":  14,
-                        "predicted_n":  256,
-                        "seconds":  20.7018804
-                    },
-                    {
-                        "backend":  "pcuda",
-                        "round":  1,
-                        "test":  "chat prompt",
-                        "avg_ts":  70.894331998156744,
-                        "stddev_ts":  0,
-                        "prompt_n":  14,
-                        "predicted_n":  256,
-                        "seconds":  20.7018804
-                    },
-                    {
-                        "backend":  "pcuda",
-                        "round":  1,
-                        "test":  "chat reply",
-                        "avg_ts":  12.261235282430585,
-                        "stddev_ts":  0,
-                        "prompt_n":  14,
-                        "predicted_n":  256,
-                        "seconds":  21.0090729
-                    },
-                    {
-                        "backend":  "pcuda",
-                        "round":  1,
-                        "test":  "chat prompt",
-                        "avg_ts":  69.911910992149885,
-                        "stddev_ts":  0,
-                        "prompt_n":  14,
-                        "predicted_n":  256,
-                        "seconds":  21.0090729
-                    },
-                    {
-                        "backend":  "pcuda",
-                        "round":  1,
-                        "test":  "chat reply",
-                        "avg_ts":  12.167845261654961,
-                        "stddev_ts":  0,
-                        "prompt_n":  14,
-                        "predicted_n":  256,
-                        "seconds":  21.1834928
-                    },
-                    {
-                        "backend":  "pcuda",
-                        "round":  1,
-                        "test":  "chat prompt",
-                        "avg_ts":  62.309732780260269,
-                        "stddev_ts":  0,
-                        "prompt_n":  14,
-                        "predicted_n":  256,
-                        "seconds":  21.1834928
-                    },
-                    {
-                        "backend":  "cpu",
-                        "round":  2,
-                        "test":  "pp32",
-                        "avg_ts":  115.093244,
-                        "stddev_ts":  2.778568
-                    },
-                    {
-                        "backend":  "cpu",
-                        "round":  2,
-                        "test":  "pp128",
-                        "avg_ts":  125.119387,
-                        "stddev_ts":  0.230836
-                    },
-                    {
-                        "backend":  "cpu",
-                        "round":  2,
-                        "test":  "pp512",
-                        "avg_ts":  123.385948,
-                        "stddev_ts":  1.115571
-                    },
-                    {
-                        "backend":  "cpu",
-                        "round":  2,
-                        "test":  "tg64",
-                        "avg_ts":  27.812224,
-                        "stddev_ts":  0.17542
-                    },
-                    {
-                        "backend":  "pcuda",
-                        "round":  2,
-                        "test":  "pp32",
-                        "avg_ts":  207.372303,
-                        "stddev_ts":  4.749424
-                    },
-                    {
-                        "backend":  "pcuda",
-                        "round":  2,
-                        "test":  "pp128",
-                        "avg_ts":  237.039692,
-                        "stddev_ts":  2.279958
-                    },
-                    {
-                        "backend":  "pcuda",
-                        "round":  2,
-                        "test":  "pp512",
-                        "avg_ts":  230.84669,
-                        "stddev_ts":  0.295731
-                    },
-                    {
-                        "backend":  "pcuda",
-                        "round":  2,
-                        "test":  "tg64",
-                        "avg_ts":  29.109508,
-                        "stddev_ts":  0.065814
-                    },
-                    {
-                        "backend":  "gpu",
-                        "round":  2,
-                        "test":  "pp32",
-                        "avg_ts":  2342.627967,
-                        "stddev_ts":  199.333964
-                    },
-                    {
-                        "backend":  "gpu",
-                        "round":  2,
-                        "test":  "pp128",
-                        "avg_ts":  5044.129773,
-                        "stddev_ts":  189.390952
-                    },
-                    {
-                        "backend":  "gpu",
-                        "round":  2,
-                        "test":  "pp512",
-                        "avg_ts":  5942.880069,
-                        "stddev_ts":  75.816342
-                    },
-                    {
-                        "backend":  "gpu",
-                        "round":  2,
-                        "test":  "tg64",
-                        "avg_ts":  111.293294,
-                        "stddev_ts":  0.253671
-                    },
-                    {
-                        "backend":  "pcuda",
-                        "round":  2,
-                        "test":  "kern tg1",
-                        "avg_ts":  32,
-                        "stddev_ts":  0
-                    },
-                    {
-                        "backend":  "pcudagpu",
-                        "round":  2,
                         "test":  "kern tg1",
                         "avg_ts":  54.5,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcuda",
+                        "round":  1,
+                        "test":  "kern pp32",
+                        "avg_ts":  223.8,
+                        "stddev_ts":  0
+                    },
+                    {
+                        "backend":  "pcudagpu",
+                        "round":  1,
+                        "test":  "kern pp32",
+                        "avg_ts":  720.5,
+                        "stddev_ts":  0
+                    },
+                    {
+                        "backend":  "pcuda",
+                        "round":  1,
+                        "test":  "kern pp128",
+                        "avg_ts":  257.1,
+                        "stddev_ts":  0
+                    },
+                    {
+                        "backend":  "pcudagpu",
+                        "round":  1,
+                        "test":  "kern pp128",
+                        "avg_ts":  931.4,
+                        "stddev_ts":  0
+                    },
+                    {
+                        "backend":  "pcuda",
+                        "round":  1,
+                        "test":  "kern pp512",
+                        "avg_ts":  276.7,
+                        "stddev_ts":  0
+                    },
+                    {
+                        "backend":  "pcudagpu",
+                        "round":  1,
+                        "test":  "kern pp512",
+                        "avg_ts":  1000.4,
+                        "stddev_ts":  0
+                    },
+                    {
+                        "backend":  "cpu",
+                        "round":  1,
+                        "test":  "chat reply",
+                        "avg_ts":  11.516848426622364,
+                        "stddev_ts":  0,
+                        "prompt_n":  14,
+                        "predicted_n":  256,
+                        "seconds":  22.580783999999998
+                    },
+                    {
+                        "backend":  "cpu",
+                        "round":  1,
+                        "test":  "chat prompt",
+                        "avg_ts":  32.004974487463194,
+                        "stddev_ts":  0,
+                        "prompt_n":  14,
+                        "predicted_n":  256,
+                        "seconds":  22.580783999999998
+                    },
+                    {
+                        "backend":  "cpu",
+                        "round":  1,
+                        "test":  "chat reply",
+                        "avg_ts":  11.512822326856972,
+                        "stddev_ts":  0,
+                        "prompt_n":  14,
+                        "predicted_n":  256,
+                        "seconds":  22.5854991
+                    },
+                    {
+                        "backend":  "cpu",
+                        "round":  1,
+                        "test":  "chat prompt",
+                        "avg_ts":  32.979898751710834,
+                        "stddev_ts":  0,
+                        "prompt_n":  14,
+                        "predicted_n":  256,
+                        "seconds":  22.5854991
+                    },
+                    {
+                        "backend":  "cpu",
+                        "round":  1,
+                        "test":  "chat reply",
+                        "avg_ts":  11.501109992421444,
+                        "stddev_ts":  0,
+                        "prompt_n":  14,
+                        "predicted_n":  256,
+                        "seconds":  22.589725299999998
+                    },
+                    {
+                        "backend":  "cpu",
+                        "round":  1,
+                        "test":  "chat prompt",
+                        "avg_ts":  33.648184199774079,
+                        "stddev_ts":  0,
+                        "prompt_n":  14,
+                        "predicted_n":  256,
+                        "seconds":  22.589725299999998
+                    },
+                    {
+                        "backend":  "pcuda",
+                        "round":  1,
+                        "test":  "chat reply",
+                        "avg_ts":  13.871556243367154,
+                        "stddev_ts":  0,
+                        "prompt_n":  14,
+                        "predicted_n":  256,
+                        "seconds":  18.5732325
+                    },
+                    {
+                        "backend":  "pcuda",
+                        "round":  1,
+                        "test":  "chat prompt",
+                        "avg_ts":  74.276073554534563,
+                        "stddev_ts":  0,
+                        "prompt_n":  14,
+                        "predicted_n":  256,
+                        "seconds":  18.5732325
+                    },
+                    {
+                        "backend":  "pcuda",
+                        "round":  1,
+                        "test":  "chat reply",
+                        "avg_ts":  13.752550626239922,
+                        "stddev_ts":  0,
+                        "prompt_n":  14,
+                        "predicted_n":  256,
+                        "seconds":  18.7455846
+                    },
+                    {
+                        "backend":  "pcuda",
+                        "round":  1,
+                        "test":  "chat prompt",
+                        "avg_ts":  72.8957850615709,
+                        "stddev_ts":  0,
+                        "prompt_n":  14,
+                        "predicted_n":  256,
+                        "seconds":  18.7455846
+                    },
+                    {
+                        "backend":  "pcuda",
+                        "round":  1,
+                        "test":  "chat reply",
+                        "avg_ts":  13.659786883754784,
+                        "stddev_ts":  0,
+                        "prompt_n":  14,
+                        "predicted_n":  256,
+                        "seconds":  18.8872571
+                    },
+                    {
+                        "backend":  "pcuda",
+                        "round":  1,
+                        "test":  "chat prompt",
+                        "avg_ts":  64.419647992637749,
+                        "stddev_ts":  0,
+                        "prompt_n":  14,
+                        "predicted_n":  256,
+                        "seconds":  18.8872571
+                    },
+                    {
+                        "backend":  "cpu",
+                        "round":  2,
+                        "test":  "pp32",
+                        "avg_ts":  111.820338,
+                        "stddev_ts":  1.811758
+                    },
+                    {
+                        "backend":  "cpu",
+                        "round":  2,
+                        "test":  "pp128",
+                        "avg_ts":  122.495733,
+                        "stddev_ts":  2.365707
+                    },
+                    {
+                        "backend":  "cpu",
+                        "round":  2,
+                        "test":  "pp512",
+                        "avg_ts":  120.588714,
+                        "stddev_ts":  1.114467
+                    },
+                    {
+                        "backend":  "cpu",
+                        "round":  2,
+                        "test":  "tg64",
+                        "avg_ts":  27.997401,
+                        "stddev_ts":  0.093991
+                    },
+                    {
+                        "backend":  "pcuda",
+                        "round":  2,
+                        "test":  "pp32",
+                        "avg_ts":  207.832854,
+                        "stddev_ts":  1.626914
+                    },
+                    {
+                        "backend":  "pcuda",
+                        "round":  2,
+                        "test":  "pp128",
+                        "avg_ts":  236.989473,
+                        "stddev_ts":  1.339587
+                    },
+                    {
+                        "backend":  "pcuda",
+                        "round":  2,
+                        "test":  "pp512",
+                        "avg_ts":  229.124543,
+                        "stddev_ts":  1.278163
+                    },
+                    {
+                        "backend":  "pcuda",
+                        "round":  2,
+                        "test":  "tg64",
+                        "avg_ts":  31.370836,
+                        "stddev_ts":  0.224794
+                    },
+                    {
+                        "backend":  "gpu",
+                        "round":  2,
+                        "test":  "pp32",
+                        "avg_ts":  2331.186572,
+                        "stddev_ts":  190.496069
+                    },
+                    {
+                        "backend":  "gpu",
+                        "round":  2,
+                        "test":  "pp128",
+                        "avg_ts":  4738.504958,
+                        "stddev_ts":  100.229539
+                    },
+                    {
+                        "backend":  "gpu",
+                        "round":  2,
+                        "test":  "pp512",
+                        "avg_ts":  6094.656897,
+                        "stddev_ts":  41.097397
+                    },
+                    {
+                        "backend":  "gpu",
+                        "round":  2,
+                        "test":  "tg64",
+                        "avg_ts":  111.104441,
+                        "stddev_ts":  0.368066
+                    },
+                    {
+                        "backend":  "pcuda",
+                        "round":  2,
+                        "test":  "kern tg1",
+                        "avg_ts":  29.8,
+                        "stddev_ts":  0
+                    },
+                    {
+                        "backend":  "pcudagpu",
+                        "round":  2,
+                        "test":  "kern tg1",
+                        "avg_ts":  54.9,
+                        "stddev_ts":  0
+                    },
+                    {
+                        "backend":  "pcuda",
                         "round":  2,
                         "test":  "kern pp32",
-                        "avg_ts":  221,
+                        "avg_ts":  225.5,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcudagpu",
                         "round":  2,
                         "test":  "kern pp32",
-                        "avg_ts":  723.3,
+                        "avg_ts":  719.7,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "kern pp128",
-                        "avg_ts":  253.9,
+                        "avg_ts":  263.5,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcudagpu",
                         "round":  2,
                         "test":  "kern pp128",
-                        "avg_ts":  931.2,
+                        "avg_ts":  929.4,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "kern pp512",
-                        "avg_ts":  276.1,
+                        "avg_ts":  275.8,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcudagpu",
                         "round":  2,
                         "test":  "kern pp512",
-                        "avg_ts":  1004,
+                        "avg_ts":  1002.2,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "chat reply",
-                        "avg_ts":  11.07901142545863,
+                        "avg_ts":  11.65309796695483,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  23.4872986
+                        "seconds":  22.300243599999998
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "chat prompt",
-                        "avg_ts":  29.878331167154325,
+                        "avg_ts":  33.673678007480369,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  23.4872986
+                        "seconds":  22.300243599999998
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "chat reply",
-                        "avg_ts":  11.622211933905986,
+                        "avg_ts":  11.609927735712152,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.3469485
+                        "seconds":  22.4043678
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "chat prompt",
-                        "avg_ts":  35.518841476873433,
+                        "avg_ts":  32.682637582231848,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.3469485
+                        "seconds":  22.4043678
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "chat reply",
-                        "avg_ts":  11.592279614512606,
+                        "avg_ts":  11.62453729213105,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.4235158
+                        "seconds":  22.3616729
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "chat prompt",
-                        "avg_ts":  32.997932915202384,
+                        "avg_ts":  33.06784577156732,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.4235158
+                        "seconds":  22.3616729
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "chat reply",
-                        "avg_ts":  12.433023788421336,
+                        "avg_ts":  13.902201230928156,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  20.712505999999998
+                        "seconds":  18.5360411
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "chat prompt",
-                        "avg_ts":  69.702717908121855,
+                        "avg_ts":  73.007926574885275,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  20.712505999999998
+                        "seconds":  18.5360411
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "chat reply",
-                        "avg_ts":  12.321541795008008,
+                        "avg_ts":  13.7913764956545,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  20.9075047
+                        "seconds":  18.6907416
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "chat prompt",
-                        "avg_ts":  69.798978940650926,
+                        "avg_ts":  74.202062817346317,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  20.9075047
+                        "seconds":  18.6907416
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "chat reply",
-                        "avg_ts":  12.162691596972854,
+                        "avg_ts":  13.660324722525322,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  21.1947454
+                        "seconds":  18.886029
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "chat prompt",
-                        "avg_ts":  61.673193746338157,
+                        "avg_ts":  64.545873674504378,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  21.1947454
+                        "seconds":  18.886029
                     }
                 ]
 }

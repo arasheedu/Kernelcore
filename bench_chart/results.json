@@ -6,8 +6,8 @@
                    "graphics":  "NVIDIA GeForce RTX 4060, 8 GB, driver 610.88",
                    "os":  "Windows 11 Home (build 26300)",
                    "computer":  "ASRock B760M-C R2.0",
-                   "pcuda":  "e74922a",
-                   "date":  "2026-11-08 07:25"
+                   "pcuda":  "4afc0ce",
+                   "date":  "2026-11-09 02:57"
                },
     "settings":  {
                      "model":  "C:\\Users\\uaras\\.ollama\\models\\blobs\\sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff",
@@ -16,7 +16,7 @@
                      "reps":  3,
                      "rounds":  2,
                      "cpu_threads":  6,
-                     "pcuda_threads":  1,
+                     "pcuda_threads":  4,
                      "pcuda_batch_threads":  4
                  },
     "backends":  [
@@ -53,7 +53,7 @@
                  "cpu":  {
                              "model_size":  2011539712,
                              "model_type":  "llama 3B Q4_K - Medium",
-                             "build_commit":  "34fb5c698",
+                             "build_commit":  "ce58ef4a4",
                              "cpu_info":  "pcuda: CUDA C kernels on CPU cores (Q4_K/Q6_K matmul), 13th Gen Intel(R) Core(TM) i5-13400F",
                              "model_n_params":  3212749888,
                              "gpu_info":  ""
@@ -61,7 +61,7 @@
                  "pcuda":  {
                                "model_size":  2011539712,
                                "model_type":  "llama 3B Q4_K - Medium",
-                               "build_commit":  "34fb5c698",
+                               "build_commit":  "ce58ef4a4",
                                "cpu_info":  "pcuda: CUDA C kernels on CPU cores (Q4_K/Q6_K matmul), 13th Gen Intel(R) Core(TM) i5-13400F",
                                "model_n_params":  3212749888,
                                "gpu_info":  ""
@@ -96,521 +96,521 @@
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "pp32",
-                        "avg_ts":  110.732789,
-                        "stddev_ts":  1.622815
+                        "avg_ts":  111.052917,
+                        "stddev_ts":  1.750151
                     },
                     {
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "pp128",
-                        "avg_ts":  122.469057,
-                        "stddev_ts":  2.344673
+                        "avg_ts":  123.381012,
+                        "stddev_ts":  2.625273
                     },
                     {
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "pp512",
-                        "avg_ts":  120.647554,
-                        "stddev_ts":  2.441502
+                        "avg_ts":  117.859342,
+                        "stddev_ts":  1.273791
                     },
                     {
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "tg64",
-                        "avg_ts":  27.356622,
-                        "stddev_ts":  0.463369
+                        "avg_ts":  27.767779,
+                        "stddev_ts":  0.116959
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "pp32",
-                        "avg_ts":  198.560898,
-                        "stddev_ts":  1.476687
+                        "avg_ts":  207.028736,
+                        "stddev_ts":  2.676096
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "pp128",
-                        "avg_ts":  213.629903,
-                        "stddev_ts":  3.659234
+                        "avg_ts":  238.723994,
+                        "stddev_ts":  0.879099
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "pp512",
-                        "avg_ts":  209.352671,
-                        "stddev_ts":  2.685241
+                        "avg_ts":  230.893165,
+                        "stddev_ts":  0.369633
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "tg64",
-                        "avg_ts":  29.490989,
-                        "stddev_ts":  0.122603
+                        "avg_ts":  29.032999,
+                        "stddev_ts":  0.189234
                     },
                     {
                         "backend":  "gpu",
                         "round":  1,
                         "test":  "pp32",
-                        "avg_ts":  2274.152161,
-                        "stddev_ts":  147.75839
+                        "avg_ts":  2278.125489,
+                        "stddev_ts":  318.914626
                     },
                     {
                         "backend":  "gpu",
                         "round":  1,
                         "test":  "pp128",
-                        "avg_ts":  4985.521841,
-                        "stddev_ts":  183.117404
+                        "avg_ts":  4998.540503,
+                        "stddev_ts":  316.804207
                     },
                     {
                         "backend":  "gpu",
                         "round":  1,
                         "test":  "pp512",
-                        "avg_ts":  5865.009252,
-                        "stddev_ts":  32.131086
+                        "avg_ts":  5941.778626,
+                        "stddev_ts":  122.431653
                     },
                     {
                         "backend":  "gpu",
                         "round":  1,
                         "test":  "tg64",
-                        "avg_ts":  105.022793,
-                        "stddev_ts":  3.25899
+                        "avg_ts":  111.068687,
+                        "stddev_ts":  0.178078
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "kern tg1",
-                        "avg_ts":  26.5,
+                        "avg_ts":  31.4,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcudagpu",
                         "round":  1,
                         "test":  "kern tg1",
-                        "avg_ts":  55.2,
+                        "avg_ts":  55.4,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "kern pp32",
-                        "avg_ts":  215.4,
+                        "avg_ts":  220.8,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcudagpu",
                         "round":  1,
                         "test":  "kern pp32",
-                        "avg_ts":  723.7,
+                        "avg_ts":  724.4,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "kern pp128",
-                        "avg_ts":  251.3,
+                        "avg_ts":  258.7,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcudagpu",
                         "round":  1,
                         "test":  "kern pp128",
-                        "avg_ts":  934.9,
+                        "avg_ts":  930.3,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "kern pp512",
-                        "avg_ts":  272.7,
+                        "avg_ts":  275.6,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcudagpu",
                         "round":  1,
                         "test":  "kern pp512",
-                        "avg_ts":  1005.5,
+                        "avg_ts":  1002.9,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "chat reply",
-                        "avg_ts":  11.435038086748619,
+                        "avg_ts":  11.144380120733407,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.7472902
+                        "seconds":  23.3648182
                     },
                     {
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "chat prompt",
-                        "avg_ts":  31.49790538929161,
+                        "avg_ts":  29.1082076829035,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.7472902
+                        "seconds":  23.3648182
                     },
                     {
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "chat reply",
-                        "avg_ts":  11.311375189088489,
+                        "avg_ts":  11.560179506467376,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.991505
+                        "seconds":  22.5058301
                     },
                     {
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "chat prompt",
-                        "avg_ts":  32.152790058357319,
+                        "avg_ts":  32.111712058865358,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.991505
+                        "seconds":  22.5058301
                     },
                     {
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "chat reply",
-                        "avg_ts":  11.094179797498589,
+                        "avg_ts":  11.564126049336734,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  23.4425587
+                        "seconds":  22.5027923
                     },
                     {
                         "backend":  "cpu",
                         "round":  1,
                         "test":  "chat prompt",
-                        "avg_ts":  30.896756281972625,
+                        "avg_ts":  31.481685529443247,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  23.4425587
+                        "seconds":  22.5027923
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "chat reply",
-                        "avg_ts":  9.6884730385182927,
+                        "avg_ts":  12.43741298688326,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  26.5333486
+                        "seconds":  20.7018804
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "chat prompt",
-                        "avg_ts":  66.451490411999245,
+                        "avg_ts":  70.894331998156744,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  26.5333486
+                        "seconds":  20.7018804
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "chat reply",
-                        "avg_ts":  9.5631109632516633,
+                        "avg_ts":  12.261235282430585,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  26.8947219
+                        "seconds":  21.0090729
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "chat prompt",
-                        "avg_ts":  65.431873735178513,
+                        "avg_ts":  69.911910992149885,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  26.8947219
+                        "seconds":  21.0090729
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "chat reply",
-                        "avg_ts":  9.68407729579851,
+                        "avg_ts":  12.167845261654961,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  26.552858999999998
+                        "seconds":  21.1834928
                     },
                     {
                         "backend":  "pcuda",
                         "round":  1,
                         "test":  "chat prompt",
-                        "avg_ts":  64.144563519154019,
+                        "avg_ts":  62.309732780260269,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  26.552858999999998
+                        "seconds":  21.1834928
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "pp32",
-                        "avg_ts":  113.927876,
-                        "stddev_ts":  1.467124
+                        "avg_ts":  115.093244,
+                        "stddev_ts":  2.778568
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "pp128",
-                        "avg_ts":  122.114772,
-                        "stddev_ts":  3.502141
+                        "avg_ts":  125.119387,
+                        "stddev_ts":  0.230836
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "pp512",
-                        "avg_ts":  114.281412,
-                        "stddev_ts":  2.309313
+                        "avg_ts":  123.385948,
+                        "stddev_ts":  1.115571
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "tg64",
-                        "avg_ts":  27.172573,
-                        "stddev_ts":  0.395203
+                        "avg_ts":  27.812224,
+                        "stddev_ts":  0.17542
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "pp32",
-                        "avg_ts":  207.466296,
-                        "stddev_ts":  2.03859
+                        "avg_ts":  207.372303,
+                        "stddev_ts":  4.749424
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "pp128",
-                        "avg_ts":  202.940608,
-                        "stddev_ts":  9.540746
+                        "avg_ts":  237.039692,
+                        "stddev_ts":  2.279958
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "pp512",
-                        "avg_ts":  209.892943,
-                        "stddev_ts":  1.239248
+                        "avg_ts":  230.84669,
+                        "stddev_ts":  0.295731
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "tg64",
-                        "avg_ts":  28.660004,
-                        "stddev_ts":  1.170654
+                        "avg_ts":  29.109508,
+                        "stddev_ts":  0.065814
                     },
                     {
                         "backend":  "gpu",
                         "round":  2,
                         "test":  "pp32",
-                        "avg_ts":  2290.469474,
-                        "stddev_ts":  137.70838
+                        "avg_ts":  2342.627967,
+                        "stddev_ts":  199.333964
                     },
                     {
                         "backend":  "gpu",
                         "round":  2,
                         "test":  "pp128",
-                        "avg_ts":  5199.604743,
-                        "stddev_ts":  120.773455
+                        "avg_ts":  5044.129773,
+                        "stddev_ts":  189.390952
                     },
                     {
                         "backend":  "gpu",
                         "round":  2,
                         "test":  "pp512",
-                        "avg_ts":  5954.511267,
-                        "stddev_ts":  31.572733
+                        "avg_ts":  5942.880069,
+                        "stddev_ts":  75.816342
                     },
                     {
                         "backend":  "gpu",
                         "round":  2,
                         "test":  "tg64",
-                        "avg_ts":  111.34558,
-                        "stddev_ts":  0.233788
+                        "avg_ts":  111.293294,
+                        "stddev_ts":  0.253671
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "kern tg1",
-                        "avg_ts":  34.4,
+                        "avg_ts":  32,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcudagpu",
                         "round":  2,
                         "test":  "kern tg1",
-                        "avg_ts":  55.7,
+                        "avg_ts":  54.5,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "kern pp32",
-                        "avg_ts":  230.9,
+                        "avg_ts":  221,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcudagpu",
                         "round":  2,
                         "test":  "kern pp32",
-                        "avg_ts":  723.8,
+                        "avg_ts":  723.3,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "kern pp128",
-                        "avg_ts":  257.1,
+                        "avg_ts":  253.9,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcudagpu",
                         "round":  2,
                         "test":  "kern pp128",
-                        "avg_ts":  935.7,
+                        "avg_ts":  931.2,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "kern pp512",
-                        "avg_ts":  275.7,
+                        "avg_ts":  276.1,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "pcudagpu",
                         "round":  2,
                         "test":  "kern pp512",
-                        "avg_ts":  1005.7,
+                        "avg_ts":  1004,
                         "stddev_ts":  0
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "chat reply",
-                        "avg_ts":  11.334690977430409,
+                        "avg_ts":  11.07901142545863,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.9367596
+                        "seconds":  23.4872986
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "chat prompt",
-                        "avg_ts":  32.016758486156178,
+                        "avg_ts":  29.878331167154325,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.9367596
+                        "seconds":  23.4872986
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "chat reply",
-                        "avg_ts":  11.130845445330069,
+                        "avg_ts":  11.622211933905986,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  23.372341
+                        "seconds":  22.3469485
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "chat prompt",
-                        "avg_ts":  31.271848411948525,
+                        "avg_ts":  35.518841476873433,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  23.372341
+                        "seconds":  22.3469485
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "chat reply",
-                        "avg_ts":  11.500497926460222,
+                        "avg_ts":  11.592279614512606,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.6127668
+                        "seconds":  22.4235158
                     },
                     {
                         "backend":  "cpu",
                         "round":  2,
                         "test":  "chat prompt",
-                        "avg_ts":  32.010975191494225,
+                        "avg_ts":  32.997932915202384,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.6127668
+                        "seconds":  22.4235158
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "chat reply",
-                        "avg_ts":  11.266597022896727,
+                        "avg_ts":  12.433023788421336,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.8436319
+                        "seconds":  20.712505999999998
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "chat prompt",
-                        "avg_ts":  67.11859856366199,
+                        "avg_ts":  69.702717908121855,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.8436319
+                        "seconds":  20.712505999999998
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "chat reply",
-                        "avg_ts":  11.249726366949838,
+                        "avg_ts":  12.321541795008008,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.8825737
+                        "seconds":  20.9075047
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "chat prompt",
-                        "avg_ts":  69.232557104496649,
+                        "avg_ts":  69.798978940650926,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.8825737
+                        "seconds":  20.9075047
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "chat reply",
-                        "avg_ts":  11.219585683139892,
+                        "avg_ts":  12.162691596972854,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.928020699999998
+                        "seconds":  21.1947454
                     },
                     {
                         "backend":  "pcuda",
                         "round":  2,
                         "test":  "chat prompt",
-                        "avg_ts":  70.641780576537855,
+                        "avg_ts":  61.673193746338157,
                         "stddev_ts":  0,
                         "prompt_n":  14,
                         "predicted_n":  256,
-                        "seconds":  22.928020699999998
+                        "seconds":  21.1947454
                     }
                 ]
 }

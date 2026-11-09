@@ -57,10 +57,24 @@ index 4e9681c9f..cfacea279 100644
          register_backend(ggml_backend_rpc_reg());
  #endif
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index cad18408a..06e4542f5 100644
+index cad18408a..2640debec 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -2966,10 +2966,26 @@ llm_graph_cb llama_context::graph_get_cb() const {
+@@ -636,7 +636,12 @@ void llama_context::resolve_fused_ops(const llama_memory_context_i * mctx, uint3
+             // but is still wrong for cases like --no-kv-offload.
+             ggml_backend_dev_t device_layer = model.dev_layer(node.il);
+ 
+-            if (device_fused != device_layer) {
++            // an ACCEL backend (e.g. PCUDA) may run a CPU layer's fused op on host memory
++            const bool accel_for_cpu = device_fused && device_layer &&
++                ggml_backend_dev_type(device_layer) == GGML_BACKEND_DEVICE_TYPE_CPU &&
++                ggml_backend_dev_type(device_fused) == GGML_BACKEND_DEVICE_TYPE_ACCEL;
++
++            if (device_fused != device_layer && !accel_for_cpu) {
+                 LLAMA_LOG_WARN("%s: layer %d is assigned to device %s but %s "
+                         "is assigned to device %s (usually due to missing support)\n",
+                         func, node.il,
+@@ -2966,10 +2971,26 @@ llm_graph_cb llama_context::graph_get_cb() const {
          if (ubatch.n_tokens < 32 || full_offload) {
              if (il != -1 && (strcmp(name, "norm") == 0 || strcmp(name, "l_last") == 0)) {
                  const auto & dev_layer = model.dev_layer(il);
@@ -91,6 +105,33 @@ index cad18408a..06e4542f5 100644
                          }
                      }
                  }
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 0e808a0be..e0393be16 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -219,6 +219,22 @@ llama_kv_cache::llama_kv_cache(
+             dev_name = ggml_backend_dev_name(dev);
+         }
+ 
++        // a CPU layer's cache goes to the host buffer type of an ACCEL device that offers one (e.g.
++        // PCUDA, whose kernels only read their own allocations): the CPU backend can still use it
++        if (buft == ggml_backend_cpu_buffer_type()) {
++            for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
++                ggml_backend_dev_t dev = ggml_backend_dev_get(i);
++                if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_ACCEL) {
++                    continue;
++                }
++                if (ggml_backend_buffer_type_t host = ggml_backend_dev_host_buffer_type(dev)) {
++                    buft     = host;
++                    dev_name = ggml_backend_dev_name(dev);
++                    break;
++                }
++            }
++        }
++
+         LLAMA_LOG_DEBUG("%s: layer %3d: dev = %s\n", __func__, il, dev_name);
+ 
+         ggml_context * ctx = ctx_for_buft(buft);
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
 index 81af8903f..6e56542d7 100644
 --- a/src/llama-model.cpp

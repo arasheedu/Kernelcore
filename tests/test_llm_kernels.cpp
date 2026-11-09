@@ -438,14 +438,18 @@ TEST_CASE(ggml_op_kernels_match_reference) {
     const int hd = 128, nh = 6, nt = 3, pairs = hd / 2;
     const auto q = randomFloats(size_t(hd) * nh * nt, 73, -1, 1), ff = randomFloats(size_t(pairs), 74, 1.0f, 8.0f);
     const std::vector<int> pos{5, 300, 4097};
-    std::vector<float> rq(q.size());
-    llm::ref::ropeGgml(q.data(), rq.data(), pos.data(), ff.data(), hd, nh, nt, std::log2(500000.0f));
-    auto *dq = devCopy(q), *dout = devCopy(std::vector<float>(q.size(), 0.0f)), *dff = devCopy(ff);
-    auto *dpos = devCopy(pos), *ddims = devCopy(std::vector<int>{pairs, nh, pairs * nt});
-    REQUIRE(dq && dout && dff && dpos && ddims);
-    const llm::RopeGgmlArgs ra{dq, dout, dpos, dff, ddims, hd, nh, nt, std::log2(500000.0f)};
-    CHECK_OK(pcudaLaunchKernel("rope_ggml", &ra));
-    CHECK(bitEqual(hostCopy(dout, rq.size()), rq));
+    for (bool neox : {false, true}) {  // NORM (Llama) and NEOX (Qwen) pairs
+        std::vector<float> rq(q.size());
+        llm::ref::ropeGgml(q.data(), rq.data(), pos.data(), ff.data(), hd, nh, nt, std::log2(500000.0f), neox);
+        auto *dq = devCopy(q), *dout = devCopy(std::vector<float>(q.size(), 0.0f)), *dff = devCopy(ff);
+        auto *dpos = devCopy(pos), *ddims = devCopy(std::vector<int>{pairs, nh, pairs * nt, neox ? 1 : 2, neox ? pairs : 1});
+        REQUIRE(dq && dout && dff && dpos && ddims);
+        const llm::RopeGgmlArgs ra{dq, dout, dpos, dff, ddims, hd, nh, nt, std::log2(500000.0f), neox};
+        CHECK_OK(pcudaLaunchKernel("rope_ggml", &ra));
+        CHECK(bitEqual(hostCopy(dout, rq.size()), rq));
+        const llm::RopeGgmlArgs wrong{dq, dout, dpos, dff, ddims, hd, nh, nt, std::log2(500000.0f), !neox};
+        CHECK_ERR(pcudaLaunchKernel("rope_ggml", &wrong), Error::InvalidValue);  // dims disagree with the mode
+    }
 }
 
 
@@ -668,6 +672,125 @@ TEST_CASE(attention_kernels_match_reference_and_chunk) {
     CHECK_OK(pcudaMemset(dout, 0xFF, ro.size() * 4));
     CHECK_OK(pcudaLaunchKernelChunked("attn_values", &va, workers(), 64));
     CHECK(bitEqual(hostCopy(dout, ro.size()), out));
+}
+
+// fp16 conversions: set_rows_f16 rounds like the reference (to nearest even) across the range.
+TEST_CASE(set_rows_f16_matches_reference) {
+    LlmFixture fx;
+    REQUIRE(fx.ok);
+    const int pairs = 64, rows = 5, src_row = 2 * pairs + 6, dst_row = pairs + 8, dst_rows = 9;
+    auto src = randomFloats(size_t(rows) * src_row, 91, -3, 3);
+    // Special values: zero, subnormal range, a rounding tie, near the top of the range, overflow.
+    const float special[] = {0.0f, -0.0f, 1e-7f, -3e-6f, 6.1e-5f, 1.0f + 1.0f / 2048, 1.0f + 3.0f / 2048, 65504.0f,
+                             65519.0f, -70000.0f, 2.5e-8f, 2.9e-8f, 1e-30f};
+    for (size_t i = 0; i < std::size(special); ++i) src[i] = special[i];
+    for (int i = 0; i < 300; ++i) src[200 + i] *= std::ldexp(1.0f, i % 40 - 25);  // many exponents
+    const std::vector<int64_t> idx{7, 0, 3, 99, 8};  // 99: outside the cache, skipped
+    std::vector<uint16_t> ref(size_t(dst_rows) * dst_row * 2, 0x1234);
+    llm::ref::setRowsF16(src.data(), idx.data(), ref.data(), pairs, rows, src_row, dst_row, dst_rows);
+    std::vector<int> init(ref.size() / 2, 0x12341234), refw(init.size());
+    std::memcpy(refw.data(), ref.data(), ref.size() * 2);
+    std::vector<int> idxw(idx.size() * 2);
+    std::memcpy(idxw.data(), idx.data(), idx.size() * 8);
+    for (bool chunked : {false, true}) {
+        auto* ds = devCopy(src);
+        auto* dst = devCopy(init);
+        auto *di = devCopy(idxw), *dd = devCopy(std::vector<int>{pairs, rows, src_row, dst_row, dst_rows});
+        REQUIRE(ds && dst && di && dd);
+        const llm::SetRowsF16Args a{ds, di, dst, dd, pairs, rows, src_row, dst_row, dst_rows};
+        CHECK_OK(chunked ? pcudaLaunchKernelChunked("set_rows_f16", &a, workers(), 8) : pcudaLaunchKernel("set_rows_f16", &a));
+        CHECK(hostCopy(dst, refw.size()) == refw);
+    }
+    // f16ToF32(f32ToF16(x)) is within half an fp16 step of x.
+    for (float x : {0.3f, -1.7f, 1234.5f, 1e-6f})
+        CHECK(std::abs(llm::ref::f16ToF32(llm::ref::f32ToF16(x)) - x) <= std::abs(x) / 2048 + 6e-8f);
+}
+
+// matmul_f16: fp16 weights (repacked by 8 rows) times fp32 columns, 1 to 6 columns (tiles of 4).
+TEST_CASE(matmul_f16_matches_reference) {
+    LlmFixture fx;
+    REQUIRE(fx.ok);
+    const int rows = 24, k = 96;
+    std::vector<uint16_t> w(size_t(rows) * k);
+    const auto wf = randomFloats(w.size(), 95, -1, 1);
+    for (size_t i = 0; i < w.size(); ++i) w[i] = llm::ref::f32ToF16(wf[i]);
+    std::vector<int> stream(w.size() / 2);
+    llm::ref::repackF16(w.data(), rows, k, stream.data());
+    std::vector<uint16_t> back(w.size());
+    llm::ref::unpackF16(stream.data(), rows, k, back.data());
+    CHECK(back == w);
+    for (int ncols : {1, 4, 6}) {
+        const auto x = randomFloats(size_t(ncols) * k, 96 + ncols, -2, 2);
+        std::vector<float> ref(size_t(ncols) * rows);
+        llm::ref::matmulF16(w.data(), x.data(), ref.data(), rows, k, ncols);
+        for (bool chunked : {false, true}) {
+            auto* dw = devCopy(stream);
+            auto* dx = devCopy(x);
+            auto* dy = devCopy(std::vector<float>(ref.size(), 0.0f));
+            auto* dd = devCopy(std::vector<int>{rows, k, ncols});
+            REQUIRE(dw && dx && dy && dd);
+            const llm::MatmulF16Args a{dw, dx, dy, dd, rows, k, ncols};
+            CHECK_OK(chunked ? pcudaLaunchKernelChunked("matmul_f16", &a, workers(), 8) : pcudaLaunchKernel("matmul_f16", &a));
+            CHECK(relDiff(hostCopy(dy, ref.size()), ref) < 1e-6);
+        }
+    }
+}
+
+// fa_scores / fa_max / fa_exp / fa_values against a direct softmax attention over fp16 K and V,
+// laid out as llama.cpp's KV cache (rows of H_kv * D fp16) and permuted Q.
+TEST_CASE(flash_attention_kernels_match_reference) {
+    LlmFixture fx;
+    REQUIRE(fx.ok);
+    struct Shape { int H, H_kv, D, T, N; bool mask; };
+    for (const Shape sh : {Shape{6, 2, 64, 37, 1, false}, Shape{10, 2, 64, 37, 3, true}, Shape{8, 8, 128, 300, 2, true}}) {
+        llm::FaDims d;
+        d.H = sh.H, d.H_kv = sh.H_kv, d.D = sh.D, d.T = sh.T, d.N = sh.N, d.group = sh.H / sh.H_kv;
+        d.tp = llm::padTo8(sh.T);
+        const int kv_size = sh.T + 11;
+        d.k_row = d.v_row = sh.H_kv * sh.D / 2, d.k_head = d.v_head = sh.D / 2;
+        d.q_tok = sh.H * sh.D, d.q_head = sh.D;  // ggml: Q [D, N, H] viewed from [D, H, N]
+        d.m_row = (sh.T + 7) / 2 + 3, d.has_mask = sh.mask ? 1 : 0;
+        const auto q = randomFloats(size_t(sh.N) * d.q_tok, 92, -1, 1);
+        auto f16s = [](const std::vector<float>& f) {
+            std::vector<uint16_t> h(f.size());
+            for (size_t i = 0; i < f.size(); ++i) h[i] = llm::ref::f32ToF16(f[i]);
+            return h;
+        };
+        const auto k = f16s(randomFloats(size_t(kv_size) * d.k_row * 2, 93, -1, 1));
+        const auto v = f16s(randomFloats(size_t(kv_size) * d.v_row * 2, 94, -1, 1));
+        std::vector<uint16_t> mask(size_t(sh.N) * d.m_row * 2, 0);
+        for (int i = 0; i < sh.N; ++i)  // causal-like: the last N - 1 - i positions are hidden from query i
+            for (int t = sh.T - (sh.N - 1 - i); t < sh.T; ++t) mask[size_t(i) * d.m_row * 2 + t] = 0xFC00;
+        const float scale = 1.0f / std::sqrt(float(sh.D));
+        std::vector<float> ref(size_t(sh.N) * sh.H * sh.D);
+        llm::ref::flashAttnF16(q.data(), k.data(), v.data(), mask.data(), ref.data(), d, scale);
+        auto words = [](const std::vector<uint16_t>& h) {
+            std::vector<int> w(h.size() / 2);
+            std::memcpy(w.data(), h.data(), w.size() * 4);
+            return w;
+        };
+        std::vector<float> first;
+        for (bool chunked : {false, true}) {
+            auto *dq = devCopy(q), *ds = devCopy(std::vector<float>(size_t(sh.H) * sh.N * d.tp, 0.0f));
+            auto *dk = devCopy(words(k)), *dv = devCopy(words(v)), *dm = devCopy(words(mask));
+            auto *dmx = devCopy(std::vector<float>(size_t(sh.H) * sh.N)), *dout = devCopy(std::vector<float>(ref.size()));
+            std::vector<int> dims(llm::kFaDims);
+            llm::faDimsInts(d, dims.data());
+            auto* dd = devCopy(dims);
+            REQUIRE(dq && ds && dk && dv && dm && dmx && dout && dd);
+            auto run = [&](const char* name, const auto& a) {
+                return chunked ? pcudaLaunchKernelChunked(name, &a, workers(), 8) : pcudaLaunchKernel(name, &a);
+            };
+            CHECK_OK(run("fa_scores", llm::FaScoresArgs{dq, dk, dm, ds, dd, d, scale}));
+            CHECK_OK(run("fa_max", llm::FaMaxArgs{ds, dmx, dd, d}));
+            CHECK_OK(run("fa_exp", llm::FaExpArgs{ds, dmx, dd, d}));
+            CHECK_OK(run("fa_values", llm::FaValuesArgs{ds, dv, dout, dd, d}));
+            const auto out = hostCopy(dout, ref.size());
+            CHECK(relDiff(out, ref) < 2e-6);
+            if (chunked) CHECK(bitEqual(out, first));
+            else first = out;
+        }
+    }
 }
 
 TEST_CASE(kv_append_writes_transposed_k_and_row_major_v) {

@@ -73,7 +73,13 @@ plain structured C. So each kernel is built three ways from the one `.cu` file:
   and stores through such addresses become single vector loads with no run-time checks. A kernel can
   promise that a run-time value is a non-negative multiple of 8 with a `pcuda_aligned8(x)` helper
   (the identity; see `kernels/llm/attn_scores.cu`). Divisions by it then stay uniform too, and the
-  simd path checks the promise and faults if it is broken.
+  simd path checks the promise and faults if it is broken. Alignment carries through sums and
+  differences of two aligned values and through any product with one.
+- `simd` translates selects (`c ? a : b`) as blends. Helper functions stay on `native`, except
+  two whose exact Booth output the generator recognizes and maps to instructions: `pcuda_dp4a`
+  (AVX-VNNI `vpdpbusd`) and `pcuda_h2f` (fp16 to float, F16C `vcvtph2ps`). Kernels should use
+  integer offsets rather than pointer variables that change in a loop, which neither `native` nor
+  `simd` can translate.
 - All three paths are bit-identical for race-free kernels (`test_codegen`, and every kernel test runs
   on each path). Native and simd code runs under the same thunk and fault guard, so out-of-bounds
   accesses, divide-by-zero and stack overflow are contained the same way.
@@ -144,6 +150,9 @@ To add a kernel:
   Write the index as `blockIdx.x * blockDim.x + threadIdx.x`: it reduces to `threadIdx.x` here and is the
   correct global index on a GPU, so the same file also builds with `nvcc`.
 - No `__shared__`, `__syncthreads`, atomics or warp intrinsics.
+- No bit casts and no `##` in macros. Booth's x86 back end miscompiled an fp16 decode written with
+  selects (kept as arithmetic in `pcuda_h2f`), and NaN comparisons differ there; with selects on a
+  mask index, Booth kept a kernel's first parameter in memory, which pcuda_mslgen can't translate.
 - `sinf`/`cosf` arguments are converted to turns and back in float before the call, so results can differ
   from a direct CRT call by a few ULP.
 - Chunked multi-core launches (`pcudaLaunchKernelChunked`) are opt-in per kernel and only correct for
@@ -365,8 +374,14 @@ kernel objects, so no Booth compiler is needed. A copy and the hook patch are in
   - `GGML_PCUDA_ROW_BLOCK=<n>` (matmul thread order: 8-row groups per block, default 8);
   - `GGML_PCUDA_MATMUL_CHUNKS=<n>` (batched matmuls: chunks per pool thread, times the runtime's 4; default 4);
   - `GGML_PCUDA_Q8K=0` (batches with activation scales per 32 values: bit-identical to the one-token path);
+  - `GGML_PCUDA_ATTN=0` (KV cache and attention on the CPU backend, as before);
+  - `GGML_PCUDA_ATTN_TOKENS=<n>` (largest batch whose attention pcuda runs; default 8, longer
+    batches use the CPU backend's attention on the same cache);
+  - `GGML_PCUDA_CONCURRENT=0` (matmuls of the same input one step each);
+  - `GGML_PCUDA_FAST_WORKERS=<n>` (threads for bandwidth-bound launches; default: the P-cores' 12);
   - `GGML_PCUDA_GRAPHS=0`;
-  - `GGML_PCUDA_PROFILE=1` (time breakdown at exit; per kernel with graphs off);
+  - `GGML_PCUDA_PROFILE=1` (time breakdown at exit; per kernel with graphs off; `=2`: matmuls per
+    weight shape);
   - `GGML_PCUDA_DEBUG=1` (`supports_op` answers).
 
 ```powershell
@@ -449,6 +464,35 @@ Results with Llama 3.2 3B Q4_K_M from Ollama's store, in llama-bench (same binar
 - **Prompts over 512 tokens work.** llama.cpp splits them into ubatches of 512, and the earlier
   ubatches select no output rows in the last layer; the backend skips such empty nodes (the
   kernels reject 0 rows). Before, `pp1024` and long chat prompts failed in `add_sumsq_f`.
+- **Attention runs in pcuda** (generation and batches of up to 8 tokens). Before, it ran on the
+  CPU backend's ggml threads, and the token's graph split around it in every layer.
+  - The KV cache moves to a second pcuda buffer type, `PCUDA_Host`: pcuda memory in ggml layout
+    that is a host buffer, so the CPU backend still runs attention on it for long prompts, in place.
+    Hooks: `llama-kv-cache.cpp` puts CPU layers' caches in an ACCEL device's host buffer type, and
+    the flash-attention check in `llama-context.cpp` accepts an ACCEL device for a CPU layer.
+  - `SET_ROWS` (`set_rows_f16`) writes K and V as fp16 with float arithmetic only (round to
+    nearest even; Booth has no bit casts). `FLASH_ATTN_EXT` is four kernels: `fa_scores` (one
+    thread per KV head and position: it converts the K row once for every query head of the
+    group), `fa_max`, `fa_exp`, `fa_values` (one thread per KV head and dimension, the same).
+  - fp16 is read through `pcuda_h2f`: pcuda_mslgen maps a call to its exact body to F16C
+    `vcvtph2ps`; the other paths run the body (integer and float arithmetic). The scores and
+    values kernels went from 248 / 267 us per layer (scalar path: the simd path could not call
+    helpers) to 152 / 162 (simd), 88 / 118 (uniform query and probability loads), 43 / 58 (F16C).
+  - Llama 3B generation, tok/s at context 0 / 256 / 1024, pcuda vs CPU attention (2 rounds):
+    30.6–30.8 vs 28.0–28.5, 28.0–29.2 vs 25.4–25.7, 23.6–24.5 vs 20.0–20.4. Against llama.cpp's CPU
+    backend: 128/128 and 126/128 identical greedy tokens, mean |Δ log-prob| 0.010.
+- **Qwen3 runs as one graph per token.** pcuda now takes NEOX rope (`rope_ggml`: pairs i and
+  i + head_dim / 2) and fp16 weights (`matmul_f16`: Qwen3 8B's `attn_v`, repacked by 8 rows at
+  load; weight buffers only, so fp16 inputs such as the attention mask are not touched). Both had
+  split every layer: 74 graph calls per token, now 2. Qwen3 8B generation at context 0 / 1024:
+  12.2–12.6 / 8.9–9.5 tok/s before, 13.7–13.9 / 11.4–11.5 now. Perplexity on this README (3 × 512
+  tokens, ubatch 8): CPU backend 20.98, pcuda 20.92.
+- **Bandwidth-bound launches split their work in decreasing chunks** (`PCUDA_CHUNK_PLAN`, default
+  auto). Each chunk is the remaining work / (2 × threads), so threads finish together; batched
+  matmuls, which ask for more chunks than threads, keep equal chunks. Matmuls of the same input
+  (q, k, v; gate, up) share one step. Qwen3 8B: +3% (13.4 → 13.7–13.9 tok/s); Llama 3B unchanged.
+  A plain read of 1 GiB reaches 79–85 GB/s here; the 3B matmuls stream at 64–66 GB/s per 14–20 MB
+  matrix and 75 GB/s for the 323 MB output layer (`GGML_PCUDA_PROFILE=2`).
 
 ### The same K-quant kernels on the GPU (`pcuda_kquant_vs_cuda`)
 
@@ -491,6 +535,7 @@ Q4_K, v and down in Q6_K, random weights, two input quantizations and seven matr
 | `PCUDA_CODEGEN` | `auto` | Kernel code path: `auto`, `booth`, `native` or `simd` (see Code paths) |
 | `PCUDA_POOL_THREADS` | logical CPUs + E-cores − 1 | Threads in the chunked-launch pool (1–1024); the launching thread runs chunks too. A chunked launch runs on at most `workers` threads: pass `DeviceProperties::performance_workers` (the P-cores' logical CPUs) for bandwidth-bound launches. On non-hybrid CPUs: all logical CPUs − 1 |
 | `PCUDA_CHUNKS_PER_WORKER` | `4` | A chunked launch with `workers = N` is split into up to N × this many chunks, so fast cores pick up the slow (efficiency) cores' share |
+| `PCUDA_CHUNK_PLAN` | `auto` | `guided`: chunks of decreasing size (remaining / (2 × threads)); `even`: N × `PCUDA_CHUNKS_PER_WORKER` equal chunks; `auto`: guided when a launch's `workers` is at most the pool's thread count |
 | `PCUDA_PREFETCH_BYTES` | `2048` | How far ahead the simd path prefetches streaming loads (0 = off; 1.5–8 KB measured the same) |
 | `PCUDA_LARGE_PAGES` | `0` | `1` backs allocations of 2 MB or more with large pages, for fewer TLB misses. Needs the "Lock pages in memory" right: run `scriptsgrant_lock_pages.ps1` as administrator once, then sign out and in. Without it, normal pages are used. Overruns still fault (a reserved no-access range follows each block). Measured: about 1 ms per token faster with prefetch off, no gain on top of the default prefetch |
 | `PCUDA_POOL_SPIN_US` | `50` | Pool and stream threads, and a waiting caller, wait this long (in `UMWAIT` if the CPU has WAITPKG, else spinning) before sleeping, so back-to-back launches skip the thread wake-up. Longer was slower here |

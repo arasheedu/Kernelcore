@@ -1,0 +1,191 @@
+; Booth IR
+
+func @pcuda_aligned8(i32 %0) __device__ {
+entry:
+    ret i32 %0  ; line 17
+}
+
+func @set_rows_f16(ptr<global, f32> %0, ptr<global, i32> %1, ptr<global, i32> %2, ptr<global, i32> %3, f32 %4) __global__ {
+entry:
+    %5 = fptosi f32 %4 to i32  ; line 69
+    %6 = call i32 @pcuda_aligned8(%5)  ; line 69
+    %7 = block_id.x  ; line 69
+    %8 = block_dim.x  ; line 69
+    %9 = mul i32 %7, %8  ; line 69
+    %10 = add i32 %6, %9  ; line 69
+    %11 = thread_id.x  ; line 69
+    %12 = add i32 %10, %11  ; line 69
+    %13 = gep ptr<global, i32>, %3, 0  ; line 70
+    %14 = load i32, %13  ; line 70
+    %15 = call i32 @pcuda_aligned8(%14)  ; line 70
+    %16 = gep ptr<global, i32>, %3, 1  ; line 71
+    %17 = load i32, %16  ; line 71
+    %18 = mul i32 %15, %17  ; line 72
+    %19 = icmp slt i32 %12, %18  ; line 72
+    br_cond %19, if.then, if.end merge if.end  ; line 72
+
+if.then:
+    %21 = sdiv i32 %12, %15  ; line 73
+    %22 = mul i32 %21, %15  ; line 74
+    %23 = sub i32 %12, %22  ; line 74
+    %24 = mul i32 2, %21  ; line 75
+    %25 = gep ptr<global, i32>, %1, %24  ; line 75
+    %26 = load i32, %25  ; line 75
+    %27 = gep ptr<global, i32>, %3, 2  ; line 76
+    %28 = load i32, %27  ; line 76
+    %29 = mul i32 %21, %28  ; line 76
+    %30 = mul i32 2, %23  ; line 76
+    %31 = add i32 %29, %30  ; line 76
+    %32 = gep ptr<global, f32>, %0, %31  ; line 79
+    %33 = load f32, %32  ; line 79
+    %34 = fcmp olt f32 %33, 0  ; line 79
+    %35 = select i32 %34, 32768, 0  ; line 79
+    %36 = fcmp olt f32 %33, 0  ; line 79
+    %37 = fsub f32 0, %33  ; line 79
+    %38 = select f32 %36, %37, %33  ; line 79
+    %39 = fcmp oge f32 %38, 256  ; line 79
+    %40 = fmul f32 %38, 0.00390625  ; line 79
+    %41 = select f32 %39, %40, %38  ; line 79
+    %42 = select i32 %39, 8, 0  ; line 79
+    %43 = add i32 0, %42  ; line 79
+    %44 = fcmp oge f32 %41, 16  ; line 79
+    %45 = fmul f32 %41, 0.0625  ; line 79
+    %46 = select f32 %44, %45, %41  ; line 79
+    %47 = select i32 %44, 4, 0  ; line 79
+    %48 = add i32 %43, %47  ; line 79
+    %49 = fcmp oge f32 %46, 4  ; line 79
+    %50 = fmul f32 %46, 0.25  ; line 79
+    %51 = select f32 %49, %50, %46  ; line 79
+    %52 = select i32 %49, 2, 0  ; line 79
+    %53 = add i32 %48, %52  ; line 79
+    %54 = fcmp oge f32 %51, 2  ; line 79
+    %55 = fmul f32 %51, 0.5  ; line 79
+    %56 = select f32 %54, %55, %51  ; line 79
+    %57 = select i32 %54, 1, 0  ; line 79
+    %58 = add i32 %53, %57  ; line 79
+    %59 = fcmp olt f32 %56, 0.0078125  ; line 79
+    %60 = fmul f32 %56, 256  ; line 79
+    %61 = select f32 %59, %60, %56  ; line 79
+    %62 = select i32 %59, 8, 0  ; line 79
+    %63 = sub i32 %58, %62  ; line 79
+    %64 = fcmp olt f32 %61, 0.125  ; line 79
+    %65 = fmul f32 %61, 16  ; line 79
+    %66 = select f32 %64, %65, %61  ; line 79
+    %67 = select i32 %64, 4, 0  ; line 79
+    %68 = sub i32 %63, %67  ; line 79
+    %69 = fcmp olt f32 %66, 0.5  ; line 79
+    %70 = fmul f32 %66, 4  ; line 79
+    %71 = select f32 %69, %70, %66  ; line 79
+    %72 = select i32 %69, 2, 0  ; line 79
+    %73 = sub i32 %68, %72  ; line 79
+    %74 = fcmp olt f32 %71, 1  ; line 79
+    %75 = fmul f32 %71, 2  ; line 79
+    %76 = select f32 %74, %75, %71  ; line 79
+    %77 = select i32 %74, 1, 0  ; line 79
+    %78 = sub i32 %73, %77  ; line 79
+    %79 = fsub f32 %76, 1  ; line 79
+    %80 = fmul f32 %79, 1024  ; line 79
+    %81 = fadd f32 %80, 12582912  ; line 79
+    %82 = fsub f32 %81, 12582912  ; line 79
+    %83 = add i32 %78, 15  ; line 79
+    %84 = shl i32 %83, 10  ; line 79
+    %85 = fptosi f32 %82 to i32  ; line 79
+    %86 = add i32 %84, %85  ; line 79
+    %87 = fmul f32 %38, 16777216  ; line 79
+    %88 = fadd f32 %87, 12582912  ; line 79
+    %89 = fsub f32 %88, 12582912  ; line 79
+    %90 = fcmp olt f32 %38, 6.10351562e-05  ; line 79
+    %91 = fptosi f32 %89 to i32  ; line 79
+    %92 = select i32 %90, %91, %86  ; line 79
+    %93 = fcmp olt f32 %38, 65520  ; line 79
+    %94 = select i32 %93, %92, 31743  ; line 79
+    %95 = or i32 %35, %94  ; line 79
+    %96 = add i32 %31, 1  ; line 80
+    %97 = gep ptr<global, f32>, %0, %96  ; line 80
+    %98 = load f32, %97  ; line 80
+    %99 = fcmp olt f32 %98, 0  ; line 80
+    %100 = select i32 %99, 32768, 0  ; line 80
+    %101 = fcmp olt f32 %98, 0  ; line 80
+    %102 = fsub f32 0, %98  ; line 80
+    %103 = select f32 %101, %102, %98  ; line 80
+    %104 = fcmp oge f32 %103, 256  ; line 80
+    %105 = fmul f32 %103, 0.00390625  ; line 80
+    %106 = select f32 %104, %105, %103  ; line 80
+    %107 = select i32 %104, 8, 0  ; line 80
+    %108 = add i32 0, %107  ; line 80
+    %109 = fcmp oge f32 %106, 16  ; line 80
+    %110 = fmul f32 %106, 0.0625  ; line 80
+    %111 = select f32 %109, %110, %106  ; line 80
+    %112 = select i32 %109, 4, 0  ; line 80
+    %113 = add i32 %108, %112  ; line 80
+    %114 = fcmp oge f32 %111, 4  ; line 80
+    %115 = fmul f32 %111, 0.25  ; line 80
+    %116 = select f32 %114, %115, %111  ; line 80
+    %117 = select i32 %114, 2, 0  ; line 80
+    %118 = add i32 %113, %117  ; line 80
+    %119 = fcmp oge f32 %116, 2  ; line 80
+    %120 = fmul f32 %116, 0.5  ; line 80
+    %121 = select f32 %119, %120, %116  ; line 80
+    %122 = select i32 %119, 1, 0  ; line 80
+    %123 = add i32 %118, %122  ; line 80
+    %124 = fcmp olt f32 %121, 0.0078125  ; line 80
+    %125 = fmul f32 %121, 256  ; line 80
+    %126 = select f32 %124, %125, %121  ; line 80
+    %127 = select i32 %124, 8, 0  ; line 80
+    %128 = sub i32 %123, %127  ; line 80
+    %129 = fcmp olt f32 %126, 0.125  ; line 80
+    %130 = fmul f32 %126, 16  ; line 80
+    %131 = select f32 %129, %130, %126  ; line 80
+    %132 = select i32 %129, 4, 0  ; line 80
+    %133 = sub i32 %128, %132  ; line 80
+    %134 = fcmp olt f32 %131, 0.5  ; line 80
+    %135 = fmul f32 %131, 4  ; line 80
+    %136 = select f32 %134, %135, %131  ; line 80
+    %137 = select i32 %134, 2, 0  ; line 80
+    %138 = sub i32 %133, %137  ; line 80
+    %139 = fcmp olt f32 %136, 1  ; line 80
+    %140 = fmul f32 %136, 2  ; line 80
+    %141 = select f32 %139, %140, %136  ; line 80
+    %142 = select i32 %139, 1, 0  ; line 80
+    %143 = sub i32 %138, %142  ; line 80
+    %144 = fsub f32 %141, 1  ; line 80
+    %145 = fmul f32 %144, 1024  ; line 80
+    %146 = fadd f32 %145, 12582912  ; line 80
+    %147 = fsub f32 %146, 12582912  ; line 80
+    %148 = add i32 %143, 15  ; line 80
+    %149 = shl i32 %148, 10  ; line 80
+    %150 = fptosi f32 %147 to i32  ; line 80
+    %151 = add i32 %149, %150  ; line 80
+    %152 = fmul f32 %103, 16777216  ; line 80
+    %153 = fadd f32 %152, 12582912  ; line 80
+    %154 = fsub f32 %153, 12582912  ; line 80
+    %155 = fcmp olt f32 %103, 6.10351562e-05  ; line 80
+    %156 = fptosi f32 %154 to i32  ; line 80
+    %157 = select i32 %155, %156, %151  ; line 80
+    %158 = fcmp olt f32 %103, 65520  ; line 80
+    %159 = select i32 %158, %157, 31743  ; line 80
+    %160 = or i32 %100, %159  ; line 80
+    %161 = gep ptr<global, i32>, %3, 4  ; line 81
+    %162 = load i32, %161  ; line 81
+    %163 = icmp ult i32 %26, %162  ; line 81
+    br_cond %163, if.then, if.end merge if.end  ; line 81
+
+if.end:
+    ret void  ; line 81
+
+if.then:
+    %166 = gep ptr<global, i32>, %3, 3  ; line 81
+    %167 = load i32, %166  ; line 81
+    %168 = mul i32 %26, %167  ; line 81
+    %169 = add i32 %168, %23  ; line 81
+    %170 = gep ptr<global, i32>, %2, %169  ; line 81
+    %171 = shl i32 %160, 16  ; line 81
+    %172 = or i32 %95, %171  ; line 81
+    store i32 %172, %170  ; line 81
+    br if.end  ; line 81
+
+if.end:
+    br if.end  ; line 81
+}
+
+; 2 functions, 0 globals, 178 instructions

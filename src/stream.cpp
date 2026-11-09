@@ -386,6 +386,22 @@ std::vector<ChunkSpec> planChunks(int64_t total, unsigned workers, int64_t min_c
     return out;
 }
 
+std::vector<ChunkSpec> planChunksGuided(int64_t total, unsigned threads, int64_t min_chunk, int64_t align) {
+    std::vector<ChunkSpec> out;
+    if (total <= 0) return out;
+    if (threads == 0) threads = 1;
+    if (min_chunk < 1) min_chunk = 1;
+    if (align < 1) align = 1;
+    for (int64_t b = 0; b < total;) {
+        int64_t per = std::max((total - b) / (2 * int64_t(threads)), min_chunk);
+        per = (per + align - 1) / align * align;
+        per = std::min(per, total - b);
+        out.push_back({b, per});
+        b += per;
+    }
+    return out;
+}
+
 bool chunksCoverExactly(const std::vector<ChunkSpec>& chunks, int64_t total) noexcept {
     int64_t next = 0;
     for (const ChunkSpec& c : chunks) {

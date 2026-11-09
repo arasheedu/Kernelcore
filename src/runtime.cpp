@@ -147,6 +147,7 @@ struct Runtime {
     size_t   stack_bytes = 8 * kMiB;
     unsigned hw_threads = 1;
     unsigned chunks_per_worker = 4;  // chunked launches: chunks = workers * this (load balance)
+    int      chunk_plan = 0;         // PCUDA_CHUNK_PLAN: 0 auto, 1 even, 2 guided (decreasing chunk sizes)
     unsigned pool_spin_us = 50;      // pool threads spin this long before sleeping
     int      current_device = 0;
 
@@ -349,6 +350,8 @@ Error startDevice(Runtime& r) {
     r.hw_threads = static_cast<unsigned>(
         envInt("PCUDA_POOL_THREADS", std::max(1u, cc.all + cc.slow_cores - 1), 1, 1024));
     r.chunks_per_worker = static_cast<unsigned>(envInt("PCUDA_CHUNKS_PER_WORKER", 4, 1, 64));
+    const std::string plan = envString("PCUDA_CHUNK_PLAN");
+    r.chunk_plan = plan == "even" ? 1 : plan == "guided" ? 2 : 0;
     r.pool_spin_us = static_cast<unsigned>(envInt("PCUDA_POOL_SPIN_US", 50, 0, 10000));
     if (!r.codegen_set.load()) {
         const std::string cg = envString("PCUDA_CODEGEN");
@@ -501,7 +504,11 @@ Error launchCommon(const char* name, const void* typed_args, pcudaStream_t strea
         // otherwise finish last. Results don't depend on the split (chunks are disjoint).
         // Boundaries at multiples of 16 threads: whole 8-lane simd groups, and 64-byte lines
         // for one float per thread.
-        const std::vector<ChunkSpec> chunks = planChunks(total, workers * r.chunks_per_worker, min_chunk, 16);
+        // auto: guided when `workers` is a thread count (bandwidth-bound launches: threads then
+        // finish together); even when it asks for more chunks than there are threads.
+        const bool guided = r.chunk_plan == 2 || (r.chunk_plan == 0 && workers <= r.hw_threads + 1);
+        const std::vector<ChunkSpec> chunks = guided ? planChunksGuided(total, workers, min_chunk, 16)
+                                                     : planChunks(total, workers * r.chunks_per_worker, min_chunk, 16);
         if (!chunksCoverExactly(chunks, total)) {
             setDetail("internal: chunk plan does not cover the launch exactly");
             return Error::InternalError;

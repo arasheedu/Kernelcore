@@ -122,6 +122,10 @@ struct ChunkSpec {
 // At most `workers` chunks; each at least min_chunk (except a short tail) and a multiple
 // of `align` elements except the tail.
 std::vector<ChunkSpec> planChunks(int64_t total, unsigned workers, int64_t min_chunk, int64_t align = 64);
+// Guided: each chunk is the remaining work / (2 * threads), at least min_chunk, a multiple of align
+// except the tail. The pool claims chunks in order, so big chunks go first and the last ones are
+// small: threads finish closer together than with equal chunks.
+std::vector<ChunkSpec> planChunksGuided(int64_t total, unsigned threads, int64_t min_chunk, int64_t align = 64);
 // True if chunks are non-empty, sorted, disjoint and exactly cover [0, total).
 bool chunksCoverExactly(const std::vector<ChunkSpec>& chunks, int64_t total) noexcept;
 

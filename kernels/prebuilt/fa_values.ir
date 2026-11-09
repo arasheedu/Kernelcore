@@ -1,0 +1,258 @@
+; Booth IR
+
+func @pcuda_aligned8(i32 %0) __device__ {
+entry:
+    ret i32 %0  ; line 13
+}
+
+func @pcuda_h2f(i32 %0) __device__ {
+entry:
+    %1 = ashr i32 %0, 10  ; line 25
+    %2 = and i32 %1, 31  ; line 25
+    %3 = add i32 %2, 31  ; line 26
+    %4 = ashr i32 %3, 5  ; line 26
+    %5 = add i32 %2, 1  ; line 27
+    %6 = sub i32 %5, %4  ; line 27
+    %7 = add i32 %6, 1  ; line 28
+    %8 = ashr i32 %7, 5  ; line 28
+    %9 = sub i32 %6, %8  ; line 28
+    %10 = and i32 %9, 1  ; line 29
+    %11 = sitofp i32 %10 to f32  ; line 29
+    %12 = fadd f32 1, %11  ; line 29
+    %13 = ashr i32 %9, 1  ; line 29
+    %14 = and i32 %13, 1  ; line 29
+    %15 = sitofp i32 %14 to f32  ; line 29
+    %16 = fmul f32 3, %15  ; line 29
+    %17 = fadd f32 1, %16  ; line 29
+    %18 = fmul f32 %12, %17  ; line 29
+    %19 = ashr i32 %9, 2  ; line 30
+    %20 = and i32 %19, 1  ; line 30
+    %21 = sitofp i32 %20 to f32  ; line 30
+    %22 = fmul f32 15, %21  ; line 30
+    %23 = fadd f32 1, %22  ; line 30
+    %24 = fmul f32 %18, %23  ; line 30
+    %25 = ashr i32 %9, 3  ; line 30
+    %26 = and i32 %25, 1  ; line 30
+    %27 = sitofp i32 %26 to f32  ; line 30
+    %28 = fmul f32 255, %27  ; line 30
+    %29 = fadd f32 1, %28  ; line 30
+    %30 = fmul f32 %24, %29  ; line 30
+    %31 = ashr i32 %9, 4  ; line 31
+    %32 = and i32 %31, 1  ; line 31
+    %33 = sitofp i32 %32 to f32  ; line 31
+    %34 = fmul f32 65535, %33  ; line 31
+    %35 = fadd f32 1, %34  ; line 31
+    %36 = fmul f32 %30, %35  ; line 31
+    %37 = and i32 %0, 1023  ; line 32
+    %38 = shl i32 %4, 10  ; line 32
+    %39 = add i32 %37, %38  ; line 32
+    %40 = sitofp i32 %39 to f32  ; line 32
+    %41 = fmul f32 %40, %36  ; line 32
+    %42 = fmul f32 %41, 2.98023224e-08  ; line 32
+    %43 = ashr i32 %0, 15  ; line 32
+    %44 = and i32 %43, 1  ; line 32
+    %45 = mul i32 2, %44  ; line 32
+    %46 = sub i32 1, %45  ; line 32
+    %47 = sitofp i32 %46 to f32  ; line 32
+    %48 = fmul f32 %42, %47  ; line 32
+    ret f32 %48  ; line 32
+}
+
+func @fa_values(ptr<global, f32> %0, ptr<global, i32> %1, ptr<global, f32> %2, ptr<global, i32> %3, f32 %4) __global__ {
+entry:
+    %5 = fptosi f32 %4 to i32  ; line 38
+    %6 = call i32 @pcuda_aligned8(%5)  ; line 38
+    %7 = block_id.x  ; line 38
+    %8 = block_dim.x  ; line 38
+    %9 = mul i32 %7, %8  ; line 38
+    %10 = add i32 %6, %9  ; line 38
+    %11 = thread_id.x  ; line 38
+    %12 = add i32 %10, %11  ; line 38
+    %13 = gep ptr<global, i32>, %3, 0  ; line 39
+    %14 = load i32, %13  ; line 39
+    %15 = gep ptr<global, i32>, %3, 1  ; line 40
+    %16 = load i32, %15  ; line 40
+    %17 = gep ptr<global, i32>, %3, 2  ; line 41
+    %18 = load i32, %17  ; line 41
+    %19 = call i32 @pcuda_aligned8(%18)  ; line 41
+    %20 = gep ptr<global, i32>, %3, 3  ; line 42
+    %21 = load i32, %20  ; line 42
+    %22 = gep ptr<global, i32>, %3, 4  ; line 43
+    %23 = load i32, %22  ; line 43
+    %24 = gep ptr<global, i32>, %3, 9  ; line 44
+    %25 = load i32, %24  ; line 44
+    %26 = gep ptr<global, i32>, %3, 14  ; line 45
+    %27 = load i32, %26  ; line 45
+    %28 = mul i32 %27, %19  ; line 46
+    %29 = call i32 @pcuda_aligned8(%28)  ; line 46
+    %30 = mul i32 %25, %29  ; line 47
+    %31 = icmp slt i32 %12, %30  ; line 47
+    br_cond %31, if.then, if.end merge if.end  ; line 47
+
+if.then:
+    %33 = sdiv i32 %12, %29  ; line 48
+    %34 = mul i32 %33, %29  ; line 49
+    %35 = sub i32 %12, %34  ; line 49
+    %36 = sdiv i32 %35, %19  ; line 50
+    %37 = mul i32 %36, %19  ; line 51
+    %38 = sub i32 %35, %37  ; line 51
+    %39 = gep ptr<global, i32>, %3, 8  ; line 52
+    %40 = load i32, %39  ; line 52
+    %41 = mul i32 %36, %40  ; line 52
+    %42 = sdiv i32 %38, 2  ; line 52
+    %43 = add i32 %41, %42  ; line 52
+    %44 = and i32 %38, 1  ; line 53
+    %45 = mul i32 %44, 16  ; line 53
+    %46 = gep ptr<global, i32>, %3, 7  ; line 54
+    %47 = load i32, %46  ; line 54
+    br for.cond  ; line 55
+
+if.end:
+    ret void  ; line 55
+
+for.cond:
+    %50 = phi i32 [if.then: 0], [for.inc: %81]
+    %51 = phi i32 [if.then: undef], [for.inc: %93]
+    %52 = phi f32 [if.then: undef], [for.inc: %94]
+    %53 = phi f32 [if.then: undef], [for.inc: %95]
+    %54 = phi f32 [if.then: undef], [for.inc: %96]
+    %55 = phi f32 [if.then: undef], [for.inc: %97]
+    %56 = phi f32 [if.then: undef], [for.inc: %98]
+    %57 = icmp slt i32 %50, %21  ; line 55
+    br_cond %57, for.body, for.end merge for.end  ; line 55
+
+for.body:
+    %59 = mul i32 %36, %21  ; line 56
+    %60 = add i32 %59, %50  ; line 56
+    %61 = sub i32 %21, %50  ; line 57
+    %62 = icmp slt i32 %61, 4  ; line 57
+    %63 = sub i32 %21, %50  ; line 57
+    %64 = select i32 %62, %63, 4  ; line 57
+    %65 = mul i32 %60, %25  ; line 58
+    %66 = add i32 %65, %33  ; line 58
+    %67 = mul i32 %66, %23  ; line 58
+    %68 = mul i32 %25, %23  ; line 59
+    %69 = icmp sgt i32 %64, 1  ; line 61
+    %70 = add i32 %67, %68  ; line 61
+    %71 = select i32 %69, %70, %67  ; line 61
+    %72 = icmp sgt i32 %64, 2  ; line 62
+    %73 = mul i32 2, %68  ; line 62
+    %74 = add i32 %67, %73  ; line 62
+    %75 = select i32 %72, %74, %71  ; line 62
+    %76 = icmp sgt i32 %64, 3  ; line 63
+    %77 = mul i32 3, %68  ; line 63
+    %78 = add i32 %67, %77  ; line 63
+    %79 = select i32 %76, %78, %75  ; line 63
+    br for.cond  ; line 72
+
+for.inc:
+    %81 = add i32 %50, 4  ; line 55
+    br for.cond  ; line 55
+
+for.end:
+    br if.end  ; line 55
+
+for.cond:
+    %84 = phi f32 [for.body: 0], [for.inc: %121]
+    %85 = phi f32 [for.body: 0], [for.inc: %124]
+    %86 = phi f32 [for.body: 0], [for.inc: %127]
+    %87 = phi f32 [for.body: 0], [for.inc: %130]
+    %88 = phi f32 [for.body: 0], [for.inc: %122]
+    %89 = phi f32 [for.body: 0], [for.inc: %125]
+    %90 = phi f32 [for.body: 0], [for.inc: %128]
+    %91 = phi f32 [for.body: 0], [for.inc: %131]
+    %92 = phi i32 [for.body: 0], [for.inc: %133]
+    %93 = phi i32 [for.body: %51], [for.inc: %106]
+    %94 = phi f32 [for.body: %52], [for.inc: %107]
+    %95 = phi f32 [for.body: %53], [for.inc: %110]
+    %96 = phi f32 [for.body: %54], [for.inc: %113]
+    %97 = phi f32 [for.body: %55], [for.inc: %116]
+    %98 = phi f32 [for.body: %56], [for.inc: %119]
+    %99 = icmp slt i32 %92, %16  ; line 72
+    br_cond %99, for.body, for.end merge for.end  ; line 72
+
+for.body:
+    %101 = mul i32 %92, %47  ; line 73
+    %102 = add i32 %43, %101  ; line 73
+    %103 = gep ptr<global, i32>, %1, %102  ; line 73
+    %104 = load i32, %103  ; line 73
+    %105 = ashr i32 %104, %45  ; line 73
+    %106 = and i32 %105, 65535  ; line 73
+    %107 = call f32 @pcuda_h2f(%106)  ; line 74
+    %108 = add i32 %67, %92  ; line 75
+    %109 = gep ptr<global, f32>, %0, %108  ; line 75
+    %110 = load f32, %109  ; line 75
+    %111 = add i32 %71, %92  ; line 76
+    %112 = gep ptr<global, f32>, %0, %111  ; line 76
+    %113 = load f32, %112  ; line 76
+    %114 = add i32 %75, %92  ; line 77
+    %115 = gep ptr<global, f32>, %0, %114  ; line 77
+    %116 = load f32, %115  ; line 77
+    %117 = add i32 %79, %92  ; line 78
+    %118 = gep ptr<global, f32>, %0, %117  ; line 78
+    %119 = load f32, %118  ; line 78
+    %120 = fmul f32 %110, %107  ; line 79
+    %121 = fadd f32 %84, %120  ; line 79
+    %122 = fadd f32 %88, %110  ; line 80
+    %123 = fmul f32 %113, %107  ; line 81
+    %124 = fadd f32 %85, %123  ; line 81
+    %125 = fadd f32 %89, %113  ; line 82
+    %126 = fmul f32 %116, %107  ; line 83
+    %127 = fadd f32 %86, %126  ; line 83
+    %128 = fadd f32 %90, %116  ; line 84
+    %129 = fmul f32 %119, %107  ; line 85
+    %130 = fadd f32 %87, %129  ; line 85
+    %131 = fadd f32 %91, %119  ; line 86
+    br for.inc  ; line 86
+
+for.inc:
+    %133 = add i32 %92, 1  ; line 72
+    br for.cond  ; line 72
+
+for.end:
+    %135 = mul i32 %33, %14  ; line 88
+    %136 = add i32 %135, %60  ; line 88
+    %137 = mul i32 %136, %19  ; line 88
+    %138 = add i32 %137, %38  ; line 88
+    %139 = gep ptr<global, f32>, %2, %138  ; line 89
+    %140 = fdiv f32 %84, %88  ; line 89
+    store f32 %140, %139  ; line 89
+    %142 = icmp sgt i32 %64, 1  ; line 90
+    br_cond %142, if.then, if.end merge if.end  ; line 90
+
+if.then:
+    %144 = add i32 %138, %19  ; line 90
+    %145 = gep ptr<global, f32>, %2, %144  ; line 90
+    %146 = fdiv f32 %85, %89  ; line 90
+    store f32 %146, %145  ; line 90
+    br if.end  ; line 90
+
+if.end:
+    %149 = icmp sgt i32 %64, 2  ; line 91
+    br_cond %149, if.then, if.end merge if.end  ; line 91
+
+if.then:
+    %151 = mul i32 2, %19  ; line 91
+    %152 = add i32 %138, %151  ; line 91
+    %153 = gep ptr<global, f32>, %2, %152  ; line 91
+    %154 = fdiv f32 %86, %90  ; line 91
+    store f32 %154, %153  ; line 91
+    br if.end  ; line 91
+
+if.end:
+    %157 = icmp sgt i32 %64, 3  ; line 92
+    br_cond %157, if.then, if.end merge if.end  ; line 92
+
+if.then:
+    %159 = mul i32 3, %19  ; line 92
+    %160 = add i32 %138, %159  ; line 92
+    %161 = gep ptr<global, f32>, %2, %160  ; line 92
+    %162 = fdiv f32 %87, %91  ; line 92
+    store f32 %162, %161  ; line 92
+    br if.end  ; line 92
+
+if.end:
+    br for.inc  ; line 92
+}
+
+; 3 functions, 0 globals, 218 instructions

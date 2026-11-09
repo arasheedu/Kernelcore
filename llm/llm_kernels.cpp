@@ -6,6 +6,7 @@
 
 #include <pcuda/kernel_registry.hpp>
 
+#include <algorithm>
 #include <limits>
 
 PCUDA_DECLARE_KERNEL_IMAGE(matvec_q8);
@@ -46,6 +47,12 @@ PCUDA_DECLARE_KERNEL_IMAGE(attn_scores);
 PCUDA_DECLARE_KERNEL_IMAGE(softmax);
 PCUDA_DECLARE_KERNEL_IMAGE(attn_values);
 PCUDA_DECLARE_KERNEL_IMAGE(silu_mul);
+PCUDA_DECLARE_KERNEL_IMAGE(matmul_f16);
+PCUDA_DECLARE_KERNEL_IMAGE(set_rows_f16);
+PCUDA_DECLARE_KERNEL_IMAGE(fa_scores);
+PCUDA_DECLARE_KERNEL_IMAGE(fa_max);
+PCUDA_DECLARE_KERNEL_IMAGE(fa_exp);
+PCUDA_DECLARE_KERNEL_IMAGE(fa_values);
 
 namespace llm {
 namespace {
@@ -389,8 +396,9 @@ Error ropeGgmlMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) 
     LLM_TRY(check(ctx, a.y, f32Bytes(count * 2), "y"));
     LLM_TRY(check(ctx, a.pos, size_t(a.n_tokens) * sizeof(int), "pos"));
     LLM_TRY(check(ctx, a.ff, f32Bytes(pairs), "ff"));
-    LLM_TRY(check(ctx, a.dims, 3 * sizeof(int), "dims"));
+    LLM_TRY(check(ctx, a.dims, 5 * sizeof(int), "dims"));
     if (a.dims[0] != pairs || a.dims[1] != a.n_head || a.dims[2] != pairs * a.n_tokens) return Error::InvalidValue;
+    if (a.dims[3] != (a.neox ? 1 : 2) || a.dims[4] != (a.neox ? pairs : 1)) return Error::InvalidValue;
     ArgPacker pk(*out);
     pk.ptr(a.x).ptr(a.y).ptr(a.pos).ptr(a.ff).ptr(a.dims).f32(a.log2_base);
     return pk.finish(pairs * a.n_tokens);  // one thread per (token, pair index)
@@ -819,6 +827,191 @@ Error siluChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) n
     return pk.finish(length);
 }
 
+// ---- set_rows_f16 / fa_scores / fa_max / fa_exp / fa_values: chunk start as a float ------------
+
+constexpr int64_t kFloatIndex = int64_t(1) << 24;  // thread counts whose start a float holds exactly
+
+int64_t matmulF16Threads(const MatmulF16Args& a) { return int64_t(a.rows) * ((a.ncols + 3) / 4); }
+Error matmulF16Marshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const MatmulF16Args*>(p);
+    if (a.rows <= 0 || a.rows % 8 || a.k <= 0 || a.k % 2 || a.ncols <= 0 || !fitsIndex(a.rows, a.k) ||
+        !fitsIndex(a.ncols, std::max(a.rows, a.k)) || matmulF16Threads(a) >= kFloatIndex)
+        return Error::InvalidValue;
+    LLM_TRY(check(ctx, a.qw, size_t(a.rows) * size_t(a.k / 2) * sizeof(int), "qw"));
+    LLM_TRY(check(ctx, a.x, f32Bytes(int64_t(a.ncols) * a.k), "x"));
+    LLM_TRY(check(ctx, a.y, f32Bytes(int64_t(a.ncols) * a.rows), "y"));
+    LLM_TRY(check(ctx, a.dims, 3 * sizeof(int), "dims"));
+    if (a.dims[0] != a.rows || a.dims[1] != a.k || a.dims[2] != a.ncols) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.qw).ptr(a.x).ptr(a.y).ptr(a.dims).f32(0.0f);
+    return pk.finish(matmulF16Threads(a));
+}
+Error matmulF16Extent(const void* p, int64_t* total) noexcept {
+    *total = matmulF16Threads(*static_cast<const MatmulF16Args*>(p));
+    return Error::Success;
+}
+Error matmulF16Chunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const MatmulF16Args*>(p);
+    if (!chunkOk(matmulF16Threads(a), begin, length) || begin % 8) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.qw).ptr(a.x).ptr(a.y).ptr(a.dims).f32(float(begin));
+    return pk.finish(length);
+}
+
+Error setRowsCheck(const SetRowsF16Args& a, const LaunchContext& ctx) {
+    if (a.pairs <= 0 || a.pairs % 8 || a.rows <= 0 || a.dst_rows <= 0 || a.src_row < 2 * a.pairs ||
+        a.dst_row < a.pairs || int64_t(a.pairs) * a.rows >= kFloatIndex || !fitsIndex(a.rows, a.src_row) ||
+        !fitsIndex(a.dst_rows, a.dst_row))
+        return Error::InvalidValue;
+    LLM_TRY(check(ctx, a.src, f32Bytes(int64_t(a.rows - 1) * a.src_row + 2 * a.pairs), "src"));
+    LLM_TRY(check(ctx, a.idx, size_t(a.rows) * 2 * sizeof(int), "idx"));
+    LLM_TRY(check(ctx, a.dst, size_t(a.dst_rows) * size_t(a.dst_row) * sizeof(int), "dst"));
+    LLM_TRY(check(ctx, a.dims, 5 * sizeof(int), "dims"));
+    const int* d = a.dims;
+    if (d[0] != a.pairs || d[1] != a.rows || d[2] != a.src_row || d[3] != a.dst_row || d[4] != a.dst_rows)
+        return Error::InvalidValue;
+    return Error::Success;
+}
+Error setRowsMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const SetRowsF16Args*>(p);
+    LLM_TRY(setRowsCheck(a, ctx));
+    ArgPacker pk(*out);
+    pk.ptr(a.src).ptr(a.idx).ptr(a.dst).ptr(a.dims).f32(0.0f);
+    return pk.finish(int64_t(a.pairs) * a.rows);
+}
+Error setRowsExtent(const void* p, int64_t* total) noexcept {
+    const auto& a = *static_cast<const SetRowsF16Args*>(p);
+    *total = int64_t(a.pairs) * a.rows;
+    return Error::Success;
+}
+Error setRowsChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const SetRowsF16Args*>(p);
+    if (!chunkOk(int64_t(a.pairs) * a.rows, begin, length) || begin % 8) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.src).ptr(a.idx).ptr(a.dst).ptr(a.dims).f32(float(begin));
+    return pk.finish(length);
+}
+
+bool faDimsMatch(const int* dims, const FaDims& d) {
+    int v[kFaDims];
+    faDimsInts(d, v);
+    for (int i = 0; i < kFaDims; ++i)
+        if (dims[i] != v[i]) return false;
+    return true;
+}
+// Shape checks shared by the four kernels; every product below fits in int32 and in a float index.
+Error faCheckShape(const FaDims& d, const int* dims, const LaunchContext& ctx) {
+    if (d.H <= 0 || d.T <= 0 || d.D <= 0 || d.D % 8 || d.H_kv <= 0 || d.group <= 0 || d.H != d.H_kv * d.group ||
+        d.N <= 0 || d.tp % 8 || d.tp < d.T || d.k_row < 0 || d.k_head < 0 || d.v_row < 0 || d.v_head < 0 ||
+        d.q_tok < 0 || d.q_head < d.D || d.m_row < 0 || (d.has_mask != 0 && d.has_mask != 1))
+        return Error::InvalidValue;
+    if (!fitsIndex(int64_t(d.H) * d.N, d.tp) || int64_t(d.H) * d.N * d.tp >= kFloatIndex ||
+        int64_t(d.N) * d.H * d.D >= kFloatIndex || !fitsIndex(d.T, std::max(d.k_row, d.v_row)) ||
+        !fitsIndex(d.N, std::max(d.q_tok, d.m_row)) || !fitsIndex(d.H, d.q_head))
+        return Error::InvalidValue;
+    LLM_TRY(check(ctx, dims, kFaDims * sizeof(int), "dims"));
+    return faDimsMatch(dims, d) ? Error::Success : Error::InvalidValue;
+}
+size_t faScoreBytes(const FaDims& d) { return f32Bytes(int64_t(d.H) * d.N * d.tp); }
+// Words of a K or V cache view that the kernels read.
+size_t faCacheBytes(const FaDims& d, int row, int head) {
+    return (size_t(d.T - 1) * size_t(row) + size_t(d.H_kv - 1) * size_t(head) + size_t(d.D / 2)) * sizeof(int);
+}
+
+Error faScoresMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const FaScoresArgs*>(p);
+    const FaDims& d = a.d;
+    LLM_TRY(faCheckShape(d, a.dims, ctx));
+    LLM_TRY(check(ctx, a.q, f32Bytes(int64_t(d.N - 1) * d.q_tok + int64_t(d.H - 1) * d.q_head + d.D), "q"));
+    LLM_TRY(check(ctx, a.k, faCacheBytes(d, d.k_row, d.k_head), "k"));
+    if (d.has_mask) LLM_TRY(check(ctx, a.mask, (size_t(d.N - 1) * size_t(d.m_row) + size_t(d.T + 1) / 2) * sizeof(int), "mask"));
+    else LLM_TRY(check(ctx, a.mask, sizeof(int), "mask"));
+    LLM_TRY(check(ctx, a.s, faScoreBytes(d), "s"));
+    ArgPacker pk(*out);
+    pk.ptr(a.q).ptr(a.k).ptr(a.mask).ptr(a.s).ptr(a.dims).f32(a.scale).f32(0.0f);
+    return pk.finish(int64_t(d.H_kv) * d.N * d.tp);
+}
+Error faScoresExtent(const void* p, int64_t* total) noexcept {
+    const auto& d = static_cast<const FaScoresArgs*>(p)->d;
+    *total = int64_t(d.H_kv) * d.N * d.tp;
+    return Error::Success;
+}
+Error faScoresChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const FaScoresArgs*>(p);
+    if (!chunkOk(int64_t(a.d.H_kv) * a.d.N * a.d.tp, begin, length) || begin % 8) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.q).ptr(a.k).ptr(a.mask).ptr(a.s).ptr(a.dims).f32(a.scale).f32(float(begin));
+    return pk.finish(length);
+}
+
+Error faMaxMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const FaMaxArgs*>(p);
+    LLM_TRY(faCheckShape(a.d, a.dims, ctx));
+    LLM_TRY(check(ctx, a.s, faScoreBytes(a.d), "s"));
+    LLM_TRY(check(ctx, a.m, f32Bytes(int64_t(a.d.H) * a.d.N), "m"));
+    ArgPacker pk(*out);
+    pk.ptr(a.s).ptr(a.m).ptr(a.dims).f32(0.0f);
+    return pk.finish(int64_t(a.d.H) * a.d.N);
+}
+Error faMaxExtent(const void* p, int64_t* total) noexcept {
+    const auto& d = static_cast<const FaMaxArgs*>(p)->d;
+    *total = int64_t(d.H) * d.N;
+    return Error::Success;
+}
+Error faMaxChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const FaMaxArgs*>(p);
+    if (!chunkOk(int64_t(a.d.H) * a.d.N, begin, length) || begin % 8) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.s).ptr(a.m).ptr(a.dims).f32(float(begin));
+    return pk.finish(length);
+}
+
+Error faExpMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const FaExpArgs*>(p);
+    LLM_TRY(faCheckShape(a.d, a.dims, ctx));
+    LLM_TRY(check(ctx, a.s, faScoreBytes(a.d), "s"));
+    LLM_TRY(check(ctx, a.m, f32Bytes(int64_t(a.d.H) * a.d.N), "m"));
+    ArgPacker pk(*out);
+    pk.ptr(a.s).ptr(a.m).ptr(a.dims).f32(0.0f);
+    return pk.finish(int64_t(a.d.H) * a.d.N * a.d.tp);
+}
+Error faExpExtent(const void* p, int64_t* total) noexcept {
+    const auto& d = static_cast<const FaExpArgs*>(p)->d;
+    *total = int64_t(d.H) * d.N * d.tp;
+    return Error::Success;
+}
+Error faExpChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const FaExpArgs*>(p);
+    if (!chunkOk(int64_t(a.d.H) * a.d.N * a.d.tp, begin, length) || begin % 8) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.s).ptr(a.m).ptr(a.dims).f32(float(begin));
+    return pk.finish(length);
+}
+
+Error faValuesMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const FaValuesArgs*>(p);
+    const FaDims& d = a.d;
+    LLM_TRY(faCheckShape(d, a.dims, ctx));
+    LLM_TRY(check(ctx, a.p, faScoreBytes(d), "p"));
+    LLM_TRY(check(ctx, a.v, faCacheBytes(d, d.v_row, d.v_head), "v"));
+    LLM_TRY(check(ctx, a.out, f32Bytes(int64_t(d.N) * d.H * d.D), "out"));
+    ArgPacker pk(*out);
+    pk.ptr(a.p).ptr(a.v).ptr(a.out).ptr(a.dims).f32(0.0f);
+    return pk.finish(int64_t(d.N) * d.H_kv * d.D);
+}
+Error faValuesExtent(const void* p, int64_t* total) noexcept {
+    const auto& d = static_cast<const FaValuesArgs*>(p)->d;
+    *total = int64_t(d.N) * d.H_kv * d.D;
+    return Error::Success;
+}
+Error faValuesChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
+    const auto& a = *static_cast<const FaValuesArgs*>(p);
+    if (!chunkOk(int64_t(a.d.N) * a.d.H_kv * a.d.D, begin, length) || begin % 8) return Error::InvalidValue;
+    ArgPacker pk(*out);
+    pk.ptr(a.p).ptr(a.v).ptr(a.out).ptr(a.dims).f32(float(begin));
+    return pk.finish(length);
+}
+
 #undef LLM_TRY
 
 const pcuda::KernelEntry kEntries[] = {
@@ -860,6 +1053,12 @@ const pcuda::KernelEntry kEntries[] = {
     {"softmax", PCUDA_KERNEL_IMAGE_FIELDS(softmax), &softmaxMarshal, &softmaxExtent, &softmaxChunk},
     {"attn_values", PCUDA_KERNEL_IMAGE_FIELDS(attn_values), &valuesMarshal, &valuesExtent, &valuesChunk},
     {"silu_mul", PCUDA_KERNEL_IMAGE_FIELDS(silu_mul), &siluMarshal, &siluExtent, &siluChunk},
+    {"matmul_f16", PCUDA_KERNEL_IMAGE_FIELDS(matmul_f16), &matmulF16Marshal, &matmulF16Extent, &matmulF16Chunk},
+    {"set_rows_f16", PCUDA_KERNEL_IMAGE_FIELDS(set_rows_f16), &setRowsMarshal, &setRowsExtent, &setRowsChunk},
+    {"fa_scores", PCUDA_KERNEL_IMAGE_FIELDS(fa_scores), &faScoresMarshal, &faScoresExtent, &faScoresChunk},
+    {"fa_max", PCUDA_KERNEL_IMAGE_FIELDS(fa_max), &faMaxMarshal, &faMaxExtent, &faMaxChunk},
+    {"fa_exp", PCUDA_KERNEL_IMAGE_FIELDS(fa_exp), &faExpMarshal, &faExpExtent, &faExpChunk},
+    {"fa_values", PCUDA_KERNEL_IMAGE_FIELDS(fa_values), &faValuesMarshal, &faValuesExtent, &faValuesChunk},
 };
 
 } // namespace

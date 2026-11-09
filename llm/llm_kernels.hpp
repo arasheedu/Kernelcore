@@ -163,6 +163,7 @@ struct RopeGgmlArgs {
     int          n_head;
     int          n_tokens;
     float        log2_base;
+    bool         neox = false;  // NEOX pairs (i, i + head_dim / 2); dims -> int[5] (see rope_ggml.cu)
 };
 
 // Parallel residual add + RMS norm + weight + 8-bit quantization for ggml graphs (kernels
@@ -281,7 +282,90 @@ struct QuantizeColsArgs {
     int          ncols;
 };
 
-// Registers matvec_q8, matvec_q4, matvec_q4x8, quantize_q8x4, quantize_cols, matvec_q4x8_q8, matvec_q4x8_q8x2, matvec_q4k_q8, matvec_q6k_q8, matmul_q4k_q8x4, matmul_q6k_q8x4, rope_ff, add_rms_norm, silu_mul_q8x4, add_sumsq, norm_q8x4, rms_norm, rope, kv_append, attn_scores, softmax, attn_values and silu_mul.
+// Y = W X for fp16 weights (kernels/llm/matmul_f16.cu): W repacked by llm::ref::repackF16 (rows in
+// groups of 8, interleaved by 32-bit word), x: ncols columns of k floats, y: ncols columns of rows.
+// rows % 8 == 0, k even. dims -> device int[3] {rows, k, ncols}. Chunkable (thread start as a float).
+struct MatmulF16Args {
+    const int*   qw;
+    const float* x;
+    float*       y;
+    const int*   dims;
+    int          rows;
+    int          k;
+    int          ncols;
+};
+
+// ggml SET_ROWS into an fp16 tensor: dst row idx[r] (int64) = fp16(src row r), rows of 2 * pairs
+// values (pairs % 8 == 0); rows outside [0, dst_rows) are skipped. Strides in floats / 32-bit words.
+// dims -> device int[5] {pairs, rows, src_row, dst_row, dst_rows}.
+struct SetRowsF16Args {
+    const float* src;
+    const int*   idx;
+    int*         dst;
+    const int*   dims;
+    int          pairs;
+    int          rows;
+    int          src_row;
+    int          dst_row;
+    int          dst_rows;
+};
+
+// ggml FLASH_ATTN_EXT with an fp16 KV cache, in four kernels: fa_scores, fa_max, fa_exp, fa_values
+// (kernels/llm/fa_scores.cu has the layouts). Scores s: H * N rows of tp floats.
+// dims -> device int[15], the fields in this order.
+struct FaDims {
+    int H = 0;         // query heads
+    int T = 0;         // KV positions
+    int D = 0;         // head size (K and V), a multiple of 8
+    int group = 0;     // H / H_kv
+    int tp = 0;        // score row length: T rounded up to a multiple of 8
+    int k_row = 0;     // K strides in 32-bit words (two fp16)
+    int k_head = 0;
+    int v_row = 0;     // V strides in words
+    int v_head = 0;
+    int N = 0;         // queries (tokens)
+    int q_tok = 0;     // Q strides in floats
+    int q_head = 0;
+    int m_row = 0;     // mask row stride in words
+    int has_mask = 0;
+    int H_kv = 0;      // KV heads
+};
+constexpr int kFaDims = 15;
+inline void faDimsInts(const FaDims& d, int* out) {
+    const int v[kFaDims] = {d.H,    d.T,     d.D, d.group, d.tp,    d.k_row,    d.k_head, d.v_row,
+                            d.v_head, d.N, d.q_tok, d.q_head, d.m_row, d.has_mask, d.H_kv};
+    for (int i = 0; i < kFaDims; ++i) out[i] = v[i];
+}
+struct FaScoresArgs {
+    const float* q;
+    const int*   k;
+    const int*   mask;  // any valid allocation when !d.has_mask
+    float*       s;
+    const int*   dims;
+    FaDims       d;
+    float        scale;
+};
+struct FaMaxArgs {  // m[H * N]
+    const float* s;
+    float*       m;
+    const int*   dims;
+    FaDims       d;
+};
+struct FaExpArgs {
+    float*       s;
+    const float* m;
+    const int*   dims;
+    FaDims       d;
+};
+struct FaValuesArgs {  // out[N][H][D]
+    const float* p;
+    const int*   v;
+    float*       out;
+    const int*   dims;
+    FaDims       d;
+};
+
+// Registers matvec_q8, matvec_q4, matvec_q4x8, quantize_q8x4, quantize_cols, matvec_q4x8_q8, matvec_q4x8_q8x2, matvec_q4k_q8, matvec_q6k_q8, matmul_q4k_q8x4, matmul_q6k_q8x4, rope_ff, add_rms_norm, silu_mul_q8x4, add_sumsq, norm_q8x4, rms_norm, rope, kv_append, attn_scores, softmax, attn_values, silu_mul, matmul_f16, set_rows_f16 and fa_scores / fa_max / fa_exp / fa_values.
 // All but add_rms_norm, rope and kv_append opt into chunked launches.
 pcuda::Error registerKernels() noexcept;
 

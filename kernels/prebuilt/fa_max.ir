@@ -1,0 +1,62 @@
+; Booth IR
+
+func @pcuda_aligned8(i32 %0) __device__ {
+entry:
+    ret i32 %0  ; line 10
+}
+
+func @fa_max(ptr<global, f32> %0, ptr<global, f32> %1, ptr<global, i32> %2, f32 %3) __global__ {
+entry:
+    %4 = fptosi f32 %3 to i32  ; line 16
+    %5 = call i32 @pcuda_aligned8(%4)  ; line 16
+    %6 = block_id.x  ; line 16
+    %7 = block_dim.x  ; line 16
+    %8 = mul i32 %6, %7  ; line 16
+    %9 = add i32 %5, %8  ; line 16
+    %10 = thread_id.x  ; line 16
+    %11 = add i32 %9, %10  ; line 16
+    %12 = gep ptr<global, i32>, %2, 1  ; line 17
+    %13 = load i32, %12  ; line 17
+    %14 = gep ptr<global, i32>, %2, 4  ; line 18
+    %15 = load i32, %14  ; line 18
+    %16 = gep ptr<global, i32>, %2, 0  ; line 19
+    %17 = load i32, %16  ; line 19
+    %18 = gep ptr<global, i32>, %2, 9  ; line 19
+    %19 = load i32, %18  ; line 19
+    %20 = mul i32 %17, %19  ; line 19
+    %21 = icmp slt i32 %11, %20  ; line 19
+    br_cond %21, if.then, if.end merge if.end  ; line 19
+
+if.then:
+    %23 = mul i32 %11, %15  ; line 20
+    %24 = gep ptr<global, f32>, %0, %23  ; line 21
+    %25 = load f32, %24  ; line 21
+    br for.cond  ; line 22
+
+if.end:
+    ret void  ; line 23
+
+for.cond:
+    %28 = phi f32 [if.then: %25], [for.inc: %35]
+    %29 = phi i32 [if.then: 1], [for.inc: %37]
+    %30 = icmp slt i32 %29, %13  ; line 22
+    br_cond %30, for.body, for.end merge for.end  ; line 22
+
+for.body:
+    %32 = add i32 %23, %29  ; line 22
+    %33 = gep ptr<global, f32>, %0, %32  ; line 22
+    %34 = load f32, %33  ; line 22
+    %35 = fmax %28 %34  ; line 22
+    br for.inc  ; line 22
+
+for.inc:
+    %37 = add i32 %29, 1  ; line 22
+    br for.cond  ; line 22
+
+for.end:
+    %39 = gep ptr<global, f32>, %1, %11  ; line 23
+    store f32 %28, %39  ; line 23
+    br if.end  ; line 23
+}
+
+; 2 functions, 0 globals, 44 instructions

@@ -15,5 +15,8 @@ The hook patch adds the `GGML_PCUDA` / `GGML_PCUDA_ROOT` options, `ggml_add_back
 static registration, and a change in `src/llama-context.cpp`. That change keeps each CPU layer's norms on an ACCEL backend that
 supports them, instead of pinning them to the CPU, so a layer is not split around every norm. A
 change in `src/llama-model.cpp` lets ACCEL devices turn off mmap in the default load mode: pcuda
-copies the weights into its own memory, so a mapped file would keep a second copy resident. See the main README ("ggml backend prototype") for what the backend does
+copies the weights into its own memory, so a mapped file would keep a second copy resident. For
+attention in pcuda, `src/llama-kv-cache.cpp` puts a CPU layer's KV cache in an ACCEL device's host
+buffer type when it offers one (pcuda memory the CPU backend can also use), and the flash-attention
+check in `src/llama-context.cpp` accepts an ACCEL device running a CPU layer's attention. See the main README ("ggml backend prototype") for what the backend does
 and how fast it is.

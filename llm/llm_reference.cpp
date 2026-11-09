@@ -618,7 +618,7 @@ void mulRows(const float* x, const float* w, float* y, int n, int count) {
 }
 
 void ropeGgml(const float* x, float* y, const int* pos, const float* ff, int head_dim, int n_head, int n_tokens,
-              float log2_base) {
+              float log2_base, bool neox) {
     const int pairs = head_dim / 2, count = pairs * n_head * n_tokens;
     for (int idx = 0; idx < count; ++idx) {
         const int t = idx / (pairs * n_head), i = idx % pairs;
@@ -626,9 +626,11 @@ void ropeGgml(const float* x, float* y, const int* pos, const float* ff, int hea
                             std::exp2(-static_cast<float>(i) / static_cast<float>(pairs) * log2_base) / ff[i];
         const float turns = theta * 0.159154943f;  // Booth's sin/cos lowering (BOOTH_PIN F11)
         const float c = std::cos(turns * 6.28318548f), s = std::sin(turns * 6.28318548f);
-        const float x0 = x[2 * idx], x1 = x[2 * idx + 1];
-        y[2 * idx] = x0 * c - x1 * s;
-        y[2 * idx + 1] = x0 * s + x1 * c;
+        const int head = idx / pairs;  // (token, head) row
+        const int a = neox ? head * head_dim + i : 2 * idx, b = neox ? a + pairs : a + 1;
+        const float x0 = x[a], x1 = x[b];
+        y[a] = x0 * c - x1 * s;
+        y[b] = x0 * s + x1 * c;
     }
 }
 
@@ -720,6 +722,77 @@ void siluMulQ8F(const float* g, const float* u, float* y, int* q, int n, int col
             const size_t o = size_t(c) * n + size_t(bl) * 32;
             for (int i = 0; i < 32; ++i) y[o + i] = g[o + i] / (1.0f + std::exp2(-g[o + i] * 1.44269504f)) * u[o + i];
             quantizeBlockInto(y + o, qc, nb, bl);
+        }
+    }
+}
+
+
+uint16_t f32ToF16(float x) {
+    const uint32_t sign = x < 0.0f ? 0x8000u : 0u;  // as the kernel: -0 gives +0
+    const float a = std::fabs(x);
+    if (!(a < 65520.0f)) return uint16_t(sign | 0x7bffu);
+    if (a < 6.103515625e-05f) return uint16_t(sign | uint32_t(std::nearbyint(a * 16777216.0f)));  // subnormal
+    int e = 0;
+    const float f = std::frexp(a, &e);  // a = f * 2^e, f in [0.5, 1)
+    const uint32_t m = uint32_t(std::nearbyint((f * 2.0f - 1.0f) * 1024.0f));
+    return uint16_t(sign | ((uint32_t(e - 1 + 15) << 10) + m));
+}
+void repackF16(const uint16_t* w, int rows, int k, int* out) {
+    const int kw = k / 2;
+    for (int r = 0; r < rows; ++r)
+        for (int j = 0; j < kw; ++j)
+            out[(size_t(r / 8) * kw + j) * 8 + r % 8] =
+                int(uint32_t(w[size_t(r) * k + 2 * j]) | (uint32_t(w[size_t(r) * k + 2 * j + 1]) << 16));
+}
+void unpackF16(const int* stream, int rows, int k, uint16_t* w) {
+    const int kw = k / 2;
+    for (int r = 0; r < rows; ++r)
+        for (int j = 0; j < kw; ++j) {
+            const uint32_t v = uint32_t(stream[(size_t(r / 8) * kw + j) * 8 + r % 8]);
+            w[size_t(r) * k + 2 * j] = uint16_t(v & 0xFFFF);
+            w[size_t(r) * k + 2 * j + 1] = uint16_t(v >> 16);
+        }
+}
+void matmulF16(const uint16_t* w, const float* x, float* y, int rows, int k, int ncols) {
+    for (int c = 0; c < ncols; ++c)
+        for (int r = 0; r < rows; ++r) {
+            float a = 0.0f;
+            for (int j = 0; j < k; j += 2)
+                a += f16ToF32(w[size_t(r) * k + j]) * x[size_t(c) * k + j] + f16ToF32(w[size_t(r) * k + j + 1]) * x[size_t(c) * k + j + 1];
+            y[size_t(c) * rows + r] = a;
+        }
+}
+void setRowsF16(const float* src, const int64_t* idx, uint16_t* dst, int pairs, int rows, int src_row, int dst_row,
+                int dst_rows) {
+    for (int r = 0; r < rows; ++r) {
+        const int row = int(idx[r]);  // the low 32-bit word, as the kernel reads it
+        if (row < 0 || row >= dst_rows) continue;
+        for (int j = 0; j < 2 * pairs; ++j) dst[size_t(row) * dst_row * 2 + j] = f32ToF16(src[size_t(r) * src_row + j]);
+    }
+}
+void flashAttnF16(const float* q, const uint16_t* k, const uint16_t* v, const uint16_t* mask, float* out,
+                  const FaDims& d, float scale) {
+    std::vector<float> s(size_t(d.T));
+    for (int i = 0; i < d.N; ++i) {
+        for (int h = 0; h < d.H; ++h) {
+            const int kvh = h / d.group;
+            const float* qh = q + size_t(i) * d.q_tok + size_t(h) * d.q_head;
+            float mx = -INFINITY;
+            for (int t = 0; t < d.T; ++t) {
+                const uint16_t* kr = k + (size_t(t) * d.k_row + size_t(kvh) * d.k_head) * 2;
+                float a = 0.0f;
+                for (int j = 0; j < d.D; ++j) a += qh[j] * f16ToF32(kr[j]);
+                const float mv = d.has_mask ? f16ToF32(mask[size_t(i) * d.m_row * 2 + t]) : 0.0f;
+                s[t] = a * scale + mv;
+                mx = std::max(mx, s[t]);
+            }
+            float sum = 0.0f;
+            for (int t = 0; t < d.T; ++t) sum += (s[t] = std::exp2((s[t] - mx) * 1.44269504f));
+            for (int dd = 0; dd < d.D; ++dd) {
+                float a = 0.0f;
+                for (int t = 0; t < d.T; ++t) a += s[t] * f16ToF32(v[(size_t(t) * d.v_row + size_t(kvh) * d.v_head) * 2 + dd]);
+                out[(size_t(i) * d.H + h) * d.D + dd] = a / sum;
+            }
         }
     }
 }

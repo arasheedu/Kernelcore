@@ -110,6 +110,14 @@ inline VF vcos(VF a) { return perLane<cosTurns>(a); }
 inline VF vexp2(VF a) { return perLane<::exp2f>(a); }
 inline VF vlog2(VF a) { return perLane<::log2f>(a); }
 
+// ---- fp16 -> float (pcuda_h2f in kernels/llm/fa_scores.cu): F16C on the low 16 bits of each lane ----
+inline VF vh2f(VI h) {
+    const __m128i m = _mm_set1_epi32(0xFFFF);
+    const __m128i lo = _mm_and_si128(_mm256_castsi256_si128(h), m), hi = _mm_and_si128(_mm256_extracti128_si256(h, 1), m);
+    return _mm256_cvtph_ps(_mm_packus_epi32(lo, hi));  // lanes 0-3 then 4-7, each <= 0xFFFF
+}
+inline float h2fScalar(int h) { return _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h & 0xFFFF))); }
+
 // ---- 8-bit dot products (pcuda_dp4a in kernels/llm/matvec_q4x8_q8.cu) ----
 // c + sum over the 4 bytes of a (unsigned) times the 4 bytes of b (signed), wrapping 32-bit.
 inline int dp4aScalar(int a, int b, int c) {

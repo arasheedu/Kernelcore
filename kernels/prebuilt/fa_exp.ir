@@ -1,0 +1,58 @@
+; Booth IR
+
+func @pcuda_aligned8(i32 %0) __device__ {
+entry:
+    ret i32 %0  ; line 11
+}
+
+func @fa_exp(ptr<global, f32> %0, ptr<global, f32> %1, ptr<global, i32> %2, f32 %3) __global__ {
+entry:
+    %4 = fptosi f32 %3 to i32  ; line 17
+    %5 = call i32 @pcuda_aligned8(%4)  ; line 17
+    %6 = block_id.x  ; line 17
+    %7 = block_dim.x  ; line 17
+    %8 = mul i32 %6, %7  ; line 17
+    %9 = add i32 %5, %8  ; line 17
+    %10 = thread_id.x  ; line 17
+    %11 = add i32 %9, %10  ; line 17
+    %12 = gep ptr<global, i32>, %2, 4  ; line 18
+    %13 = load i32, %12  ; line 18
+    %14 = call i32 @pcuda_aligned8(%13)  ; line 18
+    %15 = gep ptr<global, i32>, %2, 0  ; line 19
+    %16 = load i32, %15  ; line 19
+    %17 = gep ptr<global, i32>, %2, 9  ; line 19
+    %18 = load i32, %17  ; line 19
+    %19 = mul i32 %16, %18  ; line 19
+    %20 = mul i32 %19, %14  ; line 19
+    %21 = icmp slt i32 %11, %20  ; line 19
+    br_cond %21, if.then, if.end merge if.end  ; line 19
+
+if.then:
+    %23 = sdiv i32 %11, %14  ; line 20
+    %24 = mul i32 %23, %14  ; line 21
+    %25 = sub i32 %11, %24  ; line 21
+    %26 = gep ptr<global, i32>, %2, 1  ; line 22
+    %27 = load i32, %26  ; line 22
+    %28 = icmp slt i32 %25, %27  ; line 22
+    br_cond %28, if.then, if.end merge if.end  ; line 22
+
+if.end:
+    ret void  ; line 22
+
+if.then:
+    %31 = gep ptr<global, f32>, %0, %11  ; line 22
+    %32 = gep ptr<global, f32>, %0, %11  ; line 22
+    %33 = load f32, %32  ; line 22
+    %34 = gep ptr<global, f32>, %1, %23  ; line 22
+    %35 = load f32, %34  ; line 22
+    %36 = fsub f32 %33, %35  ; line 22
+    %37 = fmul f32 %36, 1.44269504  ; line 22
+    %38 = exp2 %37  ; line 22
+    store f32 %38, %31  ; line 22
+    br if.end  ; line 22
+
+if.end:
+    br if.end  ; line 22
+}
+
+; 2 functions, 0 globals, 44 instructions

@@ -33,6 +33,24 @@ TEST_CASE(planner_covers_exactly_and_respects_limits) {
         }
     }
     CHECK(pcuda::planChunks(0, 4, 64).empty());
+    // Guided: exact cover, aligned interior boundaries, sizes never grow, the first is about a
+    // 2 * threads share.
+    for (int64_t total : {1ll, 63ll, 4097ll, 100003ll, 1ll << 24}) {
+        for (unsigned threads : {1u, 3u, 12u, 64u}) {
+            for (int64_t min_chunk : {1ll, 16ll, 4096ll}) {
+                const auto chunks = pcuda::planChunksGuided(total, threads, min_chunk, 16);
+                CHECK(pcuda::chunksCoverExactly(chunks, total));
+                for (size_t i = 0; i + 1 < chunks.size(); ++i) {
+                    CHECK(chunks[i].length % 16 == 0);
+                    CHECK(chunks[i].length >= min_chunk);
+                    CHECK(chunks[i + 1].length <= chunks[i].length);
+                }
+                CHECK(chunks.front().length <= std::max<int64_t>((total / (2 * threads) + 15) / 16 * 16, std::max<int64_t>(min_chunk + 15, 16)) ||
+                      chunks.size() == 1);
+            }
+        }
+    }
+    CHECK(pcuda::planChunksGuided(0, 4, 16).empty());
     CHECK(!pcuda::chunksCoverExactly({{0, 10}, {9, 5}}, 14));   // overlap
     CHECK(!pcuda::chunksCoverExactly({{0, 10}, {11, 5}}, 16));  // gap
 }

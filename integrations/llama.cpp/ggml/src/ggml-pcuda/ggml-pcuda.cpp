@@ -51,6 +51,9 @@ struct PcudaRuntime {
     int      tile = 8;             // GGML_PCUDA_TILE=4 or 8: columns per matmul thread (batches of <= 4 use 4)
     bool     q8k = true;           // GGML_PCUDA_Q8K=0: batches use per-32 activation scales (bit-identical to the matvec)
     int      matmul_chunks = 4;    // GGML_PCUDA_MATMUL_CHUNKS: chunk factor for batched matmuls (fast cores take more chunks)
+    bool     attn = true;          // GGML_PCUDA_ATTN=0: leave the KV cache and attention to the CPU backend
+    int      attn_tokens = 8;      // GGML_PCUDA_ATTN_TOKENS: largest batch whose attention pcuda runs (longer: the CPU backend)
+    bool     concurrent = true;    // GGML_PCUDA_CONCURRENT=0: matmuls of the same input one step each
 };
 
 PcudaRuntime & runtime() {
@@ -68,6 +71,7 @@ PcudaRuntime & runtime() {
         pcudaGetDeviceProperties(&p, 0);
         r.workers = p.worker_count + 1;
         r.fast_workers = std::max(1u, p.performance_workers);
+        if (const char * fw = std::getenv("GGML_PCUDA_FAST_WORKERS")) r.fast_workers = std::clamp(unsigned(std::atoi(fw)), 1u, r.workers);
         const char * g = std::getenv("GGML_PCUDA_GRAPHS");
         r.graphs = !(g && std::strcmp(g, "0") == 0);
         const char * off = std::getenv("GGML_PCUDA_DISABLE");
@@ -80,6 +84,9 @@ PcudaRuntime & runtime() {
         if (const char * mc = std::getenv("GGML_PCUDA_MATMUL_CHUNKS")) r.matmul_chunks = std::clamp(std::atoi(mc), 1, 16);
         if (const char * qk = std::getenv("GGML_PCUDA_Q8K")) r.q8k = std::strcmp(qk, "0") != 0;
         if (const char * tl = std::getenv("GGML_PCUDA_TILE")) r.tile = std::atoi(tl) == 4 ? 4 : 8;
+        if (const char * at = std::getenv("GGML_PCUDA_ATTN")) r.attn = std::strcmp(at, "0") != 0;
+        if (const char * cc = std::getenv("GGML_PCUDA_CONCURRENT")) r.concurrent = std::strcmp(cc, "0") != 0;
+        if (const char * an = std::getenv("GGML_PCUDA_ATTN_TOKENS")) r.attn_tokens = std::max(0, std::atoi(an));
         r.ok = true;
         GGML_LOG_INFO("pcuda: %s, pool of %u threads + caller (%u for bandwidth-bound launches), graphs %s\n", p.name,
                       p.worker_count, r.fast_workers, r.graphs ? "on" : "off");
@@ -94,8 +101,16 @@ bool is_kquant(ggml_type t) { return t == GGML_TYPE_Q4_K || t == GGML_TYPE_Q6_K;
 int  stream_words(ggml_type t) { return t == GGML_TYPE_Q4_K ? 37 : 53; }  // per row and 256 weights
 
 bool weight_shape_ok(const ggml_tensor * w) {
-    return is_kquant(w->type) && w->ne[2] == 1 && w->ne[3] == 1 && w->ne[0] % 256 == 0 && w->ne[1] % 8 == 0 &&
-           w->ne[0] <= INT32_MAX && w->ne[1] <= INT32_MAX && ggml_is_contiguous(w);
+    // K-quants (super-blocks of 256) and fp16 (matmul_f16, e.g. Qwen3's attn_v), in 8-row groups
+    const bool kq = is_kquant(w->type) && w->ne[0] % 256 == 0;
+    const bool f16 = w->type == GGML_TYPE_F16 && w->ne[0] % 2 == 0;
+    return (kq || f16) && w->ne[2] == 1 && w->ne[3] == 1 && w->ne[1] % 8 == 0 && w->ne[0] <= INT32_MAX &&
+           w->ne[1] <= INT32_MAX && ggml_is_contiguous(w);
+}
+// fp16 weights are repacked too, but only in weight buffers: fp16 inputs (the attention mask) are not.
+bool is_f16_weight(ggml_backend_buffer_t buf, const ggml_tensor * t) {
+    return t->type == GGML_TYPE_F16 && weight_shape_ok(t) && buf &&
+           ggml_backend_buffer_get_usage(buf) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS;
 }
 
 size_t stream_bytes(const ggml_tensor * w) {
@@ -157,7 +172,12 @@ void buffer_memset_tensor(ggml_backend_buffer_t, ggml_tensor * tensor, uint8_t v
     std::memset(static_cast<char *>(tensor->data) + offset, value, size);
 }
 
-void buffer_set_tensor(ggml_backend_buffer_t, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+void buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    if (is_f16_weight(buffer, tensor)) {
+        GGML_ASSERT(offset == 0 && size == ggml_nbytes(tensor) && "pcuda: fp16 weights are uploaded whole");
+        llm::ref::repackF16(static_cast<const uint16_t *>(data), int(tensor->ne[1]), int(tensor->ne[0]), static_cast<int *>(tensor->data));
+        return;
+    }
     if (is_kquant(tensor->type) && weight_shape_ok(tensor)) {
         GGML_ASSERT(offset == 0 && size == ggml_nbytes(tensor) && "pcuda: K-quant weights are uploaded whole");
         const auto * src = static_cast<const uint8_t *>(data);
@@ -169,7 +189,13 @@ void buffer_set_tensor(ggml_backend_buffer_t, ggml_tensor * tensor, const void *
     std::memcpy(static_cast<char *>(tensor->data) + offset, data, size);
 }
 
-void buffer_get_tensor(ggml_backend_buffer_t, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+void buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+    if (is_f16_weight(buffer, tensor)) {
+        std::vector<uint16_t> full(size_t(ggml_nelements(tensor)));
+        llm::ref::unpackF16(static_cast<const int *>(tensor->data), int(tensor->ne[1]), int(tensor->ne[0]), full.data());
+        std::memcpy(data, reinterpret_cast<const char *>(full.data()) + offset, size);
+        return;
+    }
     if (is_kquant(tensor->type) && weight_shape_ok(tensor)) {
         std::vector<uint8_t> full(ggml_nbytes(tensor));
         unpack_stream(tensor, full.data());
@@ -191,6 +217,27 @@ const ggml_backend_buffer_i buffer_i = {
     /* .memset_tensor = */ buffer_memset_tensor,
     /* .set_tensor    = */ buffer_set_tensor,
     /* .get_tensor    = */ buffer_get_tensor,
+    /* .set_tensor_2d = */ nullptr,
+    /* .get_tensor_2d = */ nullptr,
+    /* .cpy_tensor    = */ nullptr,
+    /* .clear         = */ buffer_clear,
+    /* .reset         = */ nullptr,
+};
+
+// KV cache buffers (pcuda_host_buffer_type): pcuda memory in ggml layout, which the CPU backend reads too.
+void host_buffer_set_tensor(ggml_backend_buffer_t, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    std::memcpy(static_cast<char *>(tensor->data) + offset, data, size);
+}
+void host_buffer_get_tensor(ggml_backend_buffer_t, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+    std::memcpy(data, static_cast<const char *>(tensor->data) + offset, size);
+}
+const ggml_backend_buffer_i host_buffer_i = {
+    /* .free_buffer   = */ buffer_free,
+    /* .get_base      = */ buffer_get_base,
+    /* .init_tensor   = */ nullptr,
+    /* .memset_tensor = */ buffer_memset_tensor,
+    /* .set_tensor    = */ host_buffer_set_tensor,
+    /* .get_tensor    = */ host_buffer_get_tensor,
     /* .set_tensor_2d = */ nullptr,
     /* .get_tensor_2d = */ nullptr,
     /* .cpy_tensor    = */ nullptr,
@@ -235,6 +282,35 @@ const ggml_backend_buffer_type_i buft_i = {
 
 ggml_backend_buffer_type_t pcuda_buffer_type();
 
+const char * host_buft_get_name(ggml_backend_buffer_type_t) { return "PCUDA_Host"; }
+
+ggml_backend_buffer_t host_buft_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
+    if (!runtime().ok) return nullptr;
+    void * p = nullptr;
+    const size_t bytes = size ? size : 64;
+    if (pcudaMalloc(&p, bytes) != pcuda::Error::Success) {
+        GGML_LOG_ERROR("pcuda: allocating %zu bytes failed: %s\n", bytes, pcudaGetLastErrorDetail());
+        return nullptr;
+    }
+    return ggml_backend_buffer_init(buft, host_buffer_i, new BufferCtx{p, bytes}, size);
+}
+
+size_t host_buft_get_alloc_size(ggml_backend_buffer_type_t, const ggml_tensor * tensor) { return ggml_nbytes(tensor); }
+bool   host_buft_is_host(ggml_backend_buffer_type_t) { return true; }
+
+const ggml_backend_buffer_type_i host_buft_i = {
+    /* .get_name         = */ host_buft_get_name,
+    /* .alloc_buffer     = */ host_buft_alloc_buffer,
+    /* .alloc_buffer_n   = */ nullptr,
+    /* .get_alignment    = */ buft_get_alignment,
+    /* .get_max_size     = */ nullptr,
+    /* .get_alloc_size   = */ host_buft_get_alloc_size,
+    /* .get_alloc_size_n = */ nullptr,
+    /* .is_host          = */ host_buft_is_host,
+};
+
+ggml_backend_buffer_type_t pcuda_host_buffer_type();
+
 // ---- backend ------------------------------------------------------------------------------
 
 struct BackendCtx {
@@ -254,6 +330,8 @@ struct BackendCtx {
     std::vector<Quantized>            quantized;
     // GGML_PCUDA_PROFILE=1: time spent in graph_compute, recording and kernel runs
     bool                              profile = false;
+    bool                              profile_shapes = false;  // GGML_PCUDA_PROFILE=2: matmuls timed per weight shape
+    std::string                       tag;                     // the shape of the matmul being launched
     double                            t_compute = 0, t_record = 0, t_run = 0;
     long long                         calls = 0, launches = 0;
     std::map<std::string, std::pair<double, long long>> per_kernel;  // graphs off: synchronous launches, timed
@@ -264,7 +342,7 @@ struct BackendCtx {
                           "kernel runs %.1f ms\n", calls, launches, t_compute * 1e3, t_record * 1e3, t_run * 1e3);
         if (profile)
             for (const auto & [name, tc] : per_kernel)
-                std::fprintf(stderr, "  %-16s %8lld launches %9.1f ms %7.1f us each\n", name.c_str(), tc.second, tc.first * 1e3,
+                std::fprintf(stderr, "  %-28s %8lld launches %9.1f ms %7.1f us each\n", name.c_str(), tc.second, tc.first * 1e3,
                              tc.first * 1e6 / double(tc.second));
         if (scratch) pcudaFree(scratch);
         for (auto & [k, p] : consts) pcudaFree(p);
@@ -329,7 +407,7 @@ bool launch(BackendCtx & ctx, const char * kernel, const Args & a, int64_t min_c
     }
     if (ctx.profile) ++ctx.launches;
     if (ctx.profile && !ctx.capturing) {
-        auto & tc = ctx.per_kernel[kernel];
+        auto & tc = ctx.per_kernel[ctx.profile_shapes && !ctx.tag.empty() ? std::string(kernel) + " " + ctx.tag : std::string(kernel)];
         tc.first += now() - t0;
         ++tc.second;
     }
@@ -347,6 +425,28 @@ bool batch_k256(int64_t ncols) { return ncols > 1 && !runtime().matvec_cols && r
 
 // Scratch slots for the 8-bit form of tensor x (ncols columns of k values), registered so that the
 // matmuls reading x find it, then extra ints for the caller. The caller records the kernel that fills them.
+// `total` ints of the scratch for this recording (64-byte aligned). Growing it runs what is
+// recorded first, since recorded launches point into the old scratch.
+int * scratch_take(BackendCtx & ctx, size_t total) {
+    total = (total + 15) / 16 * 16;
+    if (ctx.scratch_used + total > ctx.scratch_ints) {
+        if (!flush(ctx)) return nullptr;
+        const size_t need = std::max(total * 4, ctx.scratch_ints * 2);
+        if (ctx.scratch) pcudaFree(ctx.scratch);
+        ctx.scratch = nullptr;
+        void * p = nullptr;
+        if (pcudaMalloc(&p, need * sizeof(int)) != pcuda::Error::Success) return nullptr;
+        ctx.scratch = static_cast<int *>(p);
+        ctx.scratch_ints = need;
+        ctx.scratch_used = 0;
+        ctx.quantized.clear();
+        if (!begin(ctx)) return nullptr;
+    }
+    int * base = ctx.scratch + ctx.scratch_used;
+    ctx.scratch_used += total;
+    return base;
+}
+
 int * quantized_slots(BackendCtx & ctx, const ggml_tensor * x, int k, int64_t ncols, bool k256 = false, size_t extra = 0) {
     const size_t slot = size_t(k256 ? llm::scratchKInts(k / 256) : llm::scratchInts(k / 32));
     const size_t total = slot * size_t(ncols) + extra;
@@ -433,11 +533,38 @@ bool fused_swiglu(BackendCtx & ctx, ggml_tensor * dst) {
     return k256 ? launch(ctx, "silu_mul_q8kf", a, 8) : launch(ctx, "silu_mul_q8x4f", a, 16);
 }
 
+// The 8-bit input that mul_mat(dst) will use, quantized now (recorded as its own launch).
+bool mul_mat_input(BackendCtx & ctx, const ggml_tensor * dst) {
+    const ggml_tensor * w = dst->src[0];
+    const ggml_tensor * x = dst->src[1];
+    if (w->type == GGML_TYPE_F16) return true;
+    const int k = int(w->ne[0]);
+    const int64_t ncols = ggml_nrows(x);
+    const bool k256 = batch_k256(ncols) && x->nb[1] == size_t(k) * sizeof(float);
+    return quantized_input(ctx, x, k, ncols, k256) != nullptr;
+}
+
+bool mul_mat_impl(BackendCtx & ctx, ggml_tensor * dst);
 bool mul_mat(BackendCtx & ctx, ggml_tensor * dst) {
+    if (ctx.profile_shapes) ctx.tag = std::to_string(dst->src[0]->ne[1]) + "x" + std::to_string(dst->src[0]->ne[0]);
+    const bool ok = mul_mat_impl(ctx, dst);
+    ctx.tag.clear();
+    return ok;
+}
+
+bool mul_mat_impl(BackendCtx & ctx, ggml_tensor * dst) {
     const ggml_tensor * w = dst->src[0];
     const ggml_tensor * x = dst->src[1];
     const int rows = int(w->ne[1]), k = int(w->ne[0]), nb = k / 32;
     const int64_t ncols = ggml_nrows(x);
+    if (w->type == GGML_TYPE_F16) {  // fp32 activations as they are; weight words read once per 4 columns
+        const int * fd = ctx.ints({rows, k, int(ncols)});
+        if (!fd) return false;
+        const llm::MatmulF16Args a{static_cast<const int *>(w->data), static_cast<const float *>(x->data),
+                                   static_cast<float *>(dst->data), fd, rows, k, int(ncols)};
+        return ncols > 1 ? launch(ctx, "matmul_f16", a, 16, runtime().workers * unsigned(runtime().matmul_chunks))
+                         : launch(ctx, "matmul_f16", a, 16);
+    }
     const int * dims = ctx.ints({rows, k, int(ncols), runtime().row_block});
     // Batches: activations scaled per 256 values (integer sums over whole super-blocks), unless off.
     const bool k256 = batch_k256(ncols) && x->nb[1] == size_t(k) * sizeof(float);
@@ -502,11 +629,12 @@ bool rope(BackendCtx & ctx, ggml_tensor * dst) {
     const ggml_tensor * x = dst->src[0];
     const int hd = int(x->ne[0]), nh = int(x->ne[1]), nt = int(x->ne[2]), pairs = hd / 2;
     const float * ff = dst->src[2] ? static_cast<const float *>(dst->src[2]->data) : ctx.ones_of(pairs);
-    const int * dims = ctx.ints({pairs, nh, pairs * nt});
+    const bool  neox = (reinterpret_cast<const int32_t *>(dst->op_params)[2] & GGML_ROPE_TYPE_NEOX) != 0;
+    const int * dims = ctx.ints({pairs, nh, pairs * nt, neox ? 1 : 2, neox ? pairs : 1});
     if (!ff || !dims) return false;
     const llm::RopeGgmlArgs a{static_cast<const float *>(x->data), static_cast<float *>(dst->data),
                               static_cast<const int *>(dst->src[1]->data), ff, dims, hd, nh, nt,
-                              std::log2(op_param_f32(dst, 5))};
+                              std::log2(op_param_f32(dst, 5)), neox};
     return launch(ctx, "rope_ggml", a, 0);
 }
 
@@ -514,6 +642,58 @@ bool swiglu(BackendCtx & ctx, ggml_tensor * dst) {
     const llm::SiluMulArgs a{static_cast<const float *>(dst->src[0]->data), static_cast<const float *>(dst->src[1]->data),
                              static_cast<float *>(dst->data), int(ggml_nelements(dst))};
     return launch(ctx, "silu_mul", a, 1024);
+}
+
+// ---- KV cache: SET_ROWS into it, FLASH_ATTN_EXT over it (fp16, in pcuda_host_buffer_type) ----
+
+// SET_ROWS: dst rows src1[r] (int64) = fp16(src0 row r).
+bool set_rows(BackendCtx & ctx, ggml_tensor * dst) {
+    const ggml_tensor * src = dst->src[0];
+    const ggml_tensor * idx = dst->src[1];
+    const int pairs = int(src->ne[0] / 2), rows = int(src->ne[1]);
+    const int src_row = int(src->nb[1] / 4), dst_row = int(dst->nb[1] / 4), dst_rows = int(dst->ne[1]);
+    const int * dims = ctx.ints({pairs, rows, src_row, dst_row, dst_rows});
+    if (!dims) return false;
+    const llm::SetRowsF16Args a{static_cast<const float *>(src->data), static_cast<const int *>(idx->data),
+                                static_cast<int *>(dst->data), dims, pairs, rows, src_row, dst_row, dst_rows};
+    return launch(ctx, "set_rows_f16", a, 64);
+}
+
+// FLASH_ATTN_EXT (no sinks, ALiBi or softcap): scores, row maxima, exponentials, weighted values.
+bool flash_attn(BackendCtx & ctx, ggml_tensor * dst) {
+    const ggml_tensor * q = dst->src[0];
+    const ggml_tensor * k = dst->src[1];
+    const ggml_tensor * v = dst->src[2];
+    const ggml_tensor * mask = dst->src[3];
+    llm::FaDims d;
+    d.D = int(k->ne[0]);
+    d.T = int(k->ne[1]);
+    d.H_kv = int(k->ne[2]);
+    d.H = int(q->ne[2]);
+    d.N = int(q->ne[1]);
+    d.group = d.H / d.H_kv;
+    d.tp = (d.T + 7) / 8 * 8;
+    d.k_row = int(k->nb[1] / 4), d.k_head = int(k->nb[2] / 4);
+    d.v_row = int(v->nb[1] / 4), d.v_head = int(v->nb[2] / 4);
+    d.q_tok = int(q->nb[1] / 4), d.q_head = int(q->nb[2] / 4);
+    d.m_row = mask ? int(mask->nb[1] / 4) : 0;
+    d.has_mask = mask ? 1 : 0;
+    int di[llm::kFaDims];
+    llm::faDimsInts(d, di);
+    const int * dims = ctx.ints(std::vector<int>(di, di + llm::kFaDims));
+    if (!dims) return false;
+    const size_t rows = size_t(d.H) * size_t(d.N);
+    int * sc = scratch_take(ctx, rows * size_t(d.tp) + rows);  // scores, then row maxima
+    if (!sc) return false;
+    float * s = reinterpret_cast<float *>(sc);
+    float * m = s + rows * size_t(d.tp);
+    const float * qd = static_cast<const float *>(q->data);
+    const int * kd = static_cast<const int *>(k->data);
+    const int * md = mask ? static_cast<const int *>(mask->data) : dims;
+    return launch(ctx, "fa_scores", llm::FaScoresArgs{qd, kd, md, s, dims, d, op_param_f32(dst, 0)}, 64) &&
+           launch(ctx, "fa_max", llm::FaMaxArgs{s, m, dims, d}, 8) &&
+           launch(ctx, "fa_exp", llm::FaExpArgs{s, m, dims, d}, 256) &&
+           launch(ctx, "fa_values", llm::FaValuesArgs{s, static_cast<const int *>(v->data), static_cast<float *>(dst->data), dims, d}, 16);
 }
 
 const char * backend_get_name(ggml_backend_t) { return "PCUDA"; }
@@ -540,7 +720,25 @@ ggml_status backend_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) 
         if (ggml_is_empty(node)) continue;
         bool ok = true;
         switch (node->op) {
-            case GGML_OP_MUL_MAT: ok = mul_mat(ctx, node); break;
+            case GGML_OP_MUL_MAT: {
+                // Consecutive matmuls of the same input (q, k, v; gate, up) run as one step: their
+                // chunks are shared out together, so the memory streams don't drain between them.
+                int n = 1;
+                while (runtime().concurrent && ctx.capturing && i + n < cgraph->n_nodes &&
+                       cgraph->nodes[i + n]->op == GGML_OP_MUL_MAT && cgraph->nodes[i + n]->src[1] == node->src[1] &&
+                       (cgraph->nodes[i + n]->flags & GGML_TENSOR_FLAG_COMPUTE) && !ggml_is_empty(cgraph->nodes[i + n]))
+                    ++n;
+                if (n == 1) {
+                    ok = mul_mat(ctx, node);
+                    break;
+                }
+                ok = mul_mat_input(ctx, node);  // quantize the shared input first (its own step)
+                ok = ok && pcudaStreamConcurrentBegin(nullptr) == pcuda::Error::Success;
+                for (int j = 0; ok && j < n; ++j) ok = mul_mat(ctx, cgraph->nodes[i + j]);
+                ok = pcudaStreamConcurrentEnd(nullptr) == pcuda::Error::Success && ok;
+                i += n - 1;
+                break;
+            }
             case GGML_OP_ADD:
             case GGML_OP_RMS_NORM: {
                 // [ADD +] RMS_NORM + MUL by a row vector (the norm weight): two parallel kernels that also
@@ -573,6 +771,8 @@ ggml_status backend_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) 
             case GGML_OP_MUL: ok = mul(ctx, node); break;
             case GGML_OP_ROPE: ok = rope(ctx, node); break;
             case GGML_OP_GLU: ok = node->ne[0] % 256 == 0 ? fused_swiglu(ctx, node) : swiglu(ctx, node); break;
+            case GGML_OP_SET_ROWS: ok = set_rows(ctx, node); break;
+            case GGML_OP_FLASH_ATTN_EXT: ok = flash_attn(ctx, node); break;
             case GGML_OP_NONE:
             case GGML_OP_RESHAPE:
             case GGML_OP_VIEW:
@@ -650,9 +850,45 @@ ggml_backend_t dev_init_backend(ggml_backend_dev_t, const char *) { return ggml_
 
 ggml_backend_buffer_type_t dev_get_buffer_type(ggml_backend_dev_t) { return pcuda_buffer_type(); }
 
+// llama.cpp puts the KV caches of CPU layers here (a hook in llama-kv-cache.cpp), so that pcuda can
+// run attention.
+ggml_backend_buffer_type_t dev_get_host_buffer_type(ggml_backend_dev_t) {
+    const PcudaRuntime & rt = runtime();
+    return rt.ok && !rt.disabled && !rt.matmul_only && rt.attn ? pcuda_host_buffer_type() : nullptr;
+}
+
 bool f32c(const ggml_tensor * t) { return t && t->type == GGML_TYPE_F32 && ggml_is_contiguous(t); }
 
 bool dev_supports_op_impl(ggml_backend_dev_t, const ggml_tensor * op);
+
+// The tensor (or what it views) is in a KV cache buffer (pcuda memory the kernels may read).
+bool in_kv_buffer(const ggml_tensor * t) {
+    const ggml_backend_buffer_t b = t->view_src ? t->view_src->buffer : t->buffer;
+    return b && ggml_backend_buffer_get_type(b) == pcuda_host_buffer_type();
+}
+bool f16_rows(const ggml_tensor * t) {  // fp16, rows and heads at 32-bit word strides
+    return t->type == GGML_TYPE_F16 && t->nb[0] == 2 && t->nb[1] % 4 == 0 && t->nb[2] % 4 == 0 && t->ne[3] == 1 &&
+           t->nb[1] / 4 <= INT32_MAX && t->nb[2] / 4 <= INT32_MAX;
+}
+bool flash_attn_ok(const ggml_tensor * op, int max_tokens) {
+    const ggml_tensor * q = op->src[0];
+    const ggml_tensor * k = op->src[1];
+    const ggml_tensor * v = op->src[2];
+    const ggml_tensor * mask = op->src[3];
+    if (op->src[4] || q->ne[1] > max_tokens) return false;  // no sinks
+    if (op_param_f32(op, 1) != 0.0f || op_param_f32(op, 2) != 0.0f) return false;  // no ALiBi, no softcap
+    if (!in_kv_buffer(k) || !in_kv_buffer(v) || !f16_rows(k) || !f16_rows(v)) return false;
+    const int64_t D = k->ne[0];
+    if (v->ne[0] != D || q->ne[0] != D || D % 8 || k->ne[1] != v->ne[1] || k->ne[2] != v->ne[2] || k->ne[2] <= 0 ||
+        q->ne[2] % k->ne[2] || q->ne[3] != 1 || k->ne[1] <= 0 || k->ne[1] > INT32_MAX)
+        return false;
+    if (q->type != GGML_TYPE_F32 || q->nb[0] != 4 || q->nb[1] % 4 || q->nb[2] % 4) return false;
+    if (!f32c(op) || op->ne[0] != D || op->ne[1] != q->ne[2] || op->ne[2] != q->ne[1] || op->ne[3] != 1) return false;
+    if (mask && (mask->type != GGML_TYPE_F16 || mask->nb[0] != 2 || mask->nb[1] % 4 || mask->ne[0] < k->ne[1] ||
+                 mask->ne[1] < q->ne[1] || mask->ne[2] != 1 || mask->ne[3] != 1))
+        return false;
+    return true;
+}
 
 bool dev_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     const bool r = dev_supports_op_impl(dev, op);
@@ -696,11 +932,19 @@ bool dev_supports_op_impl(ggml_backend_dev_t, const ggml_tensor * op) {
         case GGML_OP_ROPE: {
             const int32_t * p = reinterpret_cast<const int32_t *>(op->op_params);
             const ggml_tensor * ff = op->src[2];
-            return p[2] == 0 /* NORM mode */ && p[1] == s0->ne[0] && op_param_f32(op, 6) == 1.0f && op_param_f32(op, 7) == 0.0f &&
+            return (p[2] == 0 /* NORM mode */ || p[2] == GGML_ROPE_TYPE_NEOX) && p[1] == s0->ne[0] && op_param_f32(op, 6) == 1.0f && op_param_f32(op, 7) == 0.0f &&
                    op_param_f32(op, 8) == 1.0f && p[15] == 0 && f32c(s0) && f32c(op) && ggml_are_same_shape(s0, op) &&
                    s0->ne[0] % 16 == 0 && s0->ne[3] == 1 && s1 && s1->type == GGML_TYPE_I32 && ggml_is_contiguous(s1) &&
                    s1->ne[0] == s0->ne[2] && (!ff || (f32c(ff) && ff->ne[0] >= s0->ne[0] / 2));
         }
+        case GGML_OP_SET_ROWS:  // into the fp16 KV cache
+            return rt.attn && in_kv_buffer(op) && op->type == GGML_TYPE_F16 && op->nb[0] == 2 && op->nb[1] % 4 == 0 &&
+                   op->ne[2] == 1 && op->ne[3] == 1 && op->ne[1] <= INT32_MAX && s0->type == GGML_TYPE_F32 &&
+                   s0->nb[0] == 4 && s0->nb[1] % 4 == 0 && s0->ne[0] == op->ne[0] && s0->ne[0] % 16 == 0 &&
+                   s0->ne[2] == 1 && s0->ne[3] == 1 && s1->type == GGML_TYPE_I64 && ggml_is_contiguous(s1) &&
+                   s1->ne[0] == s0->ne[1] && s1->ne[1] == 1 && s1->ne[2] == 1 && s1->ne[3] == 1;
+        case GGML_OP_FLASH_ATTN_EXT:
+            return flash_attn_ok(op, rt.attn_tokens);
         case GGML_OP_GLU:
             return ggml_get_glu_op(op) == GGML_GLU_OP_SWIGLU && ggml_get_op_params_i32(op, 1) == 0 && f32c(s0) && f32c(s1) &&
                    f32c(op) && ggml_are_same_shape(s0, s1) && ggml_are_same_shape(s0, op);
@@ -712,7 +956,9 @@ bool dev_supports_op_impl(ggml_backend_dev_t, const ggml_tensor * op) {
 // Host buffers are not readable by the kernels (pcuda validates every pointer against its own
 // allocations), so the scheduler copies such inputs (positions, the first embedding, the
 // attention output) into this backend's buffers.
-bool dev_supports_buft(ggml_backend_dev_t, ggml_backend_buffer_type_t buft) { return buft == pcuda_buffer_type(); }
+bool dev_supports_buft(ggml_backend_dev_t, ggml_backend_buffer_type_t buft) {
+    return buft == pcuda_buffer_type() || buft == pcuda_host_buffer_type();
+}
 
 const ggml_backend_device_i device_i = {
     /* .get_name             = */ dev_get_name,
@@ -722,7 +968,7 @@ const ggml_backend_device_i device_i = {
     /* .get_props            = */ dev_get_props,
     /* .init_backend         = */ dev_init_backend,
     /* .get_buffer_type      = */ dev_get_buffer_type,
-    /* .get_host_buffer_type = */ nullptr,
+    /* .get_host_buffer_type = */ dev_get_host_buffer_type,
     /* .buffer_from_host_ptr = */ nullptr,
     /* .supports_op          = */ dev_supports_op,
     /* .supports_buft        = */ dev_supports_buft,
@@ -765,6 +1011,15 @@ ggml_backend_buffer_type_t pcuda_buffer_type() {
     return &buft;
 }
 
+ggml_backend_buffer_type_t pcuda_host_buffer_type() {
+    static ggml_backend_buffer_type buft = {
+        /* .iface   = */ host_buft_i,
+        /* .device  = */ reg_get_device(ggml_backend_pcuda_reg(), 0),
+        /* .context = */ nullptr,
+    };
+    return &buft;
+}
+
 } // namespace
 
 ggml_backend_t ggml_backend_pcuda_init(void) {
@@ -776,7 +1031,8 @@ ggml_backend_t ggml_backend_pcuda_init(void) {
         /* .context = */ [] {
             auto * c = new BackendCtx;
             const char * p = std::getenv("GGML_PCUDA_PROFILE");
-            c->profile = p && std::strcmp(p, "1") == 0;
+            c->profile = p && (std::strcmp(p, "1") == 0 || std::strcmp(p, "2") == 0);
+            c->profile_shapes = p && std::strcmp(p, "2") == 0;
             return c;
         }(),
     };

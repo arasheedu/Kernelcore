@@ -343,13 +343,35 @@ const std::vector<std::string>& dp4aCanonicalBody() {
     return body;
 }
 
+// Booth's Metal output for the pcuda_h2f helper in kernels/llm/fa_scores.cu and fa_values.cu (fp16
+// bits -> float with integer and float arithmetic). The simd path replaces calls to a helper with
+// exactly this body by F16C vcvtph2ps: the same value for every finite fp16 (it also keeps
+// infinities and NaN, which the arithmetic turns into large finite values).
+const std::vector<std::string>& h2fCanonicalBody() {
+    static const std::vector<std::string> body{
+        "v3 = p0 >> 10;", "v4 = v3 & 31;", "v5 = v4 + 31;", "v6 = v5 >> 5;",
+        "v7 = v4 + 1;", "v8 = v7 - v6;", "v9 = v8 + 1;", "v10 = v9 >> 5;",
+        "v11 = v8 - v10;", "v12 = v11 & 1;", "v13 = (float)(v12);", "v14 = 1.0f + v13;",
+        "v15 = v11 >> 1;", "v16 = v15 & 1;", "v17 = (float)(v16);", "v18 = 3.0f * v17;",
+        "v19 = 1.0f + v18;", "v20 = v14 * v19;", "v21 = v11 >> 2;", "v22 = v21 & 1;",
+        "v23 = (float)(v22);", "v24 = 15.0f * v23;", "v25 = 1.0f + v24;", "v26 = v20 * v25;",
+        "v27 = v11 >> 3;", "v28 = v27 & 1;", "v29 = (float)(v28);", "v30 = 255.0f * v29;",
+        "v31 = 1.0f + v30;", "v32 = v26 * v31;", "v33 = v11 >> 4;", "v34 = v33 & 1;",
+        "v35 = (float)(v34);", "v36 = 65535.0f * v35;", "v37 = 1.0f + v36;", "v38 = v32 * v37;",
+        "v39 = p0 & 1023;", "v40 = v6 << 10;", "v41 = v39 + v40;", "v42 = (float)(v41);",
+        "v43 = v42 * v38;", "v44 = v43 * 2.98023224e-08f;", "v45 = p0 >> 15;", "v46 = v45 & 1;",
+        "v47 = 2 * v46;", "v48 = 1 - v47;", "v49 = (float)(v48);", "v50 = v44 * v49;",
+        "return v50;"};
+    return body;
+}
+
 struct Unsupported : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 [[noreturn]] void unsupported(const std::string& why) { throw Unsupported(why); }
 
 struct Expr {
-    enum Kind { Atom, Bin, Load, Cast, Call, Gep, Builtin } kind = Atom;
+    enum Kind { Atom, Bin, Load, Cast, Call, Gep, Builtin, Select } kind = Atom;  // Select: args {cond, a, b}
     std::string              op;    // operator, function, cast type, builtin name
     std::vector<std::string> args;  // atoms
 };
@@ -382,6 +404,7 @@ public:
         // pcuda expects; anything else stays on the native path.
         for (const auto& [fname, body] : k_.helper_bodies) {
             if (fname == "pcuda_aligned8" && body == std::vector<std::string>{"return p0;"}) continue;
+            if (fname == "pcuda_h2f" && body == h2fCanonicalBody()) continue;
             if (fname != "pcuda_dp4a" || body != dp4aCanonicalBody())
                 unsupported("calls helper function '" + fname + "'");
         }
@@ -417,6 +440,7 @@ private:
         static const std::regex builtin(R"(^(tid|bid|bdim)\.x$)");
         static const std::regex bin(R"(^(\S+) (\+|-|\*|/|%|<|<=|>|>=|==|!=|&|\||\^|<<|>>|&&|\|\|) (\S+)$)");
         static const std::regex atom(R"(^[\w.\-]+$)");
+        static const std::regex select(R"(^(\S+) \? (\S+) : (\S+)$)");
         static const std::regex ptrcast(R"(^as_type<device (float|int|char) \*>\((\w+)\)$)");
         std::smatch m;
         Expr e;
@@ -430,7 +454,10 @@ private:
             std::string a;
             while (std::getline(ss, a, ',')) e.args.push_back(trim(a));
         } else if (isPtr(types_.at(lhs)) && std::regex_match(r, m, gep)) e = {Expr::Gep, "", {m[1], m[2]}};
-        else if (std::regex_match(r, m, bin)) e = {Expr::Bin, m[2], {m[1], m[3]}};
+        else if (std::regex_match(r, m, select)) {
+            if (isPtr(types_.at(lhs))) unsupported("pointer select '" + r + "'");
+            e = {Expr::Select, "", {m[1], m[2], m[3]}};
+        } else if (std::regex_match(r, m, bin)) e = {Expr::Bin, m[2], {m[1], m[3]}};
         else if (std::regex_match(r, m, atom)) e = {Expr::Atom, "", {r}};
         else unsupported("expression '" + r + "'");
         return e;
@@ -666,8 +693,10 @@ private:
             const std::string& op = e.op;
             if (a.k == Shape::Uni && b.k == Shape::Uni) {
                 if (!f && op == "*" && (a.c == 0 || b.c == 0)) r = uniS(0);  // blockIdx (0) * blockDim
+                // aligned (a multiple of 8): sums and differences of two, products with one
                 else r = uniS(!f && a.c && b.c ? fold(op, *a.c, *b.c) : std::nullopt,
-                              !f && (op == "+" || op == "*") && a.aligned && b.aligned);
+                              !f && (((op == "+" || op == "-") && a.aligned && b.aligned) ||
+                                     (op == "*" && (a.aligned || b.aligned))));
                 break;
             }
             if (f) return gen();
@@ -681,7 +710,7 @@ private:
                 }
             } else if (op == "-") {
                 if (!ua && !ub) r = aff(a.stride - b.stride, false);
-                else if (ub) r = aff(a.stride, a.aligned && b.c == 0);
+                else if (ub) r = aff(a.stride, a.aligned && (b.c == 0 || b.aligned));  // minus a multiple of 8
                 else r = aff(-b.stride, false);
             } else if (op == "*") {
                 const Shape& x = ua ? b : a;
@@ -701,6 +730,14 @@ private:
             }
             break;
         }
+        case Expr::Select:
+            r = uniS();
+            for (const auto& x : e.args) {
+                const Shape a = shapeOf(x);
+                if (a.k == Shape::Top) return {};
+                if (a.k != Shape::Uni) r = gen();
+            }
+            break;
         case Expr::Gep: {
             const Shape p = shapeOf(e.args[0]), i = shapeOf(e.args[1]);
             if (p.k == Shape::Top || i.k == Shape::Top) return {};
@@ -871,6 +908,10 @@ private:
             if (op == ">>") return "ashr(" + a + ", " + b + ")";
             unsupported("operator " + op);
         }
+        case Expr::Select: {
+            const Ty k = scalarKind(lt);
+            return "blend(" + vec(e.args[2], k) + ", " + vec(e.args[1], k) + ", ne(" + vec(e.args[0], Ty::Int) + ", zeroI()))";
+        }
         case Expr::Load: {
             const std::string& p = e.args[0];
             const Ty pt = atomTy(p);
@@ -896,6 +937,8 @@ private:
         }
         case Expr::Call: {
             if (e.op == "pcuda_aligned8" && e.args.size() == 1) return vec(e.args[0], Ty::Int);  // not uniform: unchecked
+            if (e.op == "pcuda_h2f" && e.args.size() == 1)  // verified helper: F16C vcvtph2ps
+                return "vh2f(" + vec(e.args[0], Ty::Int) + ")";
             if (e.op == "pcuda_dp4a" && e.args.size() == 3)  // verified helper: AVX-VNNI vpdpbusd
                 return "vdp4aT<kVnni_>(" + vec(e.args[2], Ty::Int) + ", " + vec(e.args[0], Ty::Int) + ", " +
                        vec(e.args[1], Ty::Int) + ")";
@@ -940,6 +983,7 @@ private:
             if (e.op == "tid") return "static_cast<int>(t0_)";  // affine: lane 0's thread index
             unsupported("builtin " + e.op);
         case Expr::Bin: return e.args[0] + " " + e.op + " " + e.args[1];
+        case Expr::Select: return e.args[0] + " ? " + e.args[1] + " : " + e.args[2];
         case Expr::Load: return "*(" + e.args[0] + ")";
         case Expr::Cast: {
             const Ty xt = atomTy(e.args[0]);
@@ -957,6 +1001,7 @@ private:
             std::string a;
             for (const auto& x : e.args) a += (a.empty() ? "" : ", ") + x;
             if (e.op == "pcuda_dp4a") return "pcuda::simd::dp4aScalar(" + a + ")";
+            if (e.op == "pcuda_h2f") return "pcuda::simd::h2fScalar(" + a + ")";
             if (e.op == "pcuda_aligned8")  // checked when uniform; otherwise the identity
                 return shapeOf(e.args[0]).k == Shape::Uni ? "pcuda::simd::aligned8(" + a + ")" : a;
             static const std::set<std::string> known{"sin", "cos", "exp2", "log2", "sqrt", "fmax", "fmin"};

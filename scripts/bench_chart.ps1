@@ -8,7 +8,7 @@
     CPU    llama.cpp's CPU backend    pcuda build, GGML_PCUDA_DISABLE=1, -t <CpuThreads>
     pcuda  CUDA C kernels on CPU cores  pcuda build, -t <PcudaThreads> for generation and
                                         -t <PcudaBatchThreads> for prompts (as llama-server
-                                        -t 1 -tb 4: llama-bench has no -tb)
+                                        -t 4 -tb 4: llama-bench has no -tb)
     GPU    llama.cpp's CUDA backend   CUDA build, -ngl 99
   Each round runs every backend once (llama-bench -r <Reps>); rounds alternate the backends so
   that heat and turbo state hit all of them alike. The chart shows each test's best round.
@@ -41,7 +41,7 @@ param(
     [string]$PcudaBench = 'C:\BitsPlus\VisOllamInference\build-pcuda\bin\llama-bench.exe',
     [string]$GpuBench = 'C:\BitsPlus\VisOllamInference\build-gpu\bin\llama-bench.exe',
     [int]$CpuThreads = 6,
-    [int]$PcudaThreads = 1,        # pcuda generation: ggml threads (more compete with pcuda's pool)
+    [int]$PcudaThreads = 4,        # pcuda generation: ggml threads (attention runs on them; more than 4 compete with pcuda's pool)
     [int]$PcudaBatchThreads = 4,   # pcuda prompts: ggml threads for the ops pcuda leaves to the CPU (attention)
     [string]$Prompt = '32,128,512',
     [int]$Gen = 64,

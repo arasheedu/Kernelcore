@@ -91,3 +91,28 @@ index cad18408a..06e4542f5 100644
                          }
                      }
                  }
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 81af8903f..6e56542d7 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1614,6 +1614,20 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+                 break;
+             }
+         }
++        // ACCEL devices take weights through the CPU buffer list (make_cpu_buft_list). One that
++        // copies them into its own memory (PCUDA) would otherwise keep a second, mapped copy of
++        // the whole file resident.
++        for (size_t i = 0; ml.use_mmap && i < ggml_backend_dev_count(); ++i) {
++            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
++            if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_ACCEL) {
++                continue;
++            }
++            ggml_backend_dev_props props;
++            ggml_backend_dev_get_props(dev, &props);
++            if (!props.caps.mmap_support) {
++                ml.use_mmap = false;
++            }
++        }
+     }
+ 
+     // resolve AUTO on systems without mmap support (e.g. iGPUs): fall back to OFF; see #28160

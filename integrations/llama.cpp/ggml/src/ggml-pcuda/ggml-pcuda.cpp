@@ -535,6 +535,9 @@ ggml_status backend_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) 
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
         if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) continue;
+        // Nothing to compute: e.g. a prompt's earlier ubatches select no output rows for the last
+        // layer (kernels reject 0 rows). Fused partners of an empty node are empty too.
+        if (ggml_is_empty(node)) continue;
         bool ok = true;
         switch (node->op) {
             case GGML_OP_MUL_MAT: ok = mul_mat(ctx, node); break;
@@ -629,12 +632,17 @@ void dev_get_props(ggml_backend_dev_t dev, ggml_backend_dev_props * props) {
     props->description = dev_get_description(dev);
     props->type = dev_get_type(dev);
     dev_get_memory(dev, &props->memory_free, &props->memory_total);
+    // Weights are copied into pcuda's own allocations, so a memory-mapped model file would stay
+    // resident as a second copy: ask llama.cpp's auto load mode to read the file instead. Not when
+    // pcuda claims nothing (disabled): the CPU backend then works from the mapped file.
+    const PcudaRuntime & rt = runtime();
+    const bool claims_weights = rt.ok && !rt.disabled;
     props->caps = {
         /* .async                = */ false,
         /* .host_buffer          = */ false,
         /* .buffer_from_host_ptr = */ false,
         /* .events               = */ false,
-        /* .mmap_support         = */ false,
+        /* .mmap_support         = */ !claims_weights,
     };
 }
 

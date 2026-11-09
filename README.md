@@ -372,7 +372,7 @@ kernel objects, so no Booth compiler is needed. A copy and the hook patch are in
 ```powershell
 cmake -S llama.cpp -B build-pcuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_PCUDA=ON -DGGML_PCUDA_ROOT=C:/BitsPlus/CudaOnCPUCores
 cmake --build build-pcuda --target llama-server llama-bench
-build-pcuda\bin\llama-bench -m <llama3.2 gguf> -t 1 -p 32 -n 64
+build-pcuda\bin\llama-bench -m <llama3.2 gguf> -t 4 -p 32 -n 64
 ```
 
 Results with Llama 3.2 3B Q4_K_M from Ollama's store, in llama-bench (same binary). Generation:
@@ -436,12 +436,19 @@ Results with Llama 3.2 3B Q4_K_M from Ollama's store, in llama-bench (same binar
     `silu_mul_q8kf`, bit-identical to `quantize_cols_k` on their output), so only the attention
     output still needs a separate quantize: 276 -> 112 `quantize_cols_k` launches at pp512, prompts
     +3-4%. SwiGLU stays at about 3.8 ms per launch at pp512: its `exp2f` is one scalar call per lane.
-- **ggml threads: 1 for generation, 4 for prompts** (`llama-server -t 1 -tb 4`). Attention and the
-  other ops pcuda leaves to the CPU backend run on the ggml threads; for prompts they need several.
-  For generation, more ggml threads only compete with pcuda's pool. pcuda in llama-bench, medians of
-  3 alternating rounds (pp32 / pp128 / pp512 / tg64): `-t 1` 150 / 161 / 138 / 29.1, `-t 4`
-  159 / 176 / 169 / 27.9, `-t 6` 153 / 167 / 159 / 27.8 tok/s. llama-bench has no `-tb`: run prompts
-  and generation separately (as `scripts/bench_chart.ps1` does).
+- **ggml threads: 4** (`llama-server -t 4`). Attention and the other ops pcuda leaves to the CPU
+  backend run on the ggml threads, and attention grows with the context. Llama 3B generation
+  (tg64 at context depth 0 / 256 / 1024): `-t 1` 29.6 / 24.5 / 13.0, `-t 4` 29.1 / 25.9 / 20.6,
+  `-t 8` 26.7 / 25.0 / 22.0 tok/s; the CPU backend (6 threads) 27.3 / - / 20.5. Qwen3 8B chat
+  replies (256 tokens): `-t 1` 11.0-11.2, `-t 4` 12.0-12.2, CPU backend 11.5 tok/s. Beyond 4,
+  ggml threads compete with pcuda's pool. Prompts (`-tb`) also use 4.
+- **The model is held once.** pcuda copies the weights into its own memory, so it reports no mmap
+  support and llama.cpp's default load mode reads the file instead of mapping it (a hook in
+  `src/llama-model.cpp`: ACCEL devices are checked too). Qwen3 8B server: 9.8 -> 5.8 GB resident.
+  With `GGML_PCUDA_DISABLE=1` the file is mapped as before.
+- **Prompts over 512 tokens work.** llama.cpp splits them into ubatches of 512, and the earlier
+  ubatches select no output rows in the last layer; the backend skips such empty nodes (the
+  kernels reject 0 rows). Before, `pp1024` and long chat prompts failed in `add_sumsq_f`.
 
 ### The same K-quant kernels on the GPU (`pcuda_kquant_vs_cuda`)
 

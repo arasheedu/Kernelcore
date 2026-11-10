@@ -390,6 +390,13 @@ $items = @($items)
 $tmpBmp = New-Object System.Drawing.Bitmap(1, 1)
 $tmpG = [System.Drawing.Graphics]::FromImage($tmpBmp)
 $itemH = @(foreach ($it in $items) { 21 + $tmpG.MeasureString($it[1], $fValue, [int]($leftW - 56)).Height + 16 })
+# test-name card: what tg and pp mean
+$keyItems = @()
+if ($genTests.Count) { $keyItems += , @(($genTests -join ' / '), 'Text generation: writing N new tokens, one at a time (the reply you watch appear). Limited by memory speed: every token reads all the weights.') }
+if ($ppTests.Count) { $keyItems += , @(($ppTests -join ' / '), 'Prompt processing: reading an N-token prompt in one batch. Limited by compute, so it runs much faster.') }
+if ($chatTests.Count) { $keyItems += , @('reply / prompt', 'The same two measures in a real chat: writing the answer and reading the question.') }
+if ($kernTests.Count) { $keyItems += , @((($kernTests | ForEach-Object { $_ -replace '^kern ', '' }) -join ' / '), 'Bottom chart: the same measures for the matmul kernels alone.') }
+$keyH = @(foreach ($it in $keyItems) { 21 + $tmpG.MeasureString($it[1], $fValue, [int]($leftW - 56)).Height + 16 })
 # legend entries (swatch + name + detail), wrapped to the chart width
 function LegendWidth($gr, $b) { 26 + $gr.MeasureString($b.label, $fValueB).Width + $gr.MeasureString($b.detail, $fLabel).Width }
 $legendPos = @{}; $lx = 0; $lrow = 0
@@ -402,7 +409,9 @@ foreach ($b in $allBks) {
 $legendExtra = 32 * $lrow
 $tmpG.Dispose(); $tmpBmp.Dispose()
 $cardH = 72 + ($itemH | Measure-Object -Sum).Sum + 10
-$H = [int]([math]::Max($top + 60 + $legendExtra + $hGen + 40 + $hPP + $hChat + $hKern, $top + $cardH) + 120)
+$keyTop = $top + $cardH + 28
+$keyCardH = if ($keyItems.Count) { 72 + ($keyH | Measure-Object -Sum).Sum + 10 } else { 0 }
+$H = [int]([math]::Max($top + 60 + $legendExtra + $hGen + 40 + $hPP + $hChat + $hKern, $keyTop + $keyCardH) + 120)
 
 $bmp = New-Object System.Drawing.Bitmap($W, $H)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
@@ -432,6 +441,20 @@ foreach ($it in $items) {
     $sz = $g.MeasureString($it[1], $fValue, [int]($leftW - 56))
     $g.DrawString($it[1], $fValue, $bInk, $rect)
     $y += 21 + $sz.Height + 16
+}
+
+# test-name card
+if ($keyItems.Count) {
+    $g.FillRectangle($bCard, $M, $keyTop, $leftW, $keyCardH)
+    $g.DrawString('Test names', $fHead, $bInk, $M + 28, $keyTop + 24)
+    $y = $keyTop + 72
+    foreach ($it in $keyItems) {
+        $g.DrawString($it[0], $fValueB, $bInk, $M + 28, $y - 4)
+        $rect = New-Object System.Drawing.RectangleF(($M + 28), ($y + 21), ($leftW - 56), 400)
+        $sz = $g.MeasureString($it[1], $fValue, [int]($leftW - 56))
+        $g.DrawString($it[1], $fValue, $bInk2, $rect)
+        $y += 21 + $sz.Height + 16
+    }
 }
 
 # legend: one row above the charts, swatch + name + what it is

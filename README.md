@@ -8,8 +8,8 @@ time. The Kernelcore runtime loads that code and runs it behind a small CUDA-sty
 CUDA is a trademark of NVIDIA Corporation. Kernelcore is an independent project, not affiliated with
 or endorsed by NVIDIA.
 
-It is a proof of concept, not a CUDA replacement. See `cuda_cpu_poc_plan.md` for the design and
-`cuda_cpu_poc_plan_review.md` for why the design is Windows-native.
+It is a proof of concept, not a CUDA replacement. See [`docs/cuda_cpu_poc_plan.md`](docs/cuda_cpu_poc_plan.md) for the design and
+[`docs/cuda_cpu_poc_plan_review.md`](docs/cuda_cpu_poc_plan_review.md) for why the design is Windows-native.
 
 ## Demo: one kernel, two compilers
 
@@ -580,3 +580,10 @@ Q4_K, v and down in Q6_K, random weights, two input quantizations and seven matr
   give different results on it.
 - ThreadSanitizer isn't available on Windows. Chunk disjointness is checked by the runtime on every
   chunked launch and by tests.
+
+## License
+
+MIT; see [LICENSE](LICENSE). The llama.cpp backend in `integrations/llama.cpp/` is meant to be built
+inside llama.cpp, which is MIT-licensed by the ggml authors; its notice is in
+[`integrations/llama.cpp/LICENSE-llama.cpp`](integrations/llama.cpp/LICENSE-llama.cpp). Booth is a separate
+project with its own license; this repo does not include its source.

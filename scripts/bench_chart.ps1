@@ -275,7 +275,7 @@ if (-not $RenderOnly) {
         $name = $ChatOllamaModel
         if ($PSBoundParameters.ContainsKey('ChatModel')) { $name = Split-Path $ChatModel -Leaf }
         $chat = [ordered]@{
-            model = $ChatModel; name = $name; prompt = $ChatPrompt; max_tokens = $ChatTokens; reps = $ChatReps; think = [bool]$ChatThink
+            model = (Split-Path $ChatModel -Leaf); name = $name; prompt = $ChatPrompt; max_tokens = $ChatTokens; reps = $ChatReps; think = [bool]$ChatThink
             n_params = $(if ($chatInfo -and $chatInfo.meta) { $chatInfo.meta.n_params } else { $null })
             size = $(if ($chatInfo -and $chatInfo.meta) { $chatInfo.meta.size } else { $null })
             same_reply = ($chatText['cpu'] -eq $chatText['Kernelcore'])
@@ -288,7 +288,7 @@ if (-not $RenderOnly) {
     }
     $doc = [ordered]@{
         system   = Get-SystemInfo
-        settings = [ordered]@{ model = $Model; prompt = $Prompt; gen = $Gen; reps = $Reps; rounds = $Rounds; cpu_threads = $CpuThreads; kc_threads = $KcThreads; kc_batch_threads = $KcBatchThreads }
+        settings = [ordered]@{ model = (Split-Path $Model -Leaf); prompt = $Prompt; gen = $Gen; reps = $Reps; rounds = $Rounds; cpu_threads = $CpuThreads; kc_threads = $KcThreads; kc_batch_threads = $KcBatchThreads }
         backends = @(@($backends | ForEach-Object { [ordered]@{ key = $_.key; label = $_.label; detail = $_.detail } }) +
                      $(if (-not $NoKernels) { , [ordered]@{ key = 'kcgpu'; label = 'Kernelcore on GPU'; detail = 'the same .cu kernels, nvcc (matmuls only)' } } else { @() }))
         meta     = $meta

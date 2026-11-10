@@ -10,7 +10,7 @@
                    "date":  "2026-11-09 08:24"
                },
     "settings":  {
-                     "model":  "C:\\Users\\uaras\\.ollama\\models\\blobs\\sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff",
+                     "model":  "sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff",
                      "prompt":  "32,128,512",
                      "gen":  64,
                      "reps":  3,
@@ -68,7 +68,7 @@
                            }
              },
     "chat":  {
-                 "model":  "C:\\Users\\uaras\\.ollama\\models\\blobs\\sha256-a3de86cd1c132c822487ededd47a324c50491393e6565cd14bafa40d0b8e686f",
+                 "model":  "sha256-a3de86cd1c132c822487ededd47a324c50491393e6565cd14bafa40d0b8e686f",
                  "name":  "qwen3:8b",
                  "prompt":  "Why is the sky blue?",
                  "max_tokens":  256,

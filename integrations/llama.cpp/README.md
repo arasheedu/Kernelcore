@@ -20,3 +20,8 @@ attention in Kernelcore, `src/llama-kv-cache.cpp` puts a CPU layer's KV cache in
 buffer type when it offers one (Kernelcore memory the CPU backend can also use), and the flash-attention
 check in `src/llama-context.cpp` accepts an ACCEL device running a CPU layer's attention. See the main README ("ggml backend prototype") for what the backend does
 and how fast it is.
+
+## License
+
+The hooks patch modifies llama.cpp, which is MIT-licensed:
+Copyright (c) 2023-2026 The ggml authors. The full notice is in [LICENSE-llama.cpp](LICENSE-llama.cpp).

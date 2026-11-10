@@ -11,13 +11,24 @@ or endorsed by NVIDIA.
 It is a proof of concept, not a CUDA replacement. See `cuda_cpu_poc_plan.md` for the design and
 `cuda_cpu_poc_plan_review.md` for why the design is Windows-native.
 
+## Results: llama.cpp on an i5-13400F
+
+![llama.cpp on the CPU backend, on Kernelcore and on the GPU](bench_chart/bench_chart.png)
+
+As a llama.cpp backend, Kernelcore beats llama.cpp's own CPU backend on the same PC: Llama 3.2 3B
+generates 31.7 vs 28.0 tokens/s (+13%) and reads prompts about 1.9× faster; a Qwen3 8B chat reply
+runs 13.9 vs 11.7 tokens/s (+19%). The GPU (RTX 4060) still generates 3.5× faster than
+Kernelcore. The bottom panel runs the same `.cu` kernels on the GPU through nvcc. Details in
+[ggml backend](#ggml-backend-kernelcore-inside-llamacpp-ggml-kernelcore); redraw with
+`scripts\bench_chart.ps1`.
+
 ## Quick start
 
 ```powershell
 .\scripts\bootstrap.ps1 -FetchKath   # check toolchain; download pinned kath.exe (SHA-256 verified)
 .\scripts\build.ps1                  # configure + build + run all tests (preset windows-msvc)
-.\build\windows-msvc\kc_poc.exe   # demo: 1M-element vector add, prints PASS
-.\build\windows-msvc\kc_bench.exe # serial vs multi-core chunked timings
+.\build\windows-msvc\kc_poc.exe      # demo: 1M-element vector add, prints PASS
+.\build\windows-msvc\kc_bench.exe    # serial vs multi-core chunked timings
 ```
 
 Requirements: Windows 10/11 x64, Visual Studio 2022 with "Desktop development with C++" (MSVC, ml64),
@@ -352,22 +363,27 @@ adds a `Kernelcore` device to ggml. It pulls in this repo with `add_subdirectory
 kernel objects, so no Booth compiler is needed. A copy and the hook patch are in
 `integrations/llama.cpp/`.
 
-- **What it runs:** a layer's ops except the KV-cache writes and flash attention, all as CUDA C
-  kernels. ggml's scheduler gives the rest to the CPU backend, which makes 2 hand-offs per layer
-  (from 10 with matmuls only).
+- **What it runs:** every op of a layer, all as CUDA C kernels, so a token runs as one graph
+  (Llama 3.2 3B and Qwen3 8B: 2 graph calls per token). Attention of prompts longer than 8 tokens
+  stays on the CPU backend, on the same KV cache (`GGML_KERNELCORE_ATTN_TOKENS`).
   - `MUL_MAT` with Q4_K / Q6_K weights: a matvec for one token, an 8-column matmul for batches;
+    with fp16 weights (Qwen3 8B's `attn_v`): `matmul_f16`;
   - `ADD` + `RMS_NORM` + `MUL` by the norm weight, as two parallel kernels (`add_sumsq_f` /
     `sumsq_part`, then `norm_mul_q8_f`). These also produce the 8-bit input for the matmuls that
     follow.
-  - `ROPE` (NORM mode, Llama 3 frequency factors, `rope_ggml`), which computes each angle once per
-    position.
+  - `ROPE` (NORM and NEOX modes, Llama 3 frequency factors, `rope_ggml`), which computes each angle
+    once per position.
+  - `SET_ROWS` into the fp16 KV cache (`set_rows_f16`) and `FLASH_ATTN_EXT` (`fa_scores`,
+    `fa_max`, `fa_exp`, `fa_values`);
   - `SWIGLU` + quantization (`silu_mul_q8x4f`);
   - plain `ADD`, `MUL` and `RMS_NORM` otherwise.
 - **Norm placement:** a small change in `llama-context.cpp` (in the hook patch) lets an ACCEL
   backend keep a CPU layer's norms. llama.cpp otherwise pins them to the layer's device.
-- **Weights:** the buffer type is Kernelcore memory, and `set_tensor` repacks Q4_K / Q6_K. It is not a
-  host buffer type, and the backend accepts only its own buffers. The scheduler therefore copies the
-  few CPU-side inputs into it: positions, the first embedding and the attention output.
+- **Weights:** the buffer type is Kernelcore memory, and `set_tensor` repacks Q4_K / Q6_K (and fp16
+  by 8 rows). It is not a host buffer type, and the backend accepts only its own buffers. The
+  scheduler therefore copies the few CPU-side inputs into it, such as positions and the first
+  embedding. The KV cache sits in a second buffer type, `Kernelcore_Host`: Kernelcore memory that
+  is also a host buffer, so the CPU backend can run long prompts' attention on it in place.
 - **Activations:** quantized once per tensor. Each `graph_compute` call runs as one Kernelcore graph.
 - **Switches:**
   - `GGML_KERNELCORE_DISABLE=1` (same binary, CPU only);

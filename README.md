@@ -11,6 +11,14 @@ or endorsed by NVIDIA.
 It is a proof of concept, not a CUDA replacement. See `cuda_cpu_poc_plan.md` for the design and
 `cuda_cpu_poc_plan_review.md` for why the design is Windows-native.
 
+## Demo: one kernel, two compilers
+
+![vector_add.cu compiled by Booth for Kernelcore and by nvcc for the GPU, then both run and compared](demo/kernelcore_vs_nvcc.gif)
+
+The same `vector_add.cu` compiled by Booth (`kath --cpu`) for Kernelcore and by `nvcc` for the GPU,
+then run on both: 0 of 1.1M results differ. Real commands and output, recorded by
+`scripts\demo_gif.ps1` ([MP4](demo/kernelcore_vs_nvcc.mp4)).
+
 ## Results: llama.cpp on an i5-13400F
 
 ![llama.cpp on the CPU backend, on Kernelcore and on the GPU](bench_chart/bench_chart.png)

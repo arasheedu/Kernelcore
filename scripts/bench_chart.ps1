@@ -1,29 +1,29 @@
 <#
 .SYNOPSIS
-  Benchmarks llama.cpp on the CPU backend, pcuda and the GPU (llama-bench), then draws one PNG with
+  Benchmarks llama.cpp on the CPU backend, Kernelcore and the GPU (llama-bench), then draws one PNG with
   this machine's system info and the results.
 
 .DESCRIPTION
   Backends:
-    CPU    llama.cpp's CPU backend    pcuda build, GGML_PCUDA_DISABLE=1, -t <CpuThreads>
-    pcuda  CUDA C kernels on CPU cores  pcuda build, -t <PcudaThreads> for generation and
-                                        -t <PcudaBatchThreads> for prompts (as llama-server
+    CPU    llama.cpp's CPU backend    Kernelcore build, GGML_KERNELCORE_DISABLE=1, -t <CpuThreads>
+    Kernelcore  CUDA C kernels on CPU cores  Kernelcore build, -t <KcThreads> for generation and
+                                        -t <KcBatchThreads> for prompts (as llama-server
                                         -t 4 -tb 4: llama-bench has no -tb)
     GPU    llama.cpp's CUDA backend   CUDA build, -ngl 99
   Each round runs every backend once (llama-bench -r <Reps>); rounds alternate the backends so
   that heat and turbo state hit all of them alike. The chart shows each test's best round.
 
   Real chat (skip with -NoChat): each round also starts llama-server with -ChatModel (default:
-  Ollama's qwen3:8b), on the CPU backend and on pcuda, and sends -ChatPrompt through
+  Ollama's qwen3:8b), on the CPU backend and on Kernelcore, and sends -ChatPrompt through
   /v1/chat/completions (chat template, greedy, no thinking unless -ChatThink) -ChatReps times
   after one warm-up request. It records the server's own prompt and reply speeds and the time for
   the whole answer, and checks that both backends give the same reply.
 
-  pcuda on the GPU (skip with -NoKernels; also skipped by -NoGpu): there is no llama.cpp backend
-  that runs pcuda's kernels on the GPU, so this compares the kernels alone. Each round runs
-  pcuda_kquant_vs_cuda (-KernelApp, from the windows-msvc-nvidia preset): one Llama 3.2 3B layer's
+  Kernelcore on the GPU (skip with -NoKernels; also skipped by -NoGpu): there is no llama.cpp backend
+  that runs Kernelcore's kernels on the GPU, so this compares the kernels alone. Each round runs
+  kc_kquant_vs_cuda (-KernelApp, from the windows-msvc-nvidia preset): one Llama 3.2 3B layer's
   matmuls (2 activation quantizations + 7 matrices, random weights) with the same .cu files on
-  pcuda (CPU) and compiled by nvcc (GPU), checked against each other. tok/s = tokens / (28 layers x
+  Kernelcore (CPU) and compiled by nvcc (GPU), checked against each other. tok/s = tokens / (28 layers x
   layer time): matmuls only, not comparable with the llama-bench bars. 1 token uses activations
   scaled per 32 values and batches per 256, as the ggml backend does.
 
@@ -38,11 +38,11 @@
 param(
     [string]$Model = "$env:USERPROFILE\.ollama\models\blobs\sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff",
     [string]$ModelName = '',                         # shown on the chart; default: llama-bench's model type
-    [string]$PcudaBench = 'C:\BitsPlus\VisOllamInference\build-pcuda\bin\llama-bench.exe',
+    [string]$KcBench = 'C:\BitsPlus\VisOllamInference\build-kernelcore\bin\llama-bench.exe',
     [string]$GpuBench = 'C:\BitsPlus\VisOllamInference\build-gpu\bin\llama-bench.exe',
     [int]$CpuThreads = 6,
-    [int]$PcudaThreads = 4,        # pcuda generation: ggml threads (attention runs on them; more than 4 compete with pcuda's pool)
-    [int]$PcudaBatchThreads = 4,   # pcuda prompts: ggml threads for the ops pcuda leaves to the CPU (attention)
+    [int]$KcThreads = 4,        # Kernelcore generation: ggml threads (attention runs on them; more than 4 compete with Kernelcore's pool)
+    [int]$KcBatchThreads = 4,   # Kernelcore prompts: ggml threads for the ops Kernelcore leaves to the CPU (attention)
     [string]$Prompt = '32,128,512',
     [int]$Gen = 64,
     [int]$Reps = 3,
@@ -58,18 +58,18 @@ param(
     [int]$ChatTokens = 256,                         # reply limit (the reply may end earlier)
     [int]$ChatReps = 3,
     [int]$ChatPort = 8093,
-    [string]$PcudaServer = '',                      # default: llama-server.exe next to -PcudaBench
+    [string]$KcServer = '',                      # default: llama-server.exe next to -KcBench
     [switch]$ChatThink,                             # let the model think first (Qwen3); default: --reasoning-budget 0
     [switch]$NoChat,
-    # pcuda's kernels on the GPU (kernel-only comparison)
-    [string]$KernelApp = (Join-Path (Split-Path $PSScriptRoot -Parent) 'build\windows-msvc-nvidia\pcuda_kquant_vs_cuda.exe'),
+    # Kernelcore's kernels on the GPU (kernel-only comparison)
+    [string]$KernelApp = (Join-Path (Split-Path $PSScriptRoot -Parent) 'build\windows-msvc-nvidia\kc_kquant_vs_cuda.exe'),
     [switch]$NoKernels
 )
 if ($NoGpu) { $NoKernels = $true }
 $ErrorActionPreference = 'Stop'
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $jsonPath = Join-Path $OutDir 'results.json'
-if (-not $PcudaServer) { $PcudaServer = Join-Path (Split-Path $PcudaBench -Parent) 'llama-server.exe' }
+if (-not $KcServer) { $KcServer = Join-Path (Split-Path $KcBench -Parent) 'llama-server.exe' }
 
 # Ollama stores a model as blobs named by hash; the manifest names the GGUF layer.
 function Resolve-OllamaModel([string]$name) {
@@ -106,8 +106,8 @@ function Get-SystemInfo {
         }
     } catch {}
     if (-not $gpu) { $gpu = (Get-CimInstance Win32_VideoController | Select-Object -First 1).Name }
-    $pcudaCommit = ''
-    try { $pcudaCommit = (& git -C (Split-Path $PSScriptRoot -Parent) rev-parse --short HEAD 2>$null) } catch {}
+    $kcCommit = ''
+    try { $kcCommit = (& git -C (Split-Path $PSScriptRoot -Parent) rev-parse --short HEAD 2>$null) } catch {}
     [ordered]@{
         processor = ($cpu.Name -replace '\s+', ' ').Trim()
         cores     = "$($cpu.NumberOfCores) cores, $($cpu.NumberOfLogicalProcessors) threads, $([math]::Round($cpu.MaxClockSpeed / 1000, 1)) GHz base clock"
@@ -115,16 +115,16 @@ function Get-SystemInfo {
         graphics  = $gpu
         os        = "$($os.Caption -replace 'Microsoft ', '') (build $($os.BuildNumber))"
         computer  = "$($cs.Manufacturer) $($cs.Model)".Trim()
-        pcuda     = $pcudaCommit
+        Kernelcore     = $kcCommit
         date      = (Get-Date).ToString('yyyy-MM-dd HH:mm')
     }
 }
 
 # ---------------------------------------------------------------- benchmark runs
 $backends = @(
-    [ordered]@{ key = 'cpu'; label = 'CPU'; detail = "llama.cpp CPU backend, $CpuThreads threads"; exe = $PcudaBench; env = @{ GGML_PCUDA_DISABLE = '1' }; args = @('-t', "$CpuThreads") },
-    [ordered]@{ key = 'pcuda'; label = 'pcuda'; detail = 'CUDA C kernels on the CPU cores'; exe = $PcudaBench; env = @{}; args = @();
-      gen_args = @('-t', "$PcudaThreads"); prompt_args = @('-t', "$PcudaBatchThreads") },
+    [ordered]@{ key = 'cpu'; label = 'CPU'; detail = "llama.cpp CPU backend, $CpuThreads threads"; exe = $KcBench; env = @{ GGML_KERNELCORE_DISABLE = '1' }; args = @('-t', "$CpuThreads") },
+    [ordered]@{ key = 'Kernelcore'; label = 'Kernelcore'; detail = 'CUDA C kernels on the CPU cores'; exe = $KcBench; env = @{}; args = @();
+      gen_args = @('-t', "$KcThreads"); prompt_args = @('-t', "$KcBatchThreads") },
     [ordered]@{ key = 'gpu'; label = 'GPU'; detail = 'llama.cpp CUDA backend, all layers on the GPU'; exe = $GpuBench; env = @{}; args = @('-ngl', '99') }
 )
 if ($NoGpu) { $backends = @($backends | Where-Object { $_.key -ne 'gpu' }) }
@@ -158,8 +158,8 @@ function Invoke-Bench($b) {
 
 # Real chat: llama-server per backend, the same request several times, the server's own timings.
 $chatBackends = @(
-    [ordered]@{ key = 'cpu'; env = @{ GGML_PCUDA_DISABLE = '1' }; args = @('-t', "$CpuThreads", '-tb', "$CpuThreads") },
-    [ordered]@{ key = 'pcuda'; env = @{}; args = @('-t', "$PcudaThreads", '-tb', "$PcudaBatchThreads") }
+    [ordered]@{ key = 'cpu'; env = @{ GGML_KERNELCORE_DISABLE = '1' }; args = @('-t', "$CpuThreads", '-tb', "$CpuThreads") },
+    [ordered]@{ key = 'Kernelcore'; env = @{}; args = @('-t', "$KcThreads", '-tb', "$KcBatchThreads") }
 )
 function Invoke-Chat($cb) {
     $saved = @{}
@@ -167,7 +167,7 @@ function Invoke-Chat($cb) {
     $log = Join-Path $OutDir "chat_server_$($cb.key).log"
     $a = @('-m', "`"$ChatModel`"", '--port', "$ChatPort", '-c', '4096', '-np', '1', '--no-webui') + $cb.args
     if (-not $ChatThink) { $a += @('--reasoning-budget', '0') }
-    $p = Start-Process -FilePath $PcudaServer -ArgumentList $a -PassThru -WindowStyle Hidden -RedirectStandardError $log -RedirectStandardOutput "$log.out"
+    $p = Start-Process -FilePath $KcServer -ArgumentList $a -PassThru -WindowStyle Hidden -RedirectStandardError $log -RedirectStandardOutput "$log.out"
     foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
     $url = "http://127.0.0.1:$ChatPort"
     try {
@@ -197,12 +197,12 @@ function Invoke-Chat($cb) {
     }
 }
 
-# pcuda_kquant_vs_cuda rows: "tokens | ok ... | pcuda ms  GPU ms | pcuda tok/s  GPU tok/s | ratio",
+# kc_kquant_vs_cuda rows: "tokens | ok ... | KC ms  GPU ms | KC tok/s  GPU tok/s | ratio",
 # in a section per activation format; keep the ggml backend's choice (1 token: per 32, batches: per 256).
 function Invoke-Kernels {
     $ErrorActionPreference = 'Continue'
     $out = & $KernelApp 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "pcuda_kquant_vs_cuda exited with $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0) { throw "kc_kquant_vs_cuda exited with $LASTEXITCODE" }
     $fmt = 0; $rows = @()
     foreach ($line in $out) {
         $l = [string]$line
@@ -210,21 +210,21 @@ function Invoke-Kernels {
         if ($l -match '^\s*(\d+)\s*\|\s*(ok|BAD)\b.*\|\s*([\d.]+)\s+([\d.]+)\s*\|\s*([\d.]+)\s+([\d.]+)\s*\|') {
             $n = [int]$Matches[1]
             if (($n -eq 1 -and $fmt -eq 32) -or ($n -gt 1 -and $fmt -eq 256)) {
-                $rows += , [ordered]@{ tokens = $n; ok = ($Matches[2] -eq 'ok'); pcuda_tps = [double]$Matches[5]; gpu_tps = [double]$Matches[6] }
+                $rows += , [ordered]@{ tokens = $n; ok = ($Matches[2] -eq 'ok'); kc_tps = [double]$Matches[5]; gpu_tps = [double]$Matches[6] }
             }
         }
     }
-    if (-not $rows.Count) { throw "pcuda_kquant_vs_cuda: no results (no CUDA device?)" }
+    if (-not $rows.Count) { throw "kc_kquant_vs_cuda: no results (no CUDA device?)" }
     return $rows
 }
 
 if (-not $RenderOnly) {
     if (-not (Test-Path $Model)) { throw "model not found: $Model" }
-    if (-not $NoKernels -and -not (Test-Path $KernelApp)) { throw "pcuda_kquant_vs_cuda not found at $KernelApp (build the windows-msvc-nvidia preset, or use -NoKernels)" }
+    if (-not $NoKernels -and -not (Test-Path $KernelApp)) { throw "kc_kquant_vs_cuda not found at $KernelApp (build the windows-msvc-nvidia preset, or use -NoKernels)" }
     $kernelOk = $true
     if (-not $NoChat) {
         if (-not (Test-Path $ChatModel)) { throw "chat model not found: $ChatModel" }
-        if (-not (Test-Path $PcudaServer)) { throw "llama-server not found at $PcudaServer (or use -NoChat)" }
+        if (-not (Test-Path $KcServer)) { throw "llama-server not found at $KcServer (or use -NoChat)" }
     }
     $chatText = @{}
     $chatInfo = $null
@@ -243,13 +243,13 @@ if (-not $RenderOnly) {
             Start-Sleep -Seconds $CooldownSeconds
         }
         if (-not $NoKernels) {
-            Write-Host "round $r/${Rounds}: pcuda kernels on CPU and GPU ..."
+            Write-Host "round $r/${Rounds}: Kernelcore kernels on CPU and GPU ..."
             foreach ($kr in (Invoke-Kernels)) {
                 $test = if ($kr.tokens -eq 1) { 'kern tg1' } else { "kern pp$($kr.tokens)" }
                 if (-not $kr.ok) { $kernelOk = $false }
-                [void]$records.Add([ordered]@{ backend = 'pcuda'; round = $r; test = $test; avg_ts = $kr.pcuda_tps; stddev_ts = 0.0 })
-                [void]$records.Add([ordered]@{ backend = 'pcudagpu'; round = $r; test = $test; avg_ts = $kr.gpu_tps; stddev_ts = 0.0 })
-                Write-Host ("  {0,-6} pcuda {1,8:N1}  GPU {2,8:N1} tok/s{3}" -f ($test -replace '^kern ', ''), $kr.pcuda_tps, $kr.gpu_tps, $(if ($kr.ok) { '' } else { '  RESULTS DIFFER' }))
+                [void]$records.Add([ordered]@{ backend = 'Kernelcore'; round = $r; test = $test; avg_ts = $kr.kc_tps; stddev_ts = 0.0 })
+                [void]$records.Add([ordered]@{ backend = 'kcgpu'; round = $r; test = $test; avg_ts = $kr.gpu_tps; stddev_ts = 0.0 })
+                Write-Host ("  {0,-6} Kernelcore {1,8:N1}  GPU {2,8:N1} tok/s{3}" -f ($test -replace '^kern ', ''), $kr.kc_tps, $kr.gpu_tps, $(if ($kr.ok) { '' } else { '  RESULTS DIFFER' }))
             }
         }
         if (-not $NoChat) {
@@ -278,19 +278,19 @@ if (-not $RenderOnly) {
             model = $ChatModel; name = $name; prompt = $ChatPrompt; max_tokens = $ChatTokens; reps = $ChatReps; think = [bool]$ChatThink
             n_params = $(if ($chatInfo -and $chatInfo.meta) { $chatInfo.meta.n_params } else { $null })
             size = $(if ($chatInfo -and $chatInfo.meta) { $chatInfo.meta.size } else { $null })
-            same_reply = ($chatText['cpu'] -eq $chatText['pcuda'])
+            same_reply = ($chatText['cpu'] -eq $chatText['Kernelcore'])
             same_words = $(  # leading words the two replies share
-                $wa = @(([string]$chatText['cpu']) -split '\s+' | Where-Object { $_ }); $wb = @(([string]$chatText['pcuda']) -split '\s+' | Where-Object { $_ })
+                $wa = @(([string]$chatText['cpu']) -split '\s+' | Where-Object { $_ }); $wb = @(([string]$chatText['Kernelcore']) -split '\s+' | Where-Object { $_ })
                 $i = 0; while ($i -lt $wa.Count -and $i -lt $wb.Count -and $wa[$i] -ceq $wb[$i]) { $i++ }; $i)
-            words = @(@(([string]$chatText['cpu']) -split '\s+' | Where-Object { $_ }).Count, @(([string]$chatText['pcuda']) -split '\s+' | Where-Object { $_ }).Count)
+            words = @(@(([string]$chatText['cpu']) -split '\s+' | Where-Object { $_ }).Count, @(([string]$chatText['Kernelcore']) -split '\s+' | Where-Object { $_ }).Count)
             replies = $chatText
         }
     }
     $doc = [ordered]@{
         system   = Get-SystemInfo
-        settings = [ordered]@{ model = $Model; prompt = $Prompt; gen = $Gen; reps = $Reps; rounds = $Rounds; cpu_threads = $CpuThreads; pcuda_threads = $PcudaThreads; pcuda_batch_threads = $PcudaBatchThreads }
+        settings = [ordered]@{ model = $Model; prompt = $Prompt; gen = $Gen; reps = $Reps; rounds = $Rounds; cpu_threads = $CpuThreads; kc_threads = $KcThreads; kc_batch_threads = $KcBatchThreads }
         backends = @(@($backends | ForEach-Object { [ordered]@{ key = $_.key; label = $_.label; detail = $_.detail } }) +
-                     $(if (-not $NoKernels) { , [ordered]@{ key = 'pcudagpu'; label = 'pcuda on GPU'; detail = 'the same .cu kernels, nvcc (matmuls only)' } } else { @() }))
+                     $(if (-not $NoKernels) { , [ordered]@{ key = 'kcgpu'; label = 'Kernelcore on GPU'; detail = 'the same .cu kernels, nvcc (matmuls only)' } } else { @() }))
         meta     = $meta
         chat     = $chat
         kernels  = $(if (-not $NoKernels) { [ordered]@{ app = $KernelApp; results_match = $kernelOk } } else { $null })
@@ -313,11 +313,11 @@ $tests = @($doc.records | ForEach-Object { $_.test } | Select-Object -Unique)
 $genTests = @($tests | Where-Object { $_ -like 'tg*' })
 $ppTests = @($tests | Where-Object { $_ -like 'pp*' } | Sort-Object { [int]($_.Substring(2)) })
 $chatTests = @('chat reply', 'chat prompt' | Where-Object { $tests -contains $_ })
-$chatBks = @($bks | Where-Object { $_.key -eq 'cpu' -or $_.key -eq 'pcuda' })
+$chatBks = @($bks | Where-Object { $_.key -eq 'cpu' -or $_.key -eq 'Kernelcore' })
 $kernTests = @($tests | Where-Object { $_ -like 'kern *' } | Sort-Object { if ($_ -eq 'kern tg1') { 0 } else { [int]($_ -replace '^kern pp', '') } })
-$kernBks = @($bks | Where-Object { $_.key -eq 'pcuda' -or $_.key -eq 'pcudagpu' })
+$kernBks = @($bks | Where-Object { $_.key -eq 'Kernelcore' -or $_.key -eq 'kcgpu' })
 $allBks = $bks                                            # legend and table
-$bks = @($bks | Where-Object { $_.key -ne 'pcudagpu' })   # llama-bench charts
+$bks = @($bks | Where-Object { $_.key -ne 'kcgpu' })   # llama-bench charts
 
 # table view next to the image
 $rows = foreach ($t in $genTests + $ppTests + $chatTests + $kernTests) {
@@ -332,8 +332,8 @@ Add-Type -AssemblyName System.Drawing
 function C([string]$hex) { [System.Drawing.ColorTranslator]::FromHtml($hex) }
 $surface = C '#fcfcfb'; $ink = C '#0b0b0b'; $ink2 = C '#52514e'; $grid = C '#e6e5e1'; $card = C '#f4f3f0'
 # categorical slots 1-3 (validated all-pairs, light mode); values are always labeled on the bars
-# pcuda on GPU: slot 7 (violet), only ever charted next to pcuda's orange (that pair passes all checks)
-$seriesColor = @{ cpu = C '#2a78d6'; pcuda = C '#eb6834'; gpu = C '#1baf7a'; pcudagpu = C '#6250d6' }
+# Kernelcore on GPU: slot 7 (violet), only ever charted next to Kernelcore's orange (that pair passes all checks)
+$seriesColor = @{ cpu = C '#2a78d6'; Kernelcore = C '#eb6834'; gpu = C '#1baf7a'; kcgpu = C '#6250d6' }
 
 function F([float]$px, [string]$face = 'Segoe UI', [System.Drawing.FontStyle]$style = 'Regular') {
     New-Object System.Drawing.Font($face, $px, $style, [System.Drawing.GraphicsUnit]::Pixel)
@@ -381,7 +381,7 @@ $top = 150
 # system card contents, measured before the canvas size is fixed
 $builds = @()
 foreach ($b in $bks) { $mb = $doc.meta.($b.key); if ($mb -and $mb.build_commit) { $builds += "$($b.label): llama.cpp $($mb.build_commit)" } }
-if ($sys.pcuda) { $builds += "pcuda (CudaOnCPUCores) $($sys.pcuda)" }
+if ($sys.Kernelcore) { $builds += "Kernelcore $($sys.Kernelcore)" }
 $items = @(
     @('Processor', $sys.processor), @('Cores', $sys.cores), @('Memory', $sys.memory), @('Graphics', $sys.graphics),
     @('Operating system', $sys.os), @('Computer', $sys.computer), @('Builds', ($builds -join "`n"))
@@ -418,7 +418,7 @@ if (-not $modelLabel) {
         $modelLabel = "$($mm.model_type), $([math]::Round([double]$mm.model_size / 1GB, 2)) GiB, $([math]::Round([double]$mm.model_n_params / 1e9, 2))B parameters"
     }
 }
-$g.DrawString('llama.cpp on this PC: CPU vs pcuda vs GPU', $fTitle, $bInk, $M, 40)
+$g.DrawString('llama.cpp on this PC: CPU vs Kernelcore vs GPU', $fTitle, $bInk, $M, 40)
 $dot = "  $([char]0x00B7)  "   # kept out of the file's bytes: Windows PowerShell reads scripts as ANSI
 $g.DrawString("$modelLabel${dot}llama-bench, tokens per second (higher is better)$dot$($sys.date)", $fSub, $bInk2, $M + 2, 92)
 
@@ -492,7 +492,7 @@ $yc = $top + 60 + $legendExtra
 Draw-Chart "Generation (tokens/s)" $genTests $yc
 Draw-Chart "Prompt processing (tokens/s, by prompt length)" $ppTests ($yc + $hGen + 40)
 
-# real chat: llama-server, one prompt, CPU backend vs pcuda
+# real chat: llama-server, one prompt, CPU backend vs Kernelcore
 if ($chatTests.Count) {
     $ch = $doc.chat
     $cname = $ch.name
@@ -514,12 +514,12 @@ if ($chatTests.Count) {
     $g.DrawString("Whole answer, fastest request (prompt + reply tokens): $($parts -join ', '). $same", $fLabel, $bInk2, $noteRect)
 }
 
-# pcuda's kernels on the CPU and on the GPU (nvcc): one layer's matmuls, not a llama.cpp run
+# Kernelcore's kernels on the CPU and on the GPU (nvcc): one layer's matmuls, not a llama.cpp run
 if ($kernTests.Count) {
     $y0 = $yc + $hGen + 40 + $hPP + $hChat + 40
-    Draw-Chart "pcuda kernels on the CPU vs the GPU: matmuls only (tokens/s)" $kernTests $y0 $kernBks 'pcuda' 'pcuda'
-    $match = if ($doc.kernels.results_match) { 'GPU results checked against pcuda: same 8-bit activations, outputs within 3e-7.' } else { 'GPU and pcuda results DIFFER (see pcuda_kquant_vs_cuda).' }
-    $kn = "pcuda_kquant_vs_cuda: one Llama 3.2 3B layer's 2 quantizations + 7 matmuls (random weights), tok/s = tokens / (28 x layer time); " +
+    Draw-Chart "Kernelcore kernels on the CPU vs the GPU: matmuls only (tokens/s)" $kernTests $y0 $kernBks 'Kernelcore' 'Kernelcore'
+    $match = if ($doc.kernels.results_match) { 'GPU results checked against Kernelcore: same 8-bit activations, outputs within 3e-7.' } else { 'GPU and Kernelcore results DIFFER (see kc_kquant_vs_cuda).' }
+    $kn = "kc_kquant_vs_cuda: one Llama 3.2 3B layer's 2 quantizations + 7 matmuls (random weights), tok/s = tokens / (28 x layer time); " +
           "no attention, norms or output layer, so not comparable with the bars above. $match"
     $kRect = New-Object System.Drawing.RectangleF($chartX, ($y0 + (ChartHeight $kernTests.Count $kernBks.Count) - 6), $chartW, 48)
     $g.DrawString($kn, $fLabel, $bInk2, $kRect)
@@ -528,12 +528,12 @@ if ($kernTests.Count) {
 # footer
 $set = $doc.settings
 $roundsText = if ([int]$set.rounds -eq 1) { '1 round' } else { "the best of $($set.rounds) rounds" }
-$pt = if ($set.pcuda_threads) { [int]$set.pcuda_threads } else { 1 }
-$pbt = if ($set.pcuda_batch_threads) { [int]$set.pcuda_batch_threads } else { $pt }
-$pcudaText = if ($pt -eq $pbt) { "pcuda runs llama.cpp with $pt ggml thread$(if ($pt -ne 1) { 's' })" }
-             else { "pcuda runs llama.cpp with $pt ggml thread$(if ($pt -ne 1) { 's' }) for generation and $pbt for prompts (llama-server -t $pt -tb $pbt)" }
+$pt = if ($set.kc_threads) { [int]$set.kc_threads } else { 1 }
+$pbt = if ($set.kc_batch_threads) { [int]$set.kc_batch_threads } else { $pt }
+$kcText = if ($pt -eq $pbt) { "Kernelcore runs llama.cpp with $pt ggml thread$(if ($pt -ne 1) { 's' })" }
+             else { "Kernelcore runs llama.cpp with $pt ggml thread$(if ($pt -ne 1) { 's' }) for generation and $pbt for prompts (llama-server -t $pt -tb $pbt)" }
 $foot = "Each bar: $roundsText of llama-bench -r $($set.reps); the backends alternate within each round. " +
-        "tgN = generating N tokens, ppN = processing an N-token prompt. $pcudaText; " +
+        "tgN = generating N tokens, ppN = processing an N-token prompt. $kcText; " +
         "its own thread pool runs prompt matmuls on all cores and everything else on the P-cores." +
         $(if ($chatTests.Count) { " Real chat: the best of $($set.rounds * $doc.chat.reps) request$(if ($set.rounds * $doc.chat.reps -ne 1) { 's' }) per backend through /v1/chat/completions (chat template, greedy$(if (-not $doc.chat.think) { ', no thinking' }), up to $($doc.chat.max_tokens) tokens), the server's own timings." } else { '' })
 $g.DrawString($foot, $fFoot, $bInk2, (New-Object System.Drawing.RectangleF($M, ($H - 100), ($W - 2 * $M), 84)))

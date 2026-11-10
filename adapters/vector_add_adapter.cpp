@@ -2,13 +2,13 @@
 // Booth 0.6.1 symbol: vector_add(const float* a, const float* b, float* out, int count, <nthreads>)
 // System V registers: rdi=a, rsi=b, rdx=out, rcx=count (sign-extended), r8=nthreads (64-bit).
 
-#include <pcuda/kernels.hpp>
+#include <kernelcore/kernels.hpp>
 
 #include <limits>
 
-PCUDA_DECLARE_KERNEL_IMAGE(vector_add);
+KC_DECLARE_KERNEL_IMAGE(vector_add);
 
-namespace pcuda::kernels {
+namespace kc::kernels {
 namespace {
 
 Error marshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
@@ -44,8 +44,8 @@ Error marshalChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out
 } // namespace
 
 const KernelEntry& vectorAddEntry() noexcept {
-    static const KernelEntry e{"vector_add", PCUDA_KERNEL_IMAGE_FIELDS(vector_add), &marshal, &extent, &marshalChunk};
+    static const KernelEntry e{"vector_add", KC_KERNEL_IMAGE_FIELDS(vector_add), &marshal, &extent, &marshalChunk};
     return e;
 }
 
-} // namespace pcuda::kernels
+} // namespace kc::kernels

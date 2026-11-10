@@ -1,10 +1,10 @@
 ; Win64 -> System V AMD64 call thunk for Booth --cpu kernels.
 ;
-; int pcuda_sysv_invoke(const void* entry,      ; rcx
+; int kc_sysv_invoke(const void* entry,      ; rcx
 ;                       const uint64_t* gpr6,   ; rdx  -> rdi, rsi, rdx, rcx, r8, r9
 ;                       const uint64_t* xmm8,   ; r8   -> xmm0..xmm7 (low 64 bits)
 ;                       void** anchor_slot)     ; r9   receives the post-prologue rsp
-; Returns 0 when the kernel returns normally, 1 when resumed at pcuda_sysv_recover
+; Returns 0 when the kernel returns normally, 1 when resumed at kc_sysv_recover
 ; by the fault guard after a hardware exception inside the kernel.
 ;
 ; Saves every Win64 non-volatile register (rbx, rbp, rdi, rsi, r12-r15, xmm6-xmm15),
@@ -13,12 +13,12 @@
 
 OPTION CASEMAP:NONE
 
-PUBLIC pcuda_sysv_invoke
-PUBLIC pcuda_sysv_recover
+PUBLIC kc_sysv_invoke
+PUBLIC kc_sysv_recover
 
 _TEXT SEGMENT
 
-pcuda_sysv_invoke PROC FRAME
+kc_sysv_invoke PROC FRAME
         push    rbp
         .pushreg rbp
         push    rbx
@@ -112,10 +112,10 @@ restore_state:
         ret
 
         ; The fault guard resumes here with rsp = anchor (the post-prologue rsp).
-pcuda_sysv_recover::
+kc_sysv_recover::
         mov     eax, 1
         jmp     restore_state
-pcuda_sysv_invoke ENDP
+kc_sysv_invoke ENDP
 
 _TEXT ENDS
 END

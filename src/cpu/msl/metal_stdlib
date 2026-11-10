@@ -1,11 +1,11 @@
-// pcuda stand-in for <metal_stdlib>: lets Booth's --metal output compile as ordinary C++
+// Kernelcore stand-in for <metal_stdlib>: lets Booth's --metal output compile as ordinary C++
 // for the CPU (the "native" code path). Every function reproduces what Booth's own x86
 // backend does for the same IR operation, so native results are bit-identical:
 //   sin/cos  Booth IR takes the argument in turns (x / 2pi); x86 computes sinf(t * 2pi) in float
-//   exp2/log2 CRT exp2f/log2f (the same functions Booth's x86 code calls through pcuda shims)
+//   exp2/log2 CRT exp2f/log2f (the same functions Booth's x86 code calls through Kernelcore shims)
 //   sqrt      sqrtss (correctly rounded)
 //   fmax(a,b) maxss a, b: a > b ? a : b (returns b on NaN or equality)
-// pcuda_mslgen qualifies the math calls in Booth's output as metal::name(...), so the CRT
+// kc_mslgen qualifies the math calls in Booth's output as metal::name(...), so the CRT
 // overloads from <math.h> cannot make them ambiguous.
 #pragma once
 

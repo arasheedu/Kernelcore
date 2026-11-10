@@ -3,14 +3,14 @@
 
 #include "../src/builtin_kernels.hpp"
 
-namespace pcuda::kernels {
+namespace kc::kernels {
 const KernelEntry& vectorAddEntry() noexcept;
 }
 
-namespace pcuda {
+namespace kc {
 
 void registerBuiltinKernels(std::vector<const KernelEntry*>& out) {
     out.push_back(&kernels::vectorAddEntry());
 }
 
-} // namespace pcuda
+} // namespace kc

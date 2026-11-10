@@ -15,7 +15,7 @@ jobs:
         run: ./scripts/build.ps1 -Preset windows-msvc-prebuilt
       - name: Demo
         shell: pwsh
-        run: ./build/windows-msvc-prebuilt/pcuda_poc.exe
+        run: ./build/windows-msvc-prebuilt/kc_poc.exe
 
   win-msvc-asan:
     runs-on: windows-2022

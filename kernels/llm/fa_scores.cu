@@ -7,25 +7,25 @@
 // t * k_row + kvh * k_head + d / 2. The mask (if any) is fp16, row i at word i * m_row.
 // dims = {H, T, D, group, tp, k_row, k_head, v_row, v_head, N, q_tok, q_head, m_row, has_mask, H_kv}
 // (strides of q in floats, of k, v and the mask in words; D and tp multiples of 8).
-// base: index of the first thread (0 on the GPU; the chunk start under pcuda chunking).
+// base: index of the first thread (0 on the GPU; the chunk start under Kernelcore chunking).
 
-#ifndef PCUDA_ALIGNED8_DEFINED
-#define PCUDA_ALIGNED8_DEFINED
-// Promise that x is a non-negative multiple of 8 (identity). pcuda_mslgen uses it to keep
+#ifndef KC_ALIGNED8_DEFINED
+#define KC_ALIGNED8_DEFINED
+// Promise that x is a non-negative multiple of 8 (identity). kc_mslgen uses it to keep
 // x-based divisions uniform across the 8 lanes of a group, and checks it at run time.
-__device__ int pcuda_aligned8(int x)
+__device__ int kc_aligned8(int x)
 {
     return x;
 }
 #endif
 
-#ifndef PCUDA_H2F_DEFINED
-#define PCUDA_H2F_DEFINED
-// Value of the fp16 bit pattern in the low 16 bits of h. pcuda_mslgen's simd path maps calls to
+#ifndef KC_H2F_DEFINED
+#define KC_H2F_DEFINED
+// Value of the fp16 bit pattern in the low 16 bits of h. kc_mslgen's simd path maps calls to
 // this exact body to F16C vcvtph2ps. The body itself (other paths) uses integer and float
 // arithmetic only (Booth has no bit casts, and its x86 back end miscompiled a version with
 // selects): exact for finite values; infinities and NaN become +-(1024 + mantissa) * 32 there.
-__device__ float pcuda_h2f(int h)
+__device__ float kc_h2f(int h)
 {
     const int e = (h >> 10) & 31;
     const int nz = (e + 31) >> 5;  // 1 for a normal number, 0 for a subnormal
@@ -41,13 +41,13 @@ __device__ float pcuda_h2f(int h)
 extern "C" __global__ void fa_scores(const float* qv, const int* k, const int* mask, float* s, const int* dims,
                                      float scale, float base)
 {
-    const int idx = pcuda_aligned8((int)base) + blockIdx.x * blockDim.x + threadIdx.x;
+    const int idx = kc_aligned8((int)base) + blockIdx.x * blockDim.x + threadIdx.x;
     const int T = dims[1];
     const int D = dims[2];
     const int group = dims[3];
-    const int tp = pcuda_aligned8(dims[4]);
+    const int tp = kc_aligned8(dims[4]);
     const int N = dims[9];
-    const int per = pcuda_aligned8(N * tp);
+    const int per = kc_aligned8(N * tp);
     if (idx < dims[14] * per) {
         const int kvh = idx / per;
         const int r = idx - kvh * per;
@@ -55,13 +55,13 @@ extern "C" __global__ void fa_scores(const float* qv, const int* k, const int* m
         const int t = r - i * tp;
         if (t < T) {
             // Without a mask (has = 0), read word 0 and drop it. Arithmetic, not selects: Booth kept
-            // the first parameter in memory with selects here, which pcuda_mslgen cannot translate.
+            // the first parameter in memory with selects here, which kc_mslgen cannot translate.
             const int has = dims[13];
             const int mw = mask[(i * dims[12] + t / 2) * has];  // has is 0 or 1
             const int mh = (mw >> ((t & 1) * 16)) & 65535;
-            const float mm = pcuda_h2f(mh);
+            const float mm = kc_h2f(mh);
             const float mv = mm * (float)has;
-            // Integer offsets, not pointer variables (pcuda_mslgen).
+            // Integer offsets, not pointer variables (kc_mslgen).
             const int kr = t * dims[5] + kvh * dims[6];
             const int qh = dims[11];
             for (int g0 = 0; g0 < group; g0 += 4) {
@@ -79,9 +79,9 @@ extern "C" __global__ void fa_scores(const float* qv, const int* k, const int* m
                 for (int j = 0; j < D / 2; ++j) {
                     const int w = k[kr + j];
                     const int ah = w & 65535;
-                    const float k0 = pcuda_h2f(ah);
+                    const float k0 = kc_h2f(ah);
                     const int bh = (w >> 16) & 65535;
-                    const float k1 = pcuda_h2f(bh);
+                    const float k1 = kc_h2f(bh);
                     a0 += qv[q0 + 2 * j] * k0 + qv[q0 + 2 * j + 1] * k1;
                     a1 += qv[o1 + 2 * j] * k0 + qv[o1 + 2 * j + 1] * k1;
                     a2 += qv[o2 + 2 * j] * k0 + qv[o2 + 2 * j + 1] * k1;

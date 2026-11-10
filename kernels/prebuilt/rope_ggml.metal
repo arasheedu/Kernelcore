@@ -6,10 +6,10 @@
 #include <metal_stdlib>
 using namespace metal;
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0);
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0)
 {
     return p0;
@@ -93,7 +93,7 @@ kernel void rope_ggml(
     v12 = v10 + v11;
     v13 = p4 + (0);
     v14 = *(v13);
-    v15 = pcuda_aligned8(v14);
+    v15 = kc_aligned8(v14);
     v16 = p4 + (1);
     v17 = *(v16);
     v18 = p4 + (2);

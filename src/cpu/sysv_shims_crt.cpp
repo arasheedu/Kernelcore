@@ -5,8 +5,8 @@
 #include <cmath>
 
 extern "C" {
-float pcuda_crt_sinf(float x) noexcept { return std::sin(x); }
-float pcuda_crt_cosf(float x) noexcept { return std::cos(x); }
-float pcuda_crt_exp2f(float x) noexcept { return std::exp2(x); }
-float pcuda_crt_log2f(float x) noexcept { return std::log2(x); }
+float kc_crt_sinf(float x) noexcept { return std::sin(x); }
+float kc_crt_cosf(float x) noexcept { return std::cos(x); }
+float kc_crt_exp2f(float x) noexcept { return std::exp2(x); }
+float kc_crt_log2f(float x) noexcept { return std::log2(x); }
 }

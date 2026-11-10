@@ -42,7 +42,7 @@ cat <<'E'
                     const int lo = q & 252645135;
                     const int hi = (q >> 4) & 252645135;
 E
-for ((i=0;i<T;i++)); do echo "                    da$i = pcuda_dp4a(lo, x$i[b * 8 + w], da$i);"; echo "                    db$i = pcuda_dp4a(hi, x$i[b * 8 + 8 + w], db$i);"; done
+for ((i=0;i<T;i++)); do echo "                    da$i = kc_dp4a(lo, x$i[b * 8 + w], da$i);"; echo "                    db$i = kc_dp4a(hi, x$i[b * 8 + 8 + w], db$i);"; done
 cat <<'E'
                 }
                 const int sh = 16 * (j & 1);
@@ -94,8 +94,8 @@ cat <<'E'
                         const int hi = ((qw[wb + (32 + 8 * n + w) * 8 + l] >> hish) << 4) & 808464432;    // 0x30303030
                         const int q = lo | hi;
 E
-rep '                        da@ = pcuda_dp4a(q, x@[b * 8 + w], da@);'
-rep '                        sa@ = pcuda_dp4a(16843009, x@[b * 8 + w], sa@);'
+rep '                        da@ = kc_dp4a(q, x@[b * 8 + w], da@);'
+rep '                        sa@ = kc_dp4a(16843009, x@[b * 8 + w], sa@);'
 cat <<'E'
                     }
                     for (int w = 4; w < 8; ++w) {
@@ -103,7 +103,7 @@ cat <<'E'
                         const int hi = ((qw[wb + (32 + 8 * n + w) * 8 + l] >> hish) << 4) & 808464432;
                         const int q = lo | hi;
 E
-rep '                        db@ = pcuda_dp4a(q, x@[b * 8 + w], db@);'
+rep '                        db@ = kc_dp4a(q, x@[b * 8 + w], db@);'
 echo "                    }"
 rep '                    const int i@ = sca * (da@ - 32 * sa@) + scb * (db@ - 32 * ((int)e@[b * 2 + 1] - sa@));'
 rep '                    p@ += (float)i@ * e@[b * 2];'

@@ -3,7 +3,7 @@
 #include "../allocation_registry.hpp"
 #include "booth_image.hpp"
 
-#include <pcuda/backend.hpp>
+#include <kernelcore/backend.hpp>
 
 #include <atomic>
 #include <map>
@@ -11,7 +11,7 @@
 #include <mutex>
 #include <string>
 
-namespace pcuda::cpu {
+namespace kc::cpu {
 
 class CpuBackend final : public IBackend {
 public:
@@ -30,7 +30,7 @@ public:
 
     const FaultInfo& lastFault() const noexcept { return last_fault_; }
 
-    // Code generation path (see pcuda::Codegen). resolve() applies Auto and per-kernel fallbacks.
+    // Code generation path (see kc::Codegen). resolve() applies Auto and per-kernel fallbacks.
     void    setCodegen(Codegen c) noexcept { codegen_.store(c); }
     Codegen codegen() const noexcept { return codegen_.load(); }
     Codegen resolve(const KernelEntry& entry) const noexcept;
@@ -56,4 +56,4 @@ private:
 bool protectedMove(void* dst, const void* src, size_t bytes) noexcept;
 bool protectedFill(void* dst, int value, size_t bytes) noexcept;
 
-} // namespace pcuda::cpu
+} // namespace kc::cpu

@@ -59,13 +59,13 @@ Verified against Booth `master` on 2026-11-06. **Phase 0 re-verifies every row a
               |
               |  build time: kath --cpu   (exe | wsl | prebuilt; see 13.2)
               v
-   vector_add.o  (ELF64, System V)  --->  pcuda_objcheck (build-time validator)
+   vector_add.o  (ELF64, System V)  --->  kc_objcheck (build-time validator)
               |
               |  CMake embeds the bytes and SHA-256 into a generated .cpp
               v
 +------------------------------------------------------------+
 |                 POC Host Application (.exe)                |
-|   typed kernel adapters  ->  pcuda* runtime API            |
+|   typed kernel adapters  ->  Kernelcore* runtime API            |
 +-----------------------------+------------------------------+
                               v
 +------------------------------------------------------------+
@@ -83,7 +83,7 @@ Verified against Booth `master` on 2026-11-06. **Phase 0 re-verifies every row a
    +-----------+-------------------------------------------+
    | BoothImageLoader  (ELF subset -> VirtualAlloc, W^X)   |
    | SysV shim table   (sinf/cosf/exp2f/log2f, near code)  |
-   | pcuda_sysv_invoke (MASM Win64 -> SysV thunk)          |
+   | kc_sysv_invoke (MASM Win64 -> SysV thunk)          |
    | KernelFaultGuard  (vectored exception handler)        |
    | WorkerPool        (8 MB stacks, optional chunking)    |
    +-------------------------------------------------------+
@@ -93,11 +93,11 @@ Verified against Booth `master` on 2026-11-06. **Phase 0 re-verifies every row a
 
 1. Runtime core doesn't include Booth compiler internals or NVIDIA headers.
 2. **All System V/ELF knowledge lives in `src/cpu/booth_image.*`, `src/cpu/sysv_invoke.asm` and `src/cpu/sysv_shims.asm`.** Nothing else knows the kernel is not native Win64.
-3. Kernel code is **never** called through a C++ function pointer. It is called only through `pcuda_sysv_invoke`.
-4. Every operation returns an explicit `pcuda::Error`. There is no silent success and no silent fallback to a different implementation.
+3. Kernel code is **never** called through a C++ function pointer. It is called only through `kc_sysv_invoke`.
+4. Every operation returns an explicit `kc::Error`. There is no silent success and no silent fallback to a different implementation.
 5. Untrusted input (object bytes, user pointers, sizes) is bounds-checked before use, with overflow-safe arithmetic.
 6. Memory ownership is tracked by the runtime, never inferred from pointer values.
-7. No exceptions cross the `pcuda*` API boundary or the thunk. Every API entry point is `noexcept` and catches internally.
+7. No exceptions cross the `kc*` API boundary or the thunk. Every API entry point is `noexcept` and catches internally.
 
 ## 5. Repository layout
 
@@ -114,7 +114,7 @@ cuda-cpu-poc/
 ├── kernels/
 │   ├── vector_add.cu
 │   └── prebuilt/                   # vector_add.o + vector_add.o.sha256 (committed fallback)
-├── include/pcuda/
+├── include/kernelcore/
 │   ├── api.hpp  types.hpp  error.hpp  backend.hpp  kernel_registry.hpp
 ├── src/
 │   ├── runtime.cpp  device_manager.cpp  allocation_registry.cpp
@@ -130,7 +130,7 @@ cuda-cpu-poc/
 ├── adapters/
 │   └── vector_add_adapter.cpp
 ├── tools/
-│   └── objcheck.cpp                # pcuda_objcheck: same parser as runtime, CLI
+│   └── objcheck.cpp                # kc_objcheck: same parser as runtime, CLI
 ├── app/
 │   └── main.cpp
 ├── tests/
@@ -147,10 +147,10 @@ cuda-cpu-poc/
 
 ## 6. Runtime API for POC 0.1
 
-The `pcuda*` names avoid collisions with CRT macros (`malloc`/`free` under `_CRTDBG_MAP_ALLOC`) and with NVIDIA headers.
+The `kc*` names avoid collisions with CRT macros (`malloc`/`free` under `_CRTDBG_MAP_ALLOC`) and with NVIDIA headers.
 
 ```cpp
-namespace pcuda {
+namespace kc {
 
 enum class Error : int {
     Success = 0,
@@ -164,14 +164,14 @@ enum class Error : int {
     DynamicCodeBlocked,      // process mitigation (ACG) forbids executable memory
     LaunchFailure,           // launch rejected before execution
     KernelFault,             // access violation / divide-by-zero inside kernel (sticky)
-    ContextPoisoned,         // any call after a sticky fault, until pcudaDeviceReset
+    ContextPoisoned,         // any call after a sticky fault, until kcDeviceReset
     NotReady
 };
 
 enum class CopyKind { HostToDevice, DeviceToHost, DeviceToDevice, HostToHost };
 
 struct DeviceProperties {
-    char     name[128];          // e.g. "pcuda CPU backend (Booth x86-64)"
+    char     name[128];          // e.g. "Kernelcore CPU backend (Booth x86-64)"
     unsigned worker_count;
     size_t   total_memory;       // GlobalMemoryStatusEx ullTotalPhys
     bool     is_hardware_gpu;    // always false for CPU backend
@@ -184,35 +184,35 @@ struct FaultInfo {               // filled after KernelFault
     char          kernel[64];
 };
 
-} // namespace pcuda
+} // namespace kc
 
 extern "C++" {
-pcuda::Error pcudaInit() noexcept;
-pcuda::Error pcudaShutdown() noexcept;            // explicit; never rely on static dtors
-pcuda::Error pcudaGetDeviceCount(int* count) noexcept;
-pcuda::Error pcudaGetDeviceProperties(pcuda::DeviceProperties*, int device) noexcept;
-pcuda::Error pcudaSetDevice(int device) noexcept;
-pcuda::Error pcudaMalloc(void** ptr, size_t bytes) noexcept;
-pcuda::Error pcudaFree(void* ptr) noexcept;
-pcuda::Error pcudaMemcpy(void* dst, const void* src, size_t bytes, pcuda::CopyKind) noexcept;
-pcuda::Error pcudaDeviceSynchronize() noexcept;
-pcuda::Error pcudaDeviceReset() noexcept;         // clears ContextPoisoned, frees everything
-pcuda::Error pcudaGetLastFault(pcuda::FaultInfo*) noexcept;
-const char*  pcudaGetErrorString(pcuda::Error) noexcept;
-const char*  pcudaGetLastErrorDetail() noexcept;  // thread-local diagnostic text
+kc::Error kcInit() noexcept;
+kc::Error kcShutdown() noexcept;            // explicit; never rely on static dtors
+kc::Error kcGetDeviceCount(int* count) noexcept;
+kc::Error kcGetDeviceProperties(kc::DeviceProperties*, int device) noexcept;
+kc::Error kcSetDevice(int device) noexcept;
+kc::Error kcMalloc(void** ptr, size_t bytes) noexcept;
+kc::Error kcFree(void* ptr) noexcept;
+kc::Error kcMemcpy(void* dst, const void* src, size_t bytes, kc::CopyKind) noexcept;
+kc::Error kcDeviceSynchronize() noexcept;
+kc::Error kcDeviceReset() noexcept;         // clears ContextPoisoned, frees everything
+kc::Error kcGetLastFault(kc::FaultInfo*) noexcept;
+const char*  kcGetErrorString(kc::Error) noexcept;
+const char*  kcGetLastErrorDetail() noexcept;  // thread-local diagnostic text
 }
 ```
 
 ### Semantics (all specified, none left to the implementation)
 
 - One logical CPU device (`0`). Any other index returns `InvalidDevice`.
-- Calling any API before `pcudaInit`, or after `pcudaShutdown`, returns `NotInitialized`. `pcudaInit` and `pcudaShutdown` themselves are idempotent.
-- `pcudaMalloc(p, 0)` returns `InvalidValue`. `bytes` is rounded up with overflow checks, and an overflow returns `OutOfMemory`.
-- `pcudaFree(nullptr)` returns `Success` (no-op). Unknown, interior and double-freed pointers return `InvalidPointer`.
-- `pcudaMemcpy` with `bytes == 0` returns `Success` without touching pointers. Each device operand's `[ptr, ptr+bytes)` range must lie inside one live allocation (interior pointers allowed). `DeviceToDevice` uses `memmove` semantics. `HostToHost` validates only for null.
-- After a `KernelFault`, work-creating calls (malloc, memcpy, memset, launch, stream/event create and record) and synchronize calls return `ContextPoisoned`. Release calls (`pcudaFree`, stream/event destroy), queries, `pcudaGetLastFault`, `pcudaDeviceReset` and `pcudaShutdown` still work, so callers can clean up. An async fault is first reported as `KernelFault` by the stream's synchronize, then `ContextPoisoned`.
-- `pcudaGetLastErrorDetail()` holds text from the most recent pcuda call on that thread. Every call resets it.
-- Host funcs must not call pcuda APIs. Calls from runtime worker threads return `UnsupportedOperation` instead of risking a shutdown deadlock.
+- Calling any API before `kcInit`, or after `kcShutdown`, returns `NotInitialized`. `kcInit` and `kcShutdown` themselves are idempotent.
+- `kcMalloc(p, 0)` returns `InvalidValue`. `bytes` is rounded up with overflow checks, and an overflow returns `OutOfMemory`.
+- `kcFree(nullptr)` returns `Success` (no-op). Unknown, interior and double-freed pointers return `InvalidPointer`.
+- `kcMemcpy` with `bytes == 0` returns `Success` without touching pointers. Each device operand's `[ptr, ptr+bytes)` range must lie inside one live allocation (interior pointers allowed). `DeviceToDevice` uses `memmove` semantics. `HostToHost` validates only for null.
+- After a `KernelFault`, work-creating calls (malloc, memcpy, memset, launch, stream/event create and record) and synchronize calls return `ContextPoisoned`. Release calls (`kcFree`, stream/event destroy), queries, `kcGetLastFault`, `kcDeviceReset` and `kcShutdown` still work, so callers can clean up. An async fault is first reported as `KernelFault` by the stream's synchronize, then `ContextPoisoned`.
+- `kcGetLastErrorDetail()` holds text from the most recent Kernelcore call on that thread. Every call resets it.
+- Host funcs must not call Kernelcore APIs. Calls from runtime worker threads return `UnsupportedOperation` instead of risking a shutdown deadlock.
 - The device is reported as a CPU backend and never as an NVIDIA GPU.
 
 ## 7. Executing Booth objects on Windows
@@ -229,7 +229,7 @@ extern "C" __global__ void vector_add(const float* a, const float* b,
 }
 ```
 
-Contract enforced by `pcuda_objcheck` and review:
+Contract enforced by `kc_objcheck` and review:
 - At most **5** declared integer/pointer parameters (+ hidden `nthreads` = 6 GPRs) and at most **8** float parameters. No struct-by-value parameters.
 - No `__shared__`, `__syncthreads`, atomics or warp intrinsics.
 - Phase 0 confirms whether Booth accepts `extern "C"`. If it doesn't, drop it; Booth doesn't mangle names (F7).
@@ -255,13 +255,13 @@ Mapping:
 6. Register the `[base, base+size)` range with `KernelFaultGuard`.
 7. Unload: unregister, then `VirtualFree(MEM_RELEASE)`. This is only allowed when no launch is in flight (ref-counted).
 
-The same parser builds `tools/objcheck.cpp` (`pcuda_objcheck <obj> --kernel <name>`). It runs at **build time**, so a bad object fails the build and never reaches runtime. ELF objects carry no parameter signature, so the argument-count limit is enforced by `ArgPacker` when arguments are marshalled, not by objcheck.
+The same parser builds `tools/objcheck.cpp` (`kc_objcheck <obj> --kernel <name>`). It runs at **build time**, so a bad object fails the build and never reaches runtime. ELF objects carry no parameter signature, so the argument-count limit is enforced by `ArgPacker` when arguments are marshalled, not by objcheck.
 
-### 7.3 `pcuda_sysv_invoke` — Win64 → System V thunk (`src/cpu/sysv_invoke.asm`)
+### 7.3 `kc_sysv_invoke` — Win64 → System V thunk (`src/cpu/sysv_invoke.asm`)
 
 ```cpp
 // C++ declaration
-extern "C" int pcuda_sysv_invoke(const void* entry,          // rcx
+extern "C" int kc_sysv_invoke(const void* entry,          // rcx
                                  const uint64_t gpr[6],       // rdx: rdi,rsi,rdx,rcx,r8,r9
                                  const double   xmm[8],       // r8 : xmm0..xmm7 (low lane)
                                  void**         anchor_slot); // r9 : recovery anchor (thread-local)
@@ -274,7 +274,7 @@ Requirements, each with a test in `test_thunk_abi.cpp`:
 - Stack: 8 pushes plus `sub rsp, 168` gives `rsp ≡ 0 (mod 16)` before `call`, as System V requires. `movaps` saves are aligned.
 - Stores the post-prologue `rsp` in `*anchor_slot` before calling the kernel.
 - Loads `rdi, rsi, rdx, rcx, r8, r9` from `gpr[]` and `xmm0–7` from `xmm[]`, then `call` the entry.
-- Has a second label, `pcuda_sysv_recover`, **inside the same PROC after the prologue**. It sets `eax = 1` and jumps to the shared epilogue. The fault guard resumes execution there (§7.5).
+- Has a second label, `kc_sysv_recover`, **inside the same PROC after the prologue**. It sets `eax = 1` and jumps to the shared epilogue. The fault guard resumes execution there (§7.5).
 - Clears the direction flag (`cld`) before the call. MXCSR and the x87 control word are saved and restored, so a kernel can't leak FP-mode changes.
 
 **Argument marshalling** (`adapters/*`): every integer is **sign-extended to `int64_t`** before being stored in `gpr[]`. This fixes C1/F6 for `nthreads` and protects against Booth loading full 64-bit registers for `int` parameters. Pointers are stored as `uint64_t`. Floats are stored in the low 32 bits of the `xmm` lane as raw bits with `std::bit_cast`, not converted to double.
@@ -284,26 +284,26 @@ Requirements, each with a test in `test_thunk_abi.cpp`:
 For each of `sinf, cosf, exp2f, log2f`:
 
 ```asm
-pcuda_sysv_sinf PROC FRAME
+kc_sysv_sinf PROC FRAME
     sub  rsp, 40          ; 32-byte shadow space + realign (SysV caller left rsp ≡ 8 mod 16 at entry)
     .allocstack 40
     .endprolog
     call sinf             ; Win64 CRT; arg/return already in xmm0 in both ABIs
     add  rsp, 40
     ret
-pcuda_sysv_sinf ENDP
+kc_sysv_sinf ENDP
 ```
 
 - Win64 callees preserve a superset of what System V callers expect, so no extra saves are needed.
-- Any external not on the allowlist fails `pcuda_objcheck` and the loader.
+- Any external not on the allowlist fails `kc_objcheck` and the loader.
 - Test: a kernel that calls each function is compared against the CRT within 1 ULP.
 
 ### 7.5 Fault containment (`src/cpu/fault_guard.cpp`)
 
-- Install one vectored exception handler (`AddVectoredExceptionHandler(1, …)`) in `pcudaInit` and remove it in `pcudaShutdown`.
+- Install one vectored exception handler (`AddVectoredExceptionHandler(1, …)`) in `kcInit` and remove it in `kcShutdown`.
 - Per-thread state (`thread_local`): `in_kernel` flag, `anchor` (from the thunk), current kernel name and image range.
 - The handler acts **only** when `in_kernel` is set **and** RIP is inside a registered image or shim range. Otherwise it returns `EXCEPTION_CONTINUE_SEARCH`.
-  - Recoverable: `EXCEPTION_ACCESS_VIOLATION`, `EXCEPTION_INT_DIVIDE_BY_ZERO`, `EXCEPTION_INT_OVERFLOW`, `EXCEPTION_ILLEGAL_INSTRUCTION`, `EXCEPTION_PRIV_INSTRUCTION`. Record `FaultInfo`, then set `ctx->Rsp = anchor` and `ctx->Rip = &pcuda_sysv_recover`. Return `EXCEPTION_CONTINUE_EXECUTION`. The thunk restores the non-volatile registers it saved, so the caller's state is intact.
+  - Recoverable: `EXCEPTION_ACCESS_VIOLATION`, `EXCEPTION_INT_DIVIDE_BY_ZERO`, `EXCEPTION_INT_OVERFLOW`, `EXCEPTION_ILLEGAL_INSTRUCTION`, `EXCEPTION_PRIV_INSTRUCTION`. Record `FaultInfo`, then set `ctx->Rsp = anchor` and `ctx->Rip = &kc_sysv_recover`. Return `EXCEPTION_CONTINUE_EXECUTION`. The thunk restores the non-volatile registers it saved, so the caller's state is intact.
   - `EXCEPTION_STACK_OVERFLOW`: recovered like the others. After the thunk returns, `invokeSysV` calls `_resetstkoflw()` to re-arm the guard page. Only if that fails does the process `__fastfail`. Tests overflow the same thread three times in a row.
 - The handler makes no heap allocations, takes no locks and does no CRT I/O.
 - After recovery the runtime sets the sticky `ContextPoisoned` state (CUDA-like). Buffers written by the faulted launch are undefined.
@@ -312,8 +312,8 @@ pcuda_sysv_sinf ENDP
 ### 7.6 Threads and stacks
 
 - All kernel calls happen on runtime-owned threads created with `_beginthreadex` and an explicit **8 MB** stack (F9), or on the caller's thread for synchronous POC 0.1 launches, where `SetThreadStackGuarantee` reserves room to report a stack overflow.
-- Stack size is configurable (`PCUDA_KERNEL_STACK_MB`). The default is 8.
-- Worker threads are joined in `pcudaShutdown()`, never in static destructors (avoids the loader-lock deadlock).
+- Stack size is configurable (`KC_KERNEL_STACK_MB`). The default is 8.
+- Worker threads are joined in `kcShutdown()`, never in static destructors (avoids the loader-lock deadlock).
 
 ## 8. Backend interface
 
@@ -322,11 +322,11 @@ class IBackend {
 public:
     virtual ~IBackend() = default;
     virtual const char*  name() const noexcept = 0;
-    virtual pcuda::Error allocate(void** ptr, size_t bytes) noexcept = 0;
-    virtual pcuda::Error release(void* ptr) noexcept = 0;
-    virtual pcuda::Error copy(void* dst, const void* src, size_t bytes, pcuda::CopyKind) noexcept = 0;
-    virtual pcuda::Error launch(const KernelEntry&, const LaunchArgs&) noexcept = 0;
-    virtual pcuda::Error synchronize() noexcept = 0;
+    virtual kc::Error allocate(void** ptr, size_t bytes) noexcept = 0;
+    virtual kc::Error release(void* ptr) noexcept = 0;
+    virtual kc::Error copy(void* dst, const void* src, size_t bytes, kc::CopyKind) noexcept = 0;
+    virtual kc::Error launch(const KernelEntry&, const LaunchArgs&) noexcept = 0;
+    virtual kc::Error synchronize() noexcept = 0;
 };
 
 struct LaunchArgs {                 // already marshalled by the typed adapter
@@ -341,11 +341,11 @@ struct KernelEntry {
     std::array<uint8_t, 32>         sha256;       // checked at load
     unsigned                        max_int_params;
     // typed adapter: validates user args, fills LaunchArgs, returns Error
-    pcuda::Error (*marshal)(const void* typed_args, LaunchArgs* out) noexcept;
+    kc::Error (*marshal)(const void* typed_args, LaunchArgs* out) noexcept;
 };
 ```
 
-`CpuBackend` is implemented now. `NvidiaBackend` is future work. `-DPCUDA_ENABLE_NVIDIA=ON` (default OFF) currently builds only the side-by-side comparison tool (§19), and no CUDA libraries are linked in the CPU build.
+`CpuBackend` is implemented now. `NvidiaBackend` is future work. `-DKC_ENABLE_NVIDIA=ON` (default OFF) currently builds only the side-by-side comparison tool (§19), and no CUDA libraries are linked in the CPU build.
 
 ## 9. Allocation registry and guarded allocator
 
@@ -357,21 +357,21 @@ struct AllocationInfo {
 };
 ```
 
-- **Allocator** (`guarded_alloc.cpp`): `VirtualAlloc` with `region = round_up(bytes, page) + page`, and the trailing page set to `PAGE_NOACCESS`. Guard mode is **on by default in every configuration**, robustness first. The user block is placed **flush against the guard page** with 64-byte alignment, so for sizes that are multiples of 64 bytes a one-past-the-end write faults immediately and becomes a `KernelFault` instead of silent corruption. Other sizes have up to 63 bytes of undetected slack. `PCUDA_GUARD_PAGES=0` switches to `_aligned_malloc(bytes, 64)` / `_aligned_free`. `std::aligned_alloc` is not used because MSVC doesn't provide it.
+- **Allocator** (`guarded_alloc.cpp`): `VirtualAlloc` with `region = round_up(bytes, page) + page`, and the trailing page set to `PAGE_NOACCESS`. Guard mode is **on by default in every configuration**, robustness first. The user block is placed **flush against the guard page** with 64-byte alignment, so for sizes that are multiples of 64 bytes a one-past-the-end write faults immediately and becomes a `KernelFault` instead of silent corruption. Other sizes have up to 63 bytes of undetected slack. `KC_GUARD_PAGES=0` switches to `_aligned_malloc(bytes, 64)` / `_aligned_free`. `std::aligned_alloc` is not used because MSVC doesn't provide it.
 - **Registry**: an ordered map keyed by `user_base`, protected by `std::shared_mutex`. Interior-pointer lookup uses `upper_bound` then a range check. Every range check uses overflow-safe `add`.
 - Double free and unknown pointers return `InvalidPointer`, and the registry stays unchanged.
-- `pcudaShutdown`/`pcudaDeviceReset` free every remaining allocation and report the count of leaked allocations in the diagnostics.
+- `kcShutdown`/`kcDeviceReset` free every remaining allocation and report the count of leaked allocations in the diagnostics.
 
 ## 10. Streams and events
 
-**POC 0.1:** one default stream, synchronous launch. `pcudaDeviceSynchronize` is a fence that returns the first stored error.
+**POC 0.1:** one default stream, synchronous launch. `kcDeviceSynchronize` is a fence that returns the first stored error.
 
 **POC 0.2:**
 - `Stream` holds a FIFO and one worker thread (8 MB stack). Operations run in submission order.
-- `pcudaStreamSynchronize` waits for the stream to drain and returns the first error from that stream since the last sync.
-- `Event` records a completion marker. `pcudaEventSynchronize` waits for it.
+- `kcStreamSynchronize` waits for the stream to drain and returns the first error from that stream since the last sync.
+- `Event` records a completion marker. `kcEventSynchronize` waits for it.
 - Task errors and C++ exceptions are captured on the worker (`try/catch(...)` → `Error`) and stored. They never propagate across threads.
-- No `pcudaMemcpyAsync` until host-buffer lifetime rules are implemented and tested.
+- No `kcMemcpyAsync` until host-buffer lifetime rules are implemented and tested.
 - Cross-stream waits are deferred.
 
 ## 11. N-core chunking experiment (POC 0.2)
@@ -390,7 +390,7 @@ This relies on F8: each call runs one block with `threadIdx.x ∈ [0, nthreads)`
 1. Pin a Booth tag and commit (start with `v0.6.1`) in `BOOTH_PIN.txt`.
 2. Obtain `kath` using the first method that works (§13.2) and record which one in `BOOTH_PIN.txt`. Verify the SHA-256 of any downloaded binary against the release's `SHA256SUMS`.
 3. `kath --version`. Compile `kernels/vector_add.cu` with `--cpu` (with and without `extern "C"`).
-4. Inspect the object with `llvm-readelf -h -S -s -r` (from the LLVM install) or the first `pcuda_objcheck` prototype. **Re-verify F1–F8.** Record the results.
+4. Inspect the object with `llvm-readelf -h -S -s -r` (from the LLVM install) or the first `kc_objcheck` prototype. **Re-verify F1–F8.** Record the results.
 5. Write a ~150-line spike: a minimal loader, the MASM thunk and a vector-add call with n = 1, 7, 257. Compare against a scalar reference.
 
 **Go/no-go gate.** Continue only if all of these hold:
@@ -409,19 +409,19 @@ If F1–F4 drift (new sections or relocation types), extend the loader allowlist
 
 ### Phase 2 — Loader, thunk, shims and build integration (3–4 days)
 - `booth_image.cpp`, `objcheck.cpp`, `sysv_invoke.asm`, `sysv_shims.asm`, `fault_guard.cpp`.
-- `booth_add_kernel()` CMake function: run `kath` (by the chosen method) → `pcuda_objcheck` → SHA-256 → embed as `alignas(16) const unsigned char[]` in a generated `.cpp`. Any failure stops the build with a clear message.
+- `booth_add_kernel()` CMake function: run `kath` (by the chosen method) → `kc_objcheck` → SHA-256 → embed as `alignas(16) const unsigned char[]` in a generated `.cpp`. Any failure stops the build with a clear message.
 - `test_loader.cpp`: every file in `loader_corpus/` must return `InvalidKernelImage` with the expected reason and must never crash. Add a fuzz target (`/fsanitize=fuzzer` with clang-cl) when available.
 - `test_thunk_abi.cpp`: hand-written System V test functions in asm that deliberately clobber `rbx, rbp, rdi, rsi, r12–15, xmm6–15`, MXCSR and DF. Assert the caller's state is intact afterwards. Test that 64-bit `nthreads` with garbage upper bits is impossible through the marshaller.
 
 **Exit:** a clean build from an empty build directory with **no** CUDA Toolkit, NVIDIA driver, WSL or network (prebuilt mode) compiles, validates, embeds and runs the kernel.
 
 ### Phase 3 — End-to-end launch and fault containment (2–3 days)
-- `pcudaLaunchVectorAdd` through the registry, with pointer-ownership checks before launch and a `count ≤ allocation size / sizeof(float)` check.
+- `kcLaunchVectorAdd` through the registry, with pointer-ownership checks before launch and a `count ≤ allocation size / sizeof(float)` check.
 - Sizes 1, 7, 256, 257, 4096, 1 << 24. Compare bit-for-bit against a scalar reference (float add is exact here).
-- `test_fault.cpp`: a deliberately out-of-bounds kernel (`out[i + count]`) with guard pages must return `KernelFault` with `FaultInfo` filled. Afterwards calls return `ContextPoisoned`, `pcudaDeviceReset` recovers, and the process stays alive. Run 1,000 iterations to catch state leaks.
+- `test_fault.cpp`: a deliberately out-of-bounds kernel (`out[i + count]`) with guard pages must return `KernelFault` with `FaultInfo` filled. Afterwards calls return `ContextPoisoned`, `kcDeviceReset` recovers, and the process stays alive. Run 1,000 iterations to catch state leaks.
 - Stack overflow test (separate process via CTest `WILL_FAIL`/exit-code check): verifies the fast-fail diagnostic.
 
-**Exit:** the app uses only `pcuda*` APIs, results are correct, and faults are contained.
+**Exit:** the app uses only `kc*` APIs, results are correct, and faults are contained.
 
 ### Phase 4 — Streams/events (2–4 days)
 As in §10. Tests cover ordering with host marker tasks, two independent streams, error propagation to the synchronizing caller, and shutdown with pending work.
@@ -450,7 +450,7 @@ Same as revision 1. It must not affect the CPU-only build.
 
 The script prints a pass/fail table and exits non-zero on any required failure. It never installs anything without being asked.
 
-### 13.2 Obtaining the kernel object (`-DPCUDA_KATH_MODE=auto|exe|wsl|prebuilt`)
+### 13.2 Obtaining the kernel object (`-DKC_KATH_MODE=auto|exe|wsl|prebuilt`)
 
 `auto` (default) tries the methods in order and logs which one it used:
 1. **exe:** `KATH_EXECUTABLE` or `kath.exe` on PATH. Its SHA-256 must match `BOOTH_PIN.txt`. A mismatch is a warning in `auto` and an error in `exe`.
@@ -470,7 +470,7 @@ cmake --preset windows-msvc            # or windows-clangcl / windows-msvc-asan
 cmake --build --preset windows-msvc
 
 # 2. Run
-.\build\windows-msvc\pcuda_poc.exe
+.\build\windows-msvc\kc_poc.exe
 
 # 3. Tests
 ctest --preset windows-msvc --output-on-failure
@@ -497,7 +497,7 @@ Notes:
 |---|---|---|
 | Toolchain | `bootstrap.ps1` | All required items pass, or a clear failure is reported |
 | Compiler | `kath --cpu vector_add.cu` | ELF object emitted, no GPU |
-| Validation | `pcuda_objcheck` | Accepts the good object and rejects every corpus file with the right reason |
+| Validation | `kc_objcheck` | Accepts the good object and rejects every corpus file with the right reason |
 | Loader | Map, relocate, set W^X | Never writable and executable at once; ACG case → `DynamicCodeBlocked` |
 | ABI | Thunk clobber test | All Win64 non-volatile registers, MXCSR and DF preserved |
 | ABI | 64-bit marshalling | `nthreads`/ints sign-extended; garbage upper bits impossible |
@@ -518,7 +518,7 @@ Notes:
 - A clean Windows checkout builds with MSVC **and** clang-cl in prebuilt mode, and in `exe` mode where `kath.exe` is available.
 - Booth is pinned by tag, commit and binary SHA-256, with F1–F10 re-verified.
 - No NVIDIA hardware, CUDA Toolkit, driver or WSL is needed.
-- The host app uses only `pcuda*` APIs.
+- The host app uses only `kc*` APIs.
 - The vector-add, loader, ABI, shim and fault tests pass, including under ASan.
 - There's a clean seam for an NVIDIA backend.
 
@@ -538,7 +538,7 @@ Notes:
 | Booth's 64-bit param handling differs from assumption | Medium | Sign-extend everything to 64 bits in the marshaller |
 | CRT shadow-space corruption from libm calls | Certain without shims | Allowlisted System V shims only |
 | No TSan on Windows | Certain | Deterministic disjointness checks, guard fences, optional Linux TSan job |
-| Static-destructor/loader-lock deadlock | Medium | Explicit `pcudaShutdown`; no thread joins in static destructors |
+| Static-destructor/loader-lock deadlock | Medium | Explicit `kcShutdown`; no thread joins in static destructors |
 | Confusing CPU execution with GPU emulation | Low | Honest device name; `is_hardware_gpu = false`; docs |
 | Accidental CUDA dependency | Low | CI job without CUDA; NVIDIA backend off by default |
 
@@ -575,11 +575,11 @@ Environment: Windows 11 x64 (16 logical processors), Visual Studio 2022 17.14 / 
 | 3: end-to-end and faults | Done: `test_vector_add` (7 cases, sizes 1 to 2^24, bit-exact), `test_fault` (6 cases, 1,000 contained out-of-bounds faults, divide-by-zero, 3 consecutive stack overflows) |
 | 4: streams and events | Done: `test_stream` (8 cases) |
 | 5: chunking | Done: `test_chunked_vector_add` (4 cases, 1/2/4/16 workers, bit-exact against serial) |
-| 6: NVIDIA parity | Comparison harness done (§19); LLM decode benchmark done (§20). Faster code paths and Ollama comparison: §21. `PCUDA_ENABLE_NVIDIA=ON` builds `pcuda_vs_cuda`; an `NvidiaBackend` behind `IBackend` is still not implemented. |
+| 6: NVIDIA parity | Comparison harness done (§19); LLM decode benchmark done (§20). Faster code paths and Ollama comparison: §21. `KC_ENABLE_NVIDIA=ON` builds `kc_vs_cuda`; an `NvidiaBackend` behind `IBackend` is still not implemented. |
 
-Verified configurations: MSVC RelWithDebInfo; MSVC Debug + AddressSanitizer; `PCUDA_KATH_MODE` = exe, wsl and prebuilt (prebuilt with `kath` unavailable); a source path containing spaces and parentheses. **Not verified:** clang-cl (not installed on the dev machine) and the GitHub Actions workflow (written but never run).
+Verified configurations: MSVC RelWithDebInfo; MSVC Debug + AddressSanitizer; `KC_KATH_MODE` = exe, wsl and prebuilt (prebuilt with `kath` unavailable); a source path containing spaces and parentheses. **Not verified:** clang-cl (not installed on the dev machine) and the GitHub Actions workflow (written but never run).
 
-### Benchmark (`pcuda_bench`, median of 21, AC power)
+### Benchmark (`kc_bench`, median of 21, AC power)
 
 | Elements | Serial | 4 workers | 16 workers |
 |---|---|---|---|
@@ -594,7 +594,7 @@ Launch overhead: about 1.2 µs synchronous, about 41 µs chunked (pool wake-up).
 
 1. **Stack overflow is recoverable** (§7.5 updated). It isn't a fail-fast.
 2. **Guard pages default on** in every configuration (§9 updated).
-3. **Argument-count limit** is enforced in `ArgPacker`, not `pcuda_objcheck` (§7.2 updated).
+3. **Argument-count limit** is enforced in `ArgPacker`, not `kc_objcheck` (§7.2 updated).
 4. **Poisoned-context rules** let release calls through (§6 updated).
 5. **F11, Booth sin/cos lowering:** `sinf(x)` compiles to `sinf((x * 1/(2π)) * 2π)` in float, so results differ from a direct CRT `sinf(x)` by a few ULP. Tests compare bit-exactly against that exact lowering and loosely against double precision.
 6. **Name clash:** `FaultInfo::exception_code` was renamed to `code` because `exception_code` is a macro in `<excpt.h>`.
@@ -604,23 +604,23 @@ Launch overhead: about 1.2 µs synchronous, about 41 µs chunked (pool wake-up).
 
 ## 19. Side-by-side comparison with CUDA (Phase 6, part 1; 2026-11-06)
 
-**Goal:** run the same `.cu` source on pcuda and on a real NVIDIA GPU, check that the results agree and measure the speed difference. It's a comparison harness, not an `NvidiaBackend`: the GPU path calls the CUDA runtime directly.
+**Goal:** run the same `.cu` source on Kernelcore and on a real NVIDIA GPU, check that the results agree and measure the speed difference. It's a comparison harness, not an `NvidiaBackend`: the GPU path calls the CUDA runtime directly.
 
 **Design**
 - Kernels use the portable index `blockIdx.x * blockDim.x + threadIdx.x`. Under Booth this reduces to `threadIdx.x` (F12), and on the GPU it is the global index. `vector_add`, `scale_add` and `trig_mix` were converted and their prebuilt objects refreshed. The fault-test kernels are unchanged.
 - `gpu/cuda_kernels.cu` `#include`s the same kernel files and launches them with 256-thread blocks. It exposes a plain C++ interface, so `app/compare.cpp` is compiled by `cl` with the project's warnings-as-errors settings.
-- `cmake/NvidiaCompare.cmake`: opt-in via `PCUDA_ENABLE_NVIDIA=ON` (preset `windows-msvc-nvidia`). It reads the `nvcc` version before `enable_language(CUDA)`. For CUDA < 12.4 with MSVC ≥ 19.40 it adds `-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH` and warns. Device code uses default `nvcc` settings: precise `sinf`, FMA contraction on, `CMAKE_CUDA_ARCHITECTURES=native`. It isn't combinable with ASan.
+- `cmake/NvidiaCompare.cmake`: opt-in via `KC_ENABLE_NVIDIA=ON` (preset `windows-msvc-nvidia`). It reads the `nvcc` version before `enable_language(CUDA)`. For CUDA < 12.4 with MSVC ≥ 19.40 it adds `-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH` and warns. Device code uses default `nvcc` settings: precise `sinf`, FMA contraction on, `CMAKE_CUDA_ARCHITECTURES=native`. It isn't combinable with ASan.
 - `scale_add` and `trig_mix` gained chunk hooks, so all three kernels run on all cores. `test_chunked_vector_add` checks them bit-exactly against serial launches without a GPU.
-- `pcuda_vs_cuda --check` (a ctest, which skips with exit code 77 when no GPU is present) uses the sizes 1, 7, 255, 256, 257, 1000, 4097, 65537 and 2^20+3:
-  - `vector_add`: GPU and pcuda bit-identical.
+- `kc_vs_cuda --check` (a ctest, which skips with exit code 77 when no GPU is present) uses the sizes 1, 7, 255, 256, 257, 1000, 4097, 65537 and 2^20+3:
+  - `vector_add`: GPU and Kernelcore bit-identical.
   - `scale_add`: at most 2 ULP apart.
   - `trig_mix`: both within 4e-6 relative error of double precision.
-  - pcuda: chunked results equal serial results.
+  - Kernelcore: chunked results equal serial results.
 - Timing: up to 21 samples after warm-up, with about 1 s budget per cell. Before each GPU measurement the kernel runs for 300 ms. Without that the GPU stays at idle clocks after the multi-second CPU measurements, and `trig_mix` at 4M showed 4.5 ms instead of 0.13 ms.
 
 **Results** (i5-13400F with 16 logical processors, RTX 4060 with 24 SMs, CUDA 12.3, driver 13.3)
 
-| Kernel, 16M elements | C++ /O2 | pcuda 1T | pcuda 16T | CUDA kernel | pcuda + copies | CUDA + copies |
+| Kernel, 16M elements | C++ /O2 | Kernelcore 1T | Kernelcore 16T | CUDA kernel | Kernelcore + copies | CUDA + copies |
 |---|---|---|---|---|---|---|
 | `vector_add` | 6.2 ms | 47.9 ms | 8.7 ms | 0.80 ms | 18.1 ms | 16.3 ms |
 | `scale_add` | 5.2 ms | 46.8 ms | 8.4 ms | 0.89 ms | 16.4 ms | 10.9 ms |
@@ -628,19 +628,19 @@ Launch overhead: about 1.2 µs synchronous, about 41 µs chunked (pool wake-up).
 
 Findings:
 1. **Kernel only**, the GPU wins by 10–54× for memory-bound kernels. The peak is at 1M elements, where the data fits in the GPU's L2 cache. From 4M up, DRAM bandwidth caps the gain at about 11×. For the compute-bound `trig_mix` the gain is 115–170×.
-2. **End to end**, memory-bound kernels are about even (1.0–1.5×), because PCIe copies dominate. Below about 256K elements pcuda is faster: CUDA launch-and-wait costs 9–16 µs and the copies 50–80 µs. `trig_mix` stays about 6× faster on the GPU.
-3. **Launch overhead:** pcuda about 1 µs synchronous and about 30 µs chunked; CUDA 9–16 µs (WDDM).
+2. **End to end**, memory-bound kernels are about even (1.0–1.5×), because PCIe copies dominate. Below about 256K elements Kernelcore is faster: CUDA launch-and-wait costs 9–16 µs and the copies 50–80 µs. `trig_mix` stays about 6× faster on the GPU.
+3. **Launch overhead:** Kernelcore about 1 µs synchronous and about 30 µs chunked; CUDA 9–16 µs (WDDM).
 4. **Accuracy:**
    - `vector_add` is bit-identical.
    - `scale_add` differs by 1 ULP in about 5% of elements. `nvcc` contracts `x*s+b` into an FMA (one rounding) and Booth rounds twice, so the GPU is slightly closer to the exact result.
-   - `trig_mix` differs by up to 16 ULP; relative error is 8.2e-7 for pcuda and 6.9e-7 for the GPU.
-5. **Booth codegen** costs about 10× against the C++ `/O2` loop on one thread for simple kernels. It keeps every value on the stack and doesn't vectorize. For `trig_mix` the gap is 2.6×, because libm calls dominate. Using all 16 cores brings pcuda close to single-threaded C++ for memory-bound kernels.
+   - `trig_mix` differs by up to 16 ULP; relative error is 8.2e-7 for Kernelcore and 6.9e-7 for the GPU.
+5. **Booth codegen** costs about 10× against the C++ `/O2` loop on one thread for simple kernels. It keeps every value on the stack and doesn't vectorize. For `trig_mix` the gap is 2.6×, because libm calls dominate. Using all 16 cores brings Kernelcore close to single-threaded C++ for memory-bound kernels.
 
-**Not done:** an `NvidiaBackend` behind `IBackend` (pcuda API calls dispatched to CUDA). Comparisons of shared memory, atomics or multi-block kernels are also not done, since Booth's CPU backend doesn't support them.
+**Not done:** an `NvidiaBackend` behind `IBackend` (Kernelcore API calls dispatched to CUDA). Comparisons of shared memory, atomics or multi-block kernels are also not done, since Booth's CPU backend doesn't support them.
 
 ## 20. LLM decode benchmark (Phase 6, part 2; 2026-11-06)
 
-**Question:** how would LLM inference (token generation) run on pcuda versus CUDA?
+**Question:** how would LLM inference (token generation) run on Kernelcore versus CUDA?
 
 **Why not reuse llama.cpp's CUDA backend:** of the 71 `.cu` files in `ggml-cuda` (in the local llama.cpp fork):
 - 32–34 use `__shared__` and `__syncthreads`;
@@ -657,22 +657,22 @@ Booth's CPU backend supports none of these. `__shared__` with `__syncthreads` ev
   - One thread per output, no early `return`, `exp2f` instead of `expf`.
   - Sizes come in through a device `int` array, because of Booth's limit of 5 integer parameters.
   - Chunked launches pass the first thread index in a `base` parameter where an index doesn't map to a pointer offset (attention).
-- `llm/`: pcuda adapters (`llm_kernels.cpp`), a plain C++ reference (`llm_reference.cpp`), and a synthetic model and decode step (`llm_model.cpp`).
-  - The model has Llama 3.2 1B/3B shapes and deterministic random Q8 weights, and is built once into both pcuda and CUDA memory.
-  - The C++ reference reads pcuda's weights directly.
+- `llm/`: Kernelcore adapters (`llm_kernels.cpp`), a plain C++ reference (`llm_reference.cpp`), and a synthetic model and decode step (`llm_model.cpp`).
+  - The model has Llama 3.2 1B/3B shapes and deterministic random Q8 weights, and is built once into both Kernelcore and CUDA memory.
+  - The C++ reference reads Kernelcore's weights directly.
   - Simplifications: the KV cache is pre-filled and not appended to, and there is no embedding lookup.
-  - The adapters check, as with all pcuda kernels, every buffer against live allocations and that the device `dims` array matches the validated sizes.
+  - The adapters check, as with all Kernelcore kernels, every buffer against live allocations and that the device `dims` array matches the validated sizes.
 - `test_llm_kernels` (CPU-only, runs in CI) has 5 cases:
   - `matvec_q8`, both attention kernels and `silu_mul` are bit-identical to C++, and chunked results equal serial ones.
   - `rms_norm` and `softmax` are within 1e-6, and `rope` within 1e-3 (F11 lowering).
   - Argument validation.
-  - A whole tiny-model token agrees with C++ (pcuda and pcuda-chunked are bit-identical).
-- `pcuda_llm_bench` (NVIDIA build): a per-operation breakdown per token for C++ 1T, pcuda 1T, pcuda NT and CUDA, plus tokens/s, weight bandwidth, and logits agreement with the C++ reference. `--check` (a tiny model) runs as a ctest.
+  - A whole tiny-model token agrees with C++ (Kernelcore and Kernelcore chunked are bit-identical).
+- `kc_llm_bench` (NVIDIA build): a per-operation breakdown per token for C++ 1T, Kernelcore 1T, Kernelcore NT and CUDA, plus tokens/s, weight bandwidth, and logits agreement with the C++ reference. `--check` (a tiny model) runs as a ctest.
 - `scripts/ollama_reference.ps1`: real llama.cpp decode speed through Ollama's API, with the GPU on and off.
 
 **Results** (Llama 3.2 3B shapes: 3.21 B parameters, 3.61 GB of Q8 per token, 512 cached positions)
 
-| ms per token | C++ /O2 1T | pcuda 1T | pcuda 16T | CUDA (same kernels) |
+| ms per token | C++ /O2 1T | Kernelcore 1T | Kernelcore 16T | CUDA (same kernels) |
 |---|---|---|---|---|
 | matvec attention (q, k, v, o) | 269 | 5,004 | 489 | 34.5 |
 | matvec FFN (gate, up, down) | 802 | 15,181 | 1,370 | 57.3 |
@@ -685,20 +685,20 @@ Booth's CPU backend supports none of these. `__shared__` with `__syncthreads` ev
 The real-world reference is Ollama 0.40.6 with `llama3.2` (3B, Q4_K_M, 2.02 GB): **107 tok/s on the GPU (216 GB/s) and 27.5 tok/s CPU-only (55 GB/s)**.
 
 **Findings**
-1. With the same source, CUDA is about 20× faster than pcuda on 16 threads per token.
-2. pcuda on 16 threads is slower than plain C++ on one thread. Booth's code is about 18× slower per thread: it keeps every value on the stack and doesn't vectorize. Matrix-vector products are 95% of the token time.
-3. Against real llama.cpp, pcuda reaches 1.7 GB/s of weight traffic versus 55 GB/s for ggml-cpu (33×). Scaled to the 2.02 GB Q4_K_M model, pcuda would manage under 1 tok/s versus 27.5.
+1. With the same source, CUDA is about 20× faster than Kernelcore on 16 threads per token.
+2. Kernelcore on 16 threads is slower than plain C++ on one thread. Booth's code is about 18× slower per thread: it keeps every value on the stack and doesn't vectorize. Matrix-vector products are 95% of the token time.
+3. Against real llama.cpp, Kernelcore reaches 1.7 GB/s of weight traffic versus 55 GB/s for ggml-cpu (33×). Scaled to the 2.02 GB Q4_K_M model, Kernelcore would manage under 1 tok/s versus 27.5.
 4. The same-source CUDA kernels reach 32.6 GB/s, 15% of the RTX 4060's bandwidth, against llama.cpp's 216 GB/s:
    - One thread per row makes neighbouring threads read addresses `k` bytes apart, so loads aren't coalesced.
    - `rms_norm` runs on a single GPU thread, taking 9.5 ms per token.
    The Booth subset rules out the fix: warp-per-row reductions need shuffles or shared memory.
-5. Logits agree with the C++ reference to 2.4e-6 (pcuda) and 2.6e-6 (CUDA, FMA contraction), with the same top-5 tokens.
+5. Logits agree with the C++ reference to 2.4e-6 (Kernelcore) and 2.6e-6 (CUDA, FMA contraction), with the same top-5 tokens.
 
-**Step 2 (not started):** a `ggml-pcuda` backend in the llama.cpp fork that runs these kernels for the supported ops and leaves the rest to ggml-cpu. Given finding 3, it would make llama.cpp slower than its own CPU backend. Its value is to show integration, not speed.
+**Step 2 (not started):** a `ggml-kernelcore` backend in the llama.cpp fork that runs these kernels for the supported ops and leaves the rest to ggml-cpu. Given finding 3, it would make llama.cpp slower than its own CPU backend. Its value is to show integration, not speed.
 
 ## 21. Faster CPU code paths and a like-for-like comparison with Ollama (2026-11-06)
 
-**Goal:** make pcuda's CPU execution fast without giving up Booth as the CUDA compiler, and compare token generation like for like with `ollama run llama3.2`.
+**Goal:** make Kernelcore's CPU execution fast without giving up Booth as the CUDA compiler, and compare token generation like for like with `ollama run llama3.2`.
 
 **Diagnosis.** Booth's front end and optimizer produce clean SSA (`kath --ir`). Only the x86 back end is weak: it has no register allocator and sends every value through the stack. That makes it about 18× slower per thread than the same loop in C++. Booth's Metal back end prints the same optimized IR as structured C (F13).
 
@@ -708,7 +708,7 @@ The real-world reference is Ollama 0.40.6 with `llama3.2` (3B, Q4_K_M, 2.02 GB):
   - `native`: `--metal` and `--ir` → `tools/mslgen.cpp` → C++ compiled by MSVC `/O2`.
   - `simd`: the same, translated to AVX2 with 8 CUDA threads per register.
   Prebuilt mode commits `.metal` and `.ir` with SHA-256 files, bound to the source hash like the `.o` files, so builds without `kath` get all three paths.
-- **`pcuda_mslgen`:**
+- **`kc_mslgen`:**
   - Parses the Metal text for structure and the IR for semantics.
   - Fixes the two upstream Metal bugs: the sin/cos turns convention (F14) and lost byte signedness (F15).
   - Qualifies math calls through a `metal_stdlib` stand-in that reproduces the exact x86 operations (F16).
@@ -723,11 +723,11 @@ The real-world reference is Ollama 0.40.6 with `llama3.2` (3B, Q4_K_M, 2.02 GB):
   - Kernels it can't translate (helper calls, unsigned IR ops, non-canonical loops) fall back to `native`.
 - **Runtime:**
   - `KernelEntry::native` points at the generated functions.
-  - `pcudaSetKernelCodegen`, `pcudaGetKernelCodegenFor` and `PCUDA_CODEGEN` select the path. `auto` picks simd, then native, then booth, and checks AVX2 support via CPUID.
-  - Native code runs under the same `pcuda_sysv_invoke` thunk through a small System V → Win64 bridge (`pcuda_sysv_native_bridge`). Fault containment, stack-overflow recovery and register checks are therefore unchanged. Faults report "native code" or "simd code" instead of a `.text` offset.
+  - `kcSetKernelCodegen`, `kcGetKernelCodegenFor` and `KC_CODEGEN` select the path. `auto` picks simd, then native, then booth, and checks AVX2 support via CPUID.
+  - Native code runs under the same `kc_sysv_invoke` thunk through a small System V → Win64 bridge (`kc_sysv_native_bridge`). Fault containment, stack-overflow recovery and register checks are therefore unchanged. Faults report "native code" or "simd code" instead of a `.text` offset.
 - **Pool:**
-  - Chunked launches split into up to `workers × 4` chunks (`PCUDA_CHUNKS_PER_WORKER`).
-  - Pool threads and the waiting caller spin 50 µs before sleeping (`PCUDA_POOL_SPIN_US`).
+  - Chunked launches split into up to `workers × 4` chunks (`KC_CHUNKS_PER_WORKER`).
+  - Pool threads and the waiting caller spin 50 µs before sleeping (`KC_POOL_SPIN_US`).
   - The caller runs chunks of its own launch.
   - A single-chunk launch runs inline.
   - Only as many sleepers are woken as there are extra chunks.
@@ -743,21 +743,21 @@ The real-world reference is Ollama 0.40.6 with `llama3.2` (3B, Q4_K_M, 2.02 GB):
 - `test_codegen`: every kernel produces bit-identical bytes on booth, native and simd, serial and chunked, at sizes 1, 7, 8, 9, 63, 1000, 4097 and partial row groups. Faults are contained on every path.
 - The kernel-running suites also run as `<suite>_booth/_native/_simd`.
 - Pass rates: 25/25 in the MSVC, prebuilt-only (fresh) and ASan (fresh) builds; 27/27 in the NVIDIA build.
-- All pcuda paths give bit-identical logits for the 3B model.
+- All Kernelcore paths give bit-identical logits for the 3B model.
 
 **Results** (i5-13400F with 16 logical CPUs, RTX 4060; Llama 3.2 3B shapes, Q4; prompt 43, 128 tokens)
 
 | Run | ms/token | tok/s | weights GB/s |
 |---|---|---|---|
-| pcuda booth path, 16 threads | 1,766 | 0.57 | 1.1 |
-| pcuda native path, 16 threads | 216 | 4.6 | 9.3 |
-| pcuda simd path, 16 threads | 156 | 6.4 | 12.9 |
+| Kernelcore booth path, 16 threads | 1,766 | 0.57 | 1.1 |
+| Kernelcore native path, 16 threads | 216 | 4.6 | 9.3 |
+| Kernelcore simd path, 16 threads | 156 | 6.4 | 12.9 |
 | CUDA, same kernels | 65 | 15.4 | 30.9 |
 | plain C++, 1 thread | 1,195 | 0.84 | 1.7 |
 | Ollama llama.cpp, CPU only | 35 | 28.7 | 58 |
 | Ollama llama.cpp, GPU | 9.3 | 107 | 216 |
 
-Pool changes alone (`pcuda_bench`, vector_add):
+Pool changes alone (`kc_bench`, vector_add):
 - Single-chunk chunked launch overhead: 38 µs → 1.4 µs.
 - 256K elements with 16 workers: 114 → 92 µs.
 - 4M elements with 4 workers: 2.36 → 1.18 ms.
@@ -781,7 +781,7 @@ Pool changes alone (`pcuda_bench`, vector_add):
 - It sums each block in 4 independent partial sums, combined in a fixed order. That breaks the dependent-add chain that limited the SIMD path once the gathers were gone.
 - The SIMD byte load gained a fast path: when all 8 lanes are active and contiguous, it does one 8-byte load widened to 8 lanes. Partial groups keep masked gathers.
 - The adapter requires rows % 8 == 0, and chunks start on 8-row groups.
-- `Weights::Q4X8` repacks the Q4 values (`ref::repackQ4x8`). It is now the default for `pcuda_llm_bench` and `compare_llm.ps1`.
+- `Weights::Q4X8` repacks the Q4 values (`ref::repackQ4x8`). It is now the default for `kc_llm_bench` and `compare_llm.ps1`.
 
 **Results** (3B shapes, prompt 43, 128 tokens):
 
@@ -793,7 +793,7 @@ Pool changes alone (`pcuda_bench`, vector_add):
 
 - SIMD is 1.64× faster than with row-major weights, at 9.0 tok/s (18 GB/s).
 - The same kernels on CUDA reach 25.7 tok/s (51.5 GB/s), because their loads are now coalesced.
-- All pcuda paths are bit-identical. Logits are within 3e-7 of the C++ reference.
+- All Kernelcore paths are bit-identical. Logits are within 3e-7 of the C++ reference.
 
 **Remaining gap to Ollama's 28.4 tok/s** (about 3.2× on SIMD). The SIMD path is still compute-bound at about 1 µop per weight: per weight it converts to float, multiplies and adds, and a contiguity check runs on every load. Next steps:
 - 2: 8-bit activations with integer dot products (AVX-VNNI `vpdpbusd`, through a `__dp4a`-style helper that the generator maps to VNNI).
@@ -804,13 +804,13 @@ Pool changes alone (`pcuda_bench`, vector_add):
 **Change.**
 - **`quantize_q8x4`:** per block of 32 activations, d = max|x|/127 and q = round(x/d), half away from zero, clamped to ±127. It writes packed int8 words plus {d, Σq}.
 - **`matvec_q4x8_q8`:** 4-bit weights in an 8-row interleaved int stream with the f32 block scales inside it. That's the same 5 bits per weight, and it keeps the kernel within Booth's 5-parameter limit through a pointer cast. Per block it computes dot = Σ nibble·q with two independent dp4a chains, then (dot − 8·Σq) · d_w · d_x.
-- **`pcuda_dp4a`:** a `__device__` helper doing a u8 × s8 dot product of 4 packed bytes.
+- **`kc_dp4a`:** a `__device__` helper doing a u8 × s8 dot product of 4 packed bytes.
   - On nvcc it is `__dp4a`, selected by `__NVCC__`.
   - Elsewhere it is generic byte arithmetic, which is what Booth compiles.
-  - `pcuda_mslgen` maps calls to it onto AVX-VNNI `_mm256_dpbusd_avx_epi32`, after checking that the helper's Metal body matches the canonical body exactly. CPUs without VNNI get an exact AVX2 fallback.
+  - `kc_mslgen` maps calls to it onto AVX-VNNI `_mm256_dpbusd_avx_epi32`, after checking that the helper's Metal body matches the canonical body exactly. CPUs without VNNI get an exact AVX2 fallback.
 - **Translator support:** `as_type` pointer casts (`ptrcast`), verified intrinsic helpers, and signed rewriting of literals Booth prints as unsigned (F17).
-- **Model and benchmark:** `Weights::Q4X8Q8` (`ref::repackQ4x8Q8`), with per-backend activation scratch (`Backend::setScratch`). It is the default in `pcuda_llm_bench` and `compare_llm.ps1`.
-- **Streams:** the stream worker and `runSync` callers now spin 50 µs before sleeping (`PCUDA_POOL_SPIN_US`). Before, every synchronous launch paid a thread wake-up, which mattered for the roughly 300 tiny launches per token.
+- **Model and benchmark:** `Weights::Q4X8Q8` (`ref::repackQ4x8Q8`), with per-backend activation scratch (`Backend::setScratch`). It is the default in `kc_llm_bench` and `compare_llm.ps1`.
+- **Streams:** the stream worker and `runSync` callers now spin 50 µs before sleeping (`KC_POOL_SPIN_US`). Before, every synchronous launch paid a thread wake-up, which mattered for the roughly 300 tiny launches per token.
 - **Two more Booth Metal bugs found:** F17 (negative constants printed as unsigned) and F18 (phi copy dropped for an `if` without `else`). The kernels avoid the F18 pattern, and MSVC C4701 stays an error to catch it.
 
 **Verification.**
@@ -847,7 +847,7 @@ Pool changes alone (`pcuda_bench`, vector_add):
   Both perform the same float operations in the same order as the sequences they replace, so they are bit-identical to them (tested).
 - **Launch counts:** about 15 per layer instead of 24, plus the two KV-append copies.
 - **Small launches:** a launch with fewer than 8 threads takes the native path instead of SIMD. Most lanes would be idle while still paying for masked loads. The results are bit-identical.
-- **Bit-exact C++ reference:** its `rope` now reproduces Booth's sin/cos lowering (F11), so it matches every pcuda path bit for bit. Before, an 8-bit activation rounding could flip and move the logits by 1e-4.
+- **Bit-exact C++ reference:** its `rope` now reproduces Booth's sin/cos lowering (F11), so it matches every Kernelcore path bit for bit. Before, an 8-bit activation rounding could flip and move the logits by 1e-4.
 - **`compare_llm.ps1` fairness:** it now waits for Ollama to unload the model and then pauses 15 s before the bench. Running straight after Ollama cost the bench about 15%.
 
 **Results** (3B shapes, prompt 43, 128 tokens):
@@ -871,14 +871,14 @@ Per-token profile at the first position:
 
 **Remaining gap to Ollama CPU (about 1.3–1.4×).** Next candidates:
 1. **Attention data layout:** store K and V per head with positions contiguous, so the 8 SIMD lanes read adjacent floats. Today `attn_scores` gathers rows that are 1024 floats apart. Saves about 2–4 ms at longer contexts.
-2. **Lane-uniform analysis in `pcuda_mslgen`:** prove at translation time that values like `row / 8` are the same in every lane and `row % 8` equals the lane number. Loads such as `qw[base + w*8 + l]` then become plain contiguous loads with no runtime contiguity check. This is the "warp-uniform" analysis GPU compilers do. Estimated 10–20% on matvec.
+2. **Lane-uniform analysis in `kc_mslgen`:** prove at translation time that values like `row / 8` are the same in every lane and `row % 8` equals the lane number. Loads such as `qw[base + w*8 + l]` then become plain contiguous loads with no runtime contiguity check. This is the "warp-uniform" analysis GPU compilers do. Estimated 10–20% on matvec.
 3. **Run a token as one pool job** with barriers between kernels, removing the remaining launch overhead.
 
 ## 25. Steps 4–6: lane-affine translation, transposed K, pool sizing (2026-11-06)
 
-**Measuring.** `pcuda_llm_bench --paths simd,cuda` times only the chosen paths. Timing the slow booth and native paths first heats the CPU, and that slowed simd by up to 15% (59.6 vs 50.7 ms for the same build). `compare_llm.ps1` now passes `--paths simd,cuda` by default.
+**Measuring.** `kc_llm_bench --paths simd,cuda` times only the chosen paths. Timing the slow booth and native paths first heats the CPU, and that slowed simd by up to 15% (59.6 vs 50.7 ms for the same build). `compare_llm.ps1` now passes `--paths simd,cuda` by default.
 
-**Step 4: lane-affine values in `pcuda_mslgen`** (candidate 2 from §24).
+**Step 4: lane-affine values in `kc_mslgen`** (candidate 2 from §24).
 - The analysis gives each value one of three shapes:
   - **Uni**: the same in every lane;
   - **Aff**: lane `l` holds `b + s*l`, with `b` scalar and `s` a constant;
@@ -901,8 +901,8 @@ The `matvec_q4x8_q8` inner loop became scalar address math, one `vpmaskmovd` and
 
 **Pool dispatch.** Workers claim chunks with an atomic counter on the launch's group, with no lock per chunk. One `WakeByAddressAll` per launch wakes sleepers, replacing up to 15 `notify_one` calls. The caller waits on the remaining-count with `WaitOnAddress`. Result: about 1 ms.
 
-**Step 5: transposed K and `pcuda_aligned8`** (candidate 1 from §24).
-- **`pcuda_aligned8(x)`:** a `__device__` identity helper that promises `x >= 0` and `x % 8 == 0`. `pcuda_mslgen` recognizes its exact Booth body (`return p0;`), marks uniform results aligned, and emits `pcuda::simd::aligned8()`. That check faults with `__debugbreak` (contained like any kernel fault) if the promise is broken.
+**Step 5: transposed K and `kc_aligned8`** (candidate 1 from §24).
+- **`kc_aligned8(x)`:** a `__device__` identity helper that promises `x >= 0` and `x % 8 == 0`. `kc_mslgen` recognizes its exact Booth body (`return p0;`), marks uniform results aligned, and emits `kc::simd::aligned8()`. That check faults with `__debugbreak` (contained like any kernel fault) if the promise is broken.
 - **Layouts and dims:**
   - The K cache is transposed: `kt[kv_stride][k_stride]`.
   - Score rows are padded to `ctx_pad`, a multiple of 8.
@@ -930,7 +930,7 @@ The `matvec_q4x8_q8` inner loop became scalar address math, one `vpmaskmovd` and
 | Ollama llama.cpp, CPU only (same runs) | 38.2 / 33.9 | 26.2 / 29.5 |
 | CUDA, same kernels | 33.2 | 30.1 |
 
-pcuda's simd path from the same CUDA C sources now matches Ollama on CPU within run-to-run noise. All CPU paths remain bit-identical, and also bit-identical to the C++ reference.
+Kernelcore's simd path from the same CUDA C sources now matches Ollama on CPU within run-to-run noise. All CPU paths remain bit-identical, and also bit-identical to the C++ reference.
 
 **Remaining time** at position 43:
 - matvec 30–31 ms: lm_head runs at about 80 GB/s, FFN at about 70 GB/s, and the small attention projections at about 55 GB/s;
@@ -946,12 +946,12 @@ pcuda's simd path from the same CUDA C sources now matches Ollama on CPU within 
 
 ## 26. Step 7: each token as one graph (2026-11-06)
 
-**API** (like CUDA graphs): `pcudaStreamBeginCapture`, `pcudaStreamEndCapture`, `pcudaGraphLaunch` and `pcudaGraphDestroy`.
+**API** (like CUDA graphs): `kcStreamBeginCapture`, `kcStreamEndCapture`, `kcGraphLaunch` and `kcGraphDestroy`.
 - **During a capture:** launches on the stream are validated and marshalled at once, then recorded as nodes, each with one argument set per chunk. They return Success without running.
 - **Refused during a capture** (`UnsupportedOperation`, as CUDA does), because they would run ahead of the recorded work:
   - copies, memsets, frees and device synchronization while any stream captures;
   - stream synchronization, host functions and event records on the capturing stream itself.
-- **Graph data:** immutable. The per-chunk tasks are built once at `EndCapture`, and a queued launch keeps the data alive after `pcudaGraphDestroy`. `pcudaDeviceReset` drops all graphs and captures.
+- **Graph data:** immutable. The per-chunk tasks are built once at `EndCapture`, and a queued launch keeps the data alive after `kcGraphDestroy`. `kcDeviceReset` drops all graphs and captures.
 
 **Execution.** `WorkerPool::runSteps` runs a list of steps, one step per kernel, as one job.
 - Threads claim the current step's chunks with an atomic counter.
@@ -960,15 +960,15 @@ pcuda's simd path from the same CUDA C sources now matches Ollama on CPU within 
 - An ordinary chunked launch is now the one-step case of the same code.
 
 **Decode.** `Backend::beginToken`/`endToken` bracket a token.
-- The pcuda backend captures the token's ~450 launches and runs them as one synchronous graph launch.
+- The Kernelcore backend captures the token's ~450 launches and runs them as one synchronous graph launch.
 - The bench's CUDA backend captures a CUDA graph, updates the one executable graph in place (`cudaGraphExecUpdate`), and launches it, as llama.cpp does.
 - Per-op profiling still runs launches one by one.
-- `pcuda_llm_bench --graphs on|off` (default on).
+- `kc_llm_bench --graphs on|off` (default on).
 
 **Results:**
 - **Graphs on vs off**, alternating runs: 33.3/34.0 vs 37.5/37.7 ms, about 4 ms saved per token.
 - **`compare_llm.ps1`, two runs:**
-  - pcuda simd 34.0 and 33.1 ms (29.4 and 30.2 tok/s);
+  - Kernelcore simd 34.0 and 33.1 ms (29.4 and 30.2 tok/s);
   - Ollama CPU-only 35.0 and 34.8 ms (28.6 and 28.7 tok/s);
   - CUDA with the same kernels and CUDA graphs: 33.1 ms (30.2 tok/s), with no gain from graphs, because its time is in the naive kernels.
 
@@ -980,10 +980,10 @@ Stability: 150 repeated runs of the pool and stream tests, plus AddressSanitizer
 
 ## 27. Step 8: prefetch, parallel norm + quantize, one rope launch (2026-11-06)
 
-**Software prefetch.** `pcuda_mslgen` emits `prefetchAhead(p)` before every stride-1 affine load inside a loop: an `_mm_prefetch` some distance past the address.
+**Software prefetch.** `kc_mslgen` emits `prefetchAhead(p)` before every stride-1 affine load inside a loop: an `_mm_prefetch` some distance past the address.
 - **Why:** the hardware streamer stops at 4 KB page boundaries, and each thread streams its weight rows sequentially.
 - **Sweep:** 0 / 256 / 512 / 1 K / 1.5 K / 2 K / 3 K / 4 K / 8 K bytes ahead. 1.5–8 KB all gave 32.2–32.9 ms, against 33.6–33.8 ms with prefetch off.
-- **Default:** 2 KB, with `PCUDA_PREFETCH_BYTES` to override. A prefetch never faults, so reading ahead past a buffer's end is safe.
+- **Default:** 2 KB, with `KC_PREFETCH_BYTES` to override. A prefetch never faults, so reading ahead past a buffer's end is safe.
 
 **Parallel norm + quantize.**
 - **Before:** `add_rms_norm` ran on one thread, followed by a separate `quantize_q8x4` launch.
@@ -997,20 +997,20 @@ Stability: 150 repeated runs of the pool and stream tests, plus AddressSanitizer
 **Rope:** q and k are adjacent in the qkv buffer and use the same formula, so one launch covers `heads + kv_heads` heads.
 
 **Results:**
-- **Repeated runs:** simd 31.8–33.2 ms (30.1–31.4 tok/s). The prefetch gives most of it. The parallel norm saves at most about 0.5 ms for pcuda, because graphs had already made the serial steps cheap.
+- **Repeated runs:** simd 31.8–33.2 ms (30.1–31.4 tok/s). The prefetch gives most of it. The parallel norm saves at most about 0.5 ms for Kernelcore, because graphs had already made the serial steps cheap.
 - **CUDA, same kernels:** 33 → 20.4 ms. Its one-thread `add_rms_norm` had cost 13 ms per token.
 - **`compare_llm.ps1`:**
 
 | | ms/token | tok/s |
 |---|---|---|
-| pcuda simd | 32.5 | 30.7 |
+| Kernelcore simd | 32.5 | 30.7 |
 | Ollama CPU | 35.3 | 28.3 |
 | CUDA, same kernels | 20.4 | 49.0 |
 | Ollama GPU | 9.3 | 107.7 |
 
 ## 28. Large pages (opt-in, 2026-11-06)
 
-**Allocation.** `PCUDA_LARGE_PAGES=1` makes `pcudaInit` enable `SeLockMemoryPrivilege`. From then on, allocations of at least one large page (2 MB) use `VirtualAlloc(MEM_LARGE_PAGES)`.
+**Allocation.** `KC_LARGE_PAGES=1` makes `kcInit` enable `SeLockMemoryPrivilege`. From then on, allocations of at least one large page (2 MB) use `VirtualAlloc(MEM_LARGE_PAGES)`.
 - **Fallback:** without the right, or when no contiguous physical memory is left, allocations silently use normal pages. `DeviceProperties::large_pages` reports whether large pages are active.
 - **Guarded mode is kept:**
   - The user block ends flush with the large-page region, and a 64 KB reserved no-access range ("fence") sits right after it.
@@ -1032,18 +1032,18 @@ Large pages and the software prefetch remove the same cost: page walks and stall
 **Kernel.** `matvec_q4x8_q8x2` is `matvec_q4x8_q8` with two rows per thread. Thread `t` is lane `t % 8` of group pair `t / 8`, and computes one row in each of groups `2p` and `2p + 1`.
 - **Same weight stream:** each row's arithmetic is unchanged, so results are bit-identical (tested on every path, chunked, and in the decode loop).
 - **More in flight:** each thread keeps two weight streams and four `vpdpbusd` chains going, and the activation broadcasts are shared between the two groups.
-- **Helper guard:** `pcuda_dp4a` is now inside an `#ifndef` guard (BOOTH_PIN F20), because nvcc sees both kernels in one translation unit.
+- **Helper guard:** `kc_dp4a` is now inside an `#ifndef` guard (BOOTH_PIN F20), because nvcc sees both kernels in one translation unit.
 
 **Measured** (3B decode, alternating runs, ms per token):
 
 | | 1 row per thread | 2 rows per thread |
 |---|---|---|
-| pcuda simd | 31.5 / 31.8 / 32.3 | 32.1 / 32.6 / 32.9 |
+| Kernelcore simd | 31.5 / 31.8 / 32.3 | 32.1 / 32.6 / 32.9 |
 | CUDA | 20.8 / 20.8 / 21.0 | 20.8 / 21.1 / 21.3 |
 
 **Why no gain.** The generated loop is fully unrolled, with both streams interleaved and no vector spills. The limit is memory parallelism, which 12 threads, the hardware prefetcher and the 2 KB software prefetch already saturate. More streams per thread only add scalar address arithmetic.
 
-**Decision.** The kernel stays as a tested opt-in (`pcuda_llm_bench --rows-per-thread 2`, `makePcudaBackend(..., two_rows)`). The default remains one row per thread.
+**Decision.** The kernel stays as a tested opt-in (`kc_llm_bench --rows-per-thread 2`, `makeKcBackend(..., two_rows)`). The default remains one row per thread.
 
 **Remaining headroom:**
 - matvec runs at about 62 GB/s overall, against the 84 GB/s machine limit;
@@ -1052,7 +1052,7 @@ Large pages and the software prefetch remove the same cost: page walks and stall
 
 ## 30. Real model: llama3.2 Q4_K_M from Ollama's store, against llama.cpp (2026-11-06)
 
-**Question:** do pcuda's CUDA C kernels run a real model correctly, and at llama.cpp's speed?
+**Question:** do Kernelcore's CUDA C kernels run a real model correctly, and at llama.cpp's speed?
 
 **Pieces:**
 - `llm/gguf.*`: a minimal GGUF reader (metadata, tensor directory, memory-mapped data).
@@ -1070,7 +1070,7 @@ Large pages and the software prefetch remove the same cost: page walks and stall
 - `scripts/real_model_check.ps1`:
   - gets llama.cpp's reference from `llama-server` (`/tokenize`, then `/completion` with `n_probs`: token ids and top-5 log-probabilities);
   - times Ollama on the CPU;
-  - runs `pcuda_llm_real`.
+  - runs `kc_llm_real`.
 
 **Results:** see the README table. In short:
 - bit-identical to the C++ mirror;
@@ -1084,7 +1084,7 @@ The synthetic Q4 format had reached about 31 tok/s. The K-quant kernels do more 
 
 ## 31. K-quant kernel tuning (2026-11-06)
 
-`pcuda_llm_real --bench-matvec` times each 8-bit-activation matvec on an 8192 x 3072 matrix, chunked like decode. The matrix largely fits in the 20 MB L3, so this measures compute.
+`kc_llm_real --bench-matvec` times each 8-bit-activation matvec on an 8192 x 3072 matrix, chunked like decode. The matrix largely fits in the 20 MB L3, so this measures compute.
 
 **Before tuning:**
 
@@ -1115,43 +1115,43 @@ Q6_K covers the 323 MB tied output matrix and half of ffn_down and attn_v, so it
 ## 32. Step 2: ggml backend prototype in llama.cpp (2026-11-06)
 
 **Where.** In the user's llama.cpp fork (`C:\BitsPlus\VisOllamInference\llama.cpp`, not committed there):
-- new: `ggml/include/ggml-pcuda.h` and `ggml/src/ggml-pcuda/{CMakeLists.txt, ggml-pcuda.cpp}`;
-- hooks: `GGML_PCUDA` and `GGML_PCUDA_ROOT` options, `ggml_add_backend(PCUDA)`, and static registration in `ggml-backend-reg.cpp`.
+- new: `ggml/include/ggml-kernelcore.h` and `ggml/src/ggml-kernelcore/{CMakeLists.txt, ggml-kernelcore.cpp}`;
+- hooks: `GGML_KERNELCORE` and `GGML_KERNELCORE_ROOT` options, `ggml_add_backend(KERNELCORE)`, and static registration in `ggml-backend-reg.cpp`.
 
-**Build.** The backend `add_subdirectory`s CudaOnCPUCores (`PCUDA_KATH_MODE=prebuilt`, tests off, `EXCLUDE_FROM_ALL`) and links `pcuda` and `pcuda_llm`. The one change needed here: `BoothKernel.cmake` now writes generated kernels under `PROJECT_BINARY_DIR`, not `CMAKE_BINARY_DIR`.
+**Build.** The backend `add_subdirectory`s Kernelcore (`KC_KATH_MODE=prebuilt`, tests off, `EXCLUDE_FROM_ALL`) and links `Kernelcore` and `kc_llm`. The one change needed here: `BoothKernel.cmake` now writes generated kernels under `PROJECT_BINARY_DIR`, not `CMAKE_BINARY_DIR`.
 
 **Design:**
 - **Device:** an ACCEL device, so llama.cpp tries its buffer type first for every weight (`make_cpu_buft_list`).
-- **`supports_op`:** only `MUL_MAT` whose weight is Q4_K or Q6_K, 2-D, with `k % 256 == 0` and `rows % 8 == 0`, and lives in the pcuda buffer type. llama.cpp probes with 512 columns, so every batch size is accepted. The f32 input must be contiguous.
+- **`supports_op`:** only `MUL_MAT` whose weight is Q4_K or Q6_K, 2-D, with `k % 256 == 0` and `rows % 8 == 0`, and lives in the Kernelcore buffer type. llama.cpp probes with 512 columns, so every batch size is accepted. The f32 input must be contiguous.
 - **Buffer type:**
-  - memory is `pcudaMalloc`;
+  - memory is `kcMalloc`;
   - `set_tensor` repacks whole Q4_K / Q6_K tensors, and `get_tensor` unpacks them (fp32 scales back to fp16, exact);
   - `get_alloc_size` returns the stream size;
   - `is_host` is false.
 - **`graph_compute`:**
   - each input column is copied into scratch and quantized by `quantize_q8x4`; inputs shared by several matmuls in the call are quantized once;
   - matvec kernels run chunked over the pool;
-  - everything is recorded as one pcuda graph per call and launched at the end. It is flushed early if an input comes from this backend.
+  - everything is recorded as one Kernelcore graph per call and launched at the end. It is flushed early if an input comes from this backend.
 
-**Results.** Llama 3.2 3B Q4_K_M; same binary with and without `GGML_PCUDA_DISABLE=1`.
+**Results.** Llama 3.2 3B Q4_K_M; same binary with and without `GGML_KERNELCORE_DISABLE=1`.
 - **Correctness:**
   - prompt 1: 64/64 greedy tokens identical to the CPU backend, mean |Δ log-prob| 0.011;
-  - prompt 2: identical until the 0.033 near-tie that standalone pcuda also hits. The backend reproduces standalone pcuda exactly.
-- **llama-bench, generation (tg64):** pcuda 24.5–25.4 tok/s (±2) against the CPU backend's 26.8 at 6 threads.
-- **llama-bench, prompt (pp16):** pcuda 54–64 tok/s against 94.
-- **Profile** (`GGML_PCUDA_PROFILE=1`), per ~37.6 ms token:
+  - prompt 2: identical until the 0.033 near-tie that standalone Kernelcore also hits. The backend reproduces standalone Kernelcore exactly.
+- **llama-bench, generation (tg64):** Kernelcore 24.5–25.4 tok/s (±2) against the CPU backend's 26.8 at 6 threads.
+- **llama-bench, prompt (pp16):** Kernelcore 54–64 tok/s against 94.
+- **Profile** (`GGML_KERNELCORE_PROFILE=1`), per ~37.6 ms token:
   - kernel runs about 30 ms;
-  - pcuda bookkeeping about 2 ms (141 `graph_compute` calls per token);
+  - Kernelcore bookkeeping about 2 ms (141 `graph_compute` calls per token);
   - CPU-side work about 5 ms.
   - Host quantization, single-threaded C++ run once per matrix, had cost 3.7 ms/token. It now runs as the kernel, once per shared input: 0.5 ms.
-- **Threads:** more ggml threads make it slower even with `--poll 0`, because ggml's pool and pcuda's pool compete. Best: ggml 1–3 threads plus pcuda 9–11.
+- **Threads:** more ggml threads make it slower even with `--poll 0`, because ggml's pool and Kernelcore's pool compete. Best: ggml 1–3 threads plus Kernelcore 9–11.
 
 **Next (step 4 territory):**
 1. A multi-column matmul kernel (reads each weight once for up to N columns) for prompt processing.
-2. Take over the rest of the layer (rms_norm, rope, attention on the F16 KV cache, silu·mul, add), so a token is one or two pcuda graphs instead of ~141 splits. This also removes the ggml thread contention.
-3. Ollama integration (step 3): build `ggml-pcuda` as a `GGML_BACKEND_DL` module next to the CPU variants.
+2. Take over the rest of the layer (rms_norm, rope, attention on the F16 KV cache, silu·mul, add), so a token is one or two Kernelcore graphs instead of ~141 splits. This also removes the ggml thread contention.
+3. Ollama integration (step 3): build `ggml-kernelcore` as a `GGML_BACKEND_DL` module next to the CPU variants.
 
-## 33. The whole layer in pcuda, inside llama.cpp (2026-11-06)
+## 33. The whole layer in Kernelcore, inside llama.cpp (2026-11-06)
 
 **Decode graph.** From `GGML_SCHED_DEBUG=2` with `llama-server -v`, a layer is:
 
@@ -1159,13 +1159,13 @@ Q6_K covers the 323 MB tied output matrix and half of ffn_down and attn_v, so it
 
 **Backend:**
 - **Ops added:** RMS_NORM, MUL, ADD, ROPE (NORM mode with frequency factors), and SWIGLU. SET_ROWS (fp16 KV cache) and FLASH_ATTN_EXT stay on the CPU.
-- **Host buffers declined:** `supports_buft` accepts only pcuda's own buffers, so ggml copies the few host inputs in and every kernel pointer is pcuda memory. The matmul input staging and early flushes are gone.
-- **Constants:** dims and ones buffers are filled with `memcpy`, because `pcudaMemcpy` is refused during a capture. That was the first prototype's "Compute error".
+- **Host buffers declined:** `supports_buft` accepts only Kernelcore's own buffers, so ggml copies the few host inputs in and every kernel pointer is Kernelcore memory. The matmul input staging and early flushes are gone.
+- **Constants:** dims and ones buffers are filled with `memcpy`, because `kcMemcpy` is refused during a capture. That was the first prototype's "Compute error".
 - **Quantized-input cache:** keyed by tensor, not by address, because ggml's allocator reuses memory within a graph.
 
 **Scheduler.** The per-layer norms still ran on the CPU, because `llama-context.cpp` pins "norm" and "l_last" to the layer's device (the CPU here). A small patch prefers an ACCEL backend that supports the op; the BLAS backend is unaffected because it doesn't support RMS_NORM. With that, `graph_compute` calls per token fell from ~114 to ~59.
 
-**New kernels** (CudaOnCPUCores), all bit-exact against C++ mirrors on every path:
+**New kernels** (Kernelcore), all bit-exact against C++ mirrors on every path:
 - `mul_rows`, a broadcast multiply;
 - `rope_ggml`: one thread per (token, frequency), with the angle reused across heads, as ggml caches it;
 - `add_sumsq_f` / `sumsq_part` + `norm_mul_q8_f`: parallel residual add + RMS norm + weight, with both f32 and 8-bit outputs;
@@ -1173,9 +1173,9 @@ Q6_K covers the 323 MB tied output matrix and half of ffn_down and attn_v, so it
 
 Booth's 5-parameter limit left no integer slot for a chunk start, so the chunkable ones take it as a float, exact below 2^24.
 
-**Runtime.** `pcudaStreamConcurrentBegin/End`: launches recorded in between share one graph step. Tested, but not used by the backend yet.
+**Runtime.** `kcStreamConcurrentBegin/End`: launches recorded in between share one graph step. Tested, but not used by the backend yet.
 
-`pcuda_llm_real --bench-steps` measured a graph step at 0.5–0.7 µs for tiny kernels, and about 1 µs for a synchronous launch. So the remaining overhead was the small kernels' own work, mainly single-thread norms and quantization through gathers, not step count. That is why fusion (fewer, parallel kernels) helped and the concurrent groups were not needed.
+`kc_llm_real --bench-steps` measured a graph step at 0.5–0.7 µs for tiny kernels, and about 1 µs for a synchronous launch. So the remaining overhead was the small kernels' own work, mainly single-thread norms and quantization through gathers, not step count. That is why fusion (fewer, parallel kernels) helped and the concurrent groups were not needed.
 
 **Results** (llama-bench, same binary, two alternating rounds of 5 repetitions):
 
@@ -1189,5 +1189,5 @@ Correctness against the CPU backend: 64/64 tokens on prompt 1, and prompt 2 dive
 
 **Next:**
 - prompt processing: a matmul kernel that reads each weight once for several columns;
-- the KV write and flash attention on the fp16 cache in pcuda (one graph per token);
+- the KV write and flash attention on the fp16 cache in Kernelcore (one graph per token);
 - Ollama integration.

@@ -12,11 +12,11 @@
 // 4-7 and mins 4-7 take the nibbles of bytes 8-11 plus the top 2 bits of bytes 0-3 / 4-7).
 // rows % 8 == 0, k % 256 == 0, dims = {rows, k}.
 
-#ifndef PCUDA_DP4A_DEFINED
-#define PCUDA_DP4A_DEFINED
+#ifndef KC_DP4A_DEFINED
+#define KC_DP4A_DEFINED
 // u8 x s8 dot product of 4 packed bytes, plus c. The bytes of `a` must be 0..127 so that the
-// GPU's signed __dp4a gives the same result. pcuda_mslgen maps this helper to AVX-VNNI.
-__device__ int pcuda_dp4a(int a, int b, int c)
+// GPU's signed __dp4a gives the same result. kc_mslgen maps this helper to AVX-VNNI.
+__device__ int kc_dp4a(int a, int b, int c)
 {
 #if defined(__NVCC__)
     return __dp4a(a, b, c);
@@ -60,8 +60,8 @@ extern "C" __global__ void matvec_q4k_q8(const int* qw, const int* xq, const flo
                 int db = 0;
                 for (int w = 0; w < 8; ++w) {
                     const int q = qw[base + (5 + j * 8 + w) * 8 + l];
-                    da = pcuda_dp4a(q & 252645135, xq[b * 8 + w], da);  // 0x0F0F0F0F
-                    db = pcuda_dp4a((q >> 4) & 252645135, xq[b * 8 + 8 + w], db);
+                    da = kc_dp4a(q & 252645135, xq[b * 8 + w], da);  // 0x0F0F0F0F
+                    db = kc_dp4a((q >> 4) & 252645135, xq[b * 8 + 8 + w], db);
                 }
                 // scale and min bytes of sub-blocks 2j, 2j+1: in the low (j < 2) or high word
                 const int sh = 16 * (j & 1);

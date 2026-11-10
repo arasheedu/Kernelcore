@@ -5,11 +5,11 @@
 // more loads in flight, and the 8-bit activations are read once for both rows.
 // rows % 16 == 0. dims = {rows, k}; rows / 2 threads.
 
-#ifndef PCUDA_DP4A_DEFINED
-#define PCUDA_DP4A_DEFINED
+#ifndef KC_DP4A_DEFINED
+#define KC_DP4A_DEFINED
 // u8 x s8 dot product of 4 packed bytes, plus c. The bytes of `a` must be 0..127 so that the
-// GPU's signed __dp4a gives the same result. pcuda_mslgen maps this helper to AVX-VNNI.
-__device__ int pcuda_dp4a(int a, int b, int c)
+// GPU's signed __dp4a gives the same result. kc_mslgen maps this helper to AVX-VNNI.
+__device__ int kc_dp4a(int a, int b, int c)
 {
 #if defined(__NVCC__)
     return __dp4a(a, b, c);
@@ -48,10 +48,10 @@ extern "C" __global__ void matvec_q4x8_q8x2(const int* qw, const int* xq, const 
                 const int q1 = qw[base1 + w * 8 + l];
                 const int xa = xq[b * 8 + w];
                 const int xb = xq[b * 8 + 4 + w];
-                lo0 = pcuda_dp4a(q0 & 252645135, xa, lo0);  // 0x0F0F0F0F
-                hi0 = pcuda_dp4a((q0 >> 4) & 252645135, xb, hi0);
-                lo1 = pcuda_dp4a(q1 & 252645135, xa, lo1);
-                hi1 = pcuda_dp4a((q1 >> 4) & 252645135, xb, hi1);
+                lo0 = kc_dp4a(q0 & 252645135, xa, lo0);  // 0x0F0F0F0F
+                hi0 = kc_dp4a((q0 >> 4) & 252645135, xb, hi0);
+                lo1 = kc_dp4a(q1 & 252645135, xa, lo1);
+                hi1 = kc_dp4a((q1 >> 4) & 252645135, xb, hi1);
             }
             const float* sc0 = (const float*)(qw + base0 + 32);
             const float* sc1 = (const float*)(qw + base1 + 32);

@@ -4,7 +4,7 @@
 
 #include "booth_elf.hpp"
 
-#include <pcuda/error.hpp>
+#include <kernelcore/error.hpp>
 
 #include <cstddef>
 #include <memory>
@@ -12,7 +12,7 @@
 #include <string>
 #include <string_view>
 
-namespace pcuda::cpu {
+namespace kc::cpu {
 
 class BoothImage {
 public:
@@ -46,4 +46,4 @@ std::string sha256Hex(std::span<const unsigned char> bytes);
 // Address of the System V-callable shim for an allowlisted external, or nullptr.
 const void* sysvShimFor(std::string_view external) noexcept;
 
-} // namespace pcuda::cpu
+} // namespace kc::cpu

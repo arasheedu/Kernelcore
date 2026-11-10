@@ -1,11 +1,11 @@
 ; Booth IR
 
-func @pcuda_aligned8(i32 %0) __device__ {
+func @kc_aligned8(i32 %0) __device__ {
 entry:
     ret i32 %0  ; line 18
 }
 
-func @pcuda_h2f(i32 %0) __device__ {
+func @kc_h2f(i32 %0) __device__ {
 entry:
     %1 = ashr i32 %0, 10  ; line 30
     %2 = and i32 %1, 31  ; line 30
@@ -61,7 +61,7 @@ entry:
 func @fa_scores(ptr<global, f32> %0, ptr<global, i32> %1, ptr<global, i32> %2, ptr<global, f32> %3, ptr<global, i32> %4, f32 %5, f32 %6) __global__ {
 entry:
     %7 = fptosi f32 %6 to i32  ; line 44
-    %8 = call i32 @pcuda_aligned8(%7)  ; line 44
+    %8 = call i32 @kc_aligned8(%7)  ; line 44
     %9 = block_id.x  ; line 44
     %10 = block_dim.x  ; line 44
     %11 = mul i32 %9, %10  ; line 44
@@ -76,11 +76,11 @@ entry:
     %20 = load i32, %19  ; line 47
     %21 = gep ptr<global, i32>, %4, 4  ; line 48
     %22 = load i32, %21  ; line 48
-    %23 = call i32 @pcuda_aligned8(%22)  ; line 48
+    %23 = call i32 @kc_aligned8(%22)  ; line 48
     %24 = gep ptr<global, i32>, %4, 9  ; line 49
     %25 = load i32, %24  ; line 49
     %26 = mul i32 %25, %23  ; line 50
-    %27 = call i32 @pcuda_aligned8(%26)  ; line 50
+    %27 = call i32 @kc_aligned8(%26)  ; line 50
     %28 = gep ptr<global, i32>, %4, 14  ; line 51
     %29 = load i32, %28  ; line 51
     %30 = mul i32 %29, %27  ; line 51
@@ -115,7 +115,7 @@ if.then:
     %53 = mul i32 %52, 16  ; line 61
     %54 = ashr i32 %51, %53  ; line 61
     %55 = and i32 %54, 65535  ; line 61
-    %56 = call f32 @pcuda_h2f(%55)  ; line 62
+    %56 = call f32 @kc_h2f(%55)  ; line 62
     %57 = sitofp i32 %43 to f32  ; line 63
     %58 = fmul f32 %56, %57  ; line 63
     %59 = gep ptr<global, i32>, %4, 5  ; line 65
@@ -194,10 +194,10 @@ for.body:
     %118 = gep ptr<global, i32>, %1, %117  ; line 80
     %119 = load i32, %118  ; line 80
     %120 = and i32 %119, 65535  ; line 81
-    %121 = call f32 @pcuda_h2f(%120)  ; line 82
+    %121 = call f32 @kc_h2f(%120)  ; line 82
     %122 = ashr i32 %119, 16  ; line 83
     %123 = and i32 %122, 65535  ; line 83
-    %124 = call f32 @pcuda_h2f(%123)  ; line 84
+    %124 = call f32 @kc_h2f(%123)  ; line 84
     %125 = mul i32 2, %108  ; line 85
     %126 = add i32 %84, %125  ; line 85
     %127 = gep ptr<global, f32>, %0, %126  ; line 85

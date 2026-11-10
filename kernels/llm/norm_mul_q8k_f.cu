@@ -5,11 +5,11 @@
 // of x^2 (add_sumsq_f / sumsq_part, slots of (n / 32) * 11 ints) at q + dims[3].
 // dims = {nsb, n, rows, offset of the partial-sum slots}. base: first thread as a float (chunking).
 
-#ifndef PCUDA_ALIGNED8_DEFINED
-#define PCUDA_ALIGNED8_DEFINED
-// Promise that x is a non-negative multiple of 8 (identity). pcuda_mslgen uses it to keep
+#ifndef KC_ALIGNED8_DEFINED
+#define KC_ALIGNED8_DEFINED
+// Promise that x is a non-negative multiple of 8 (identity). kc_mslgen uses it to keep
 // x-based divisions uniform across the 8 lanes of a group, and checks it at run time.
-__device__ int pcuda_aligned8(int x)
+__device__ int kc_aligned8(int x)
 {
     return x;
 }
@@ -18,7 +18,7 @@ __device__ int pcuda_aligned8(int x)
 extern "C" __global__ void norm_mul_q8k_f(const float* x, const float* w, float* y, int* q, const int* dims, float eps,
                                           float base)
 {
-    const int idx = pcuda_aligned8((int)base) + blockIdx.x * blockDim.x + threadIdx.x;
+    const int idx = kc_aligned8((int)base) + blockIdx.x * blockDim.x + threadIdx.x;
     const int nsb = dims[0];
     const int n = dims[1];
     const int rows = dims[2];

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Real llama.cpp decode speed for comparison with pcuda_llm_bench: asks a local Ollama server
+  Real llama.cpp decode speed for comparison with kc_llm_bench: asks a local Ollama server
   to generate with the model on the GPU and on the CPU only, and reports tokens per second
   from Ollama's own timings (eval_count / eval_duration).
 

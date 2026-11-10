@@ -5,7 +5,7 @@
 #include <cstring>
 #include <limits>
 
-namespace pcuda::cpu {
+namespace kc::cpu {
 namespace {
 
 constexpr uint16_t kEtRel = 1;
@@ -229,4 +229,4 @@ bool validateBoothElf(std::span<const unsigned char> bytes, std::string_view exp
     return true;
 }
 
-} // namespace pcuda::cpu
+} // namespace kc::cpu

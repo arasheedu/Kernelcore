@@ -1,13 +1,13 @@
 ; Booth IR
 
-func @pcuda_aligned8(i32 %0) __device__ {
+func @kc_aligned8(i32 %0) __device__ {
 entry:
     ret i32 %0  ; line 14
 }
 
 func @attn_scores(ptr<global, f32> %0, ptr<global, f32> %1, ptr<global, f32> %2, ptr<global, i32> %3, i32 %4, f32 %5) __global__ {
 entry:
-    %6 = call i32 @pcuda_aligned8(%4)  ; line 21
+    %6 = call i32 @kc_aligned8(%4)  ; line 21
     %7 = block_id.x  ; line 21
     %8 = block_dim.x  ; line 21
     %9 = mul i32 %7, %8  ; line 21
@@ -24,7 +24,7 @@ entry:
     %20 = load i32, %19  ; line 25
     %21 = gep ptr<global, i32>, %3, 5  ; line 26
     %22 = load i32, %21  ; line 26
-    %23 = call i32 @pcuda_aligned8(%22)  ; line 26
+    %23 = call i32 @kc_aligned8(%22)  ; line 26
     %24 = gep ptr<global, i32>, %3, 6  ; line 27
     %25 = load i32, %24  ; line 27
     %26 = mul i32 %14, %23  ; line 28

@@ -43,10 +43,10 @@ Facts below marked **[verified]** were checked against Booth's source at `master
 
 ## 4. API and design issues
 
-- Inconsistent naming: §2 says `pcudaMalloc`, while §6 declares `pcuda::malloc`, `pcuda::free` and `pcuda::memcpy`. The namespace versions collide with CRT macros (`_CRTDBG_MAP_ALLOC` redefines `malloc`/`free`) and invite ADL and `using namespace` accidents. Use the `pcuda*` names.
+- Inconsistent naming: §2 says `kcMalloc`, while §6 declares `kc::malloc`, `kc::free` and `kc::memcpy`. The namespace versions collide with CRT macros (`_CRTDBG_MAP_ALLOC` redefines `malloc`/`free`) and invite ADL and `using namespace` accidents. Use the `kc*` names.
 - The error model has no sticky "context poisoned" state. CUDA treats an illegal address as sticky. The POC needs the same, or a faulted kernel's partial writes go unnoticed.
 - No `NotInitialized`, `InvalidKernelImage`, `IllegalAddress`, `KernelFault` or `DynamicCodeBlocked` errors.
-- No shutdown story. Worker threads owned by statics and joined in static destructors can deadlock under the Windows loader lock, especially in a DLL. Use explicit `pcudaShutdown()`.
+- No shutdown story. Worker threads owned by statics and joined in static destructors can deadlock under the Windows loader lock, especially in a DLL. Use explicit `kcShutdown()`.
 - Nothing contains faults: a bad kernel crashes the whole process with no diagnostic.
 
 ## 5. Process and plan-quality issues
@@ -67,6 +67,6 @@ Facts below marked **[verified]** were checked against Booth's source at `master
 4. **System V-to-Win64 shims** for `sinf`, `cosf`, `exp2f` and `log2f`, placed next to the loaded code so `rel32` always reaches them.
 5. **Fault containment:** a vectored exception handler turns access violations and divide-by-zero inside kernel code into `KernelFault`, with a sticky poisoned context. Stack overflow fails fast with a diagnostic.
 6. **Guard-page allocator** (`VirtualAlloc` with a trailing `PAGE_NOACCESS` page) so out-of-bounds writes fault at the first bad byte.
-7. **Four ways to get the kernel object**, chosen with `PCUDA_KATH_MODE=auto|exe|wsl|prebuilt`: pinned `kath.exe` with SHA-256 → source build → `kath` inside WSL → checked-in prebuilt `.o` with SHA-256. The build doesn't depend on any one of them.
+7. **Four ways to get the kernel object**, chosen with `KC_KATH_MODE=auto|exe|wsl|prebuilt`: pinned `kath.exe` with SHA-256 → source build → `kath` inside WSL → checked-in prebuilt `.o` with SHA-256. The build doesn't depend on any one of them.
 8. **The object is embedded as a byte array** in the executable, so nothing is loaded from a path at runtime.
-9. Build-time object validation (`pcuda_objcheck`), a hard Phase 0 go/no-go gate, all integer arguments passed as 64-bit, one kernel per file, an argument-count limit, explicit shutdown, an 8 MB worker stack, ASan instead of TSan, and a Windows CI matrix.
+9. Build-time object validation (`kc_objcheck`), a hard Phase 0 go/no-go gate, all integer arguments passed as 64-bit, one kernel per file, an argument-count limit, explicit shutdown, an 8 MB worker stack, ASan instead of TSan, and a Windows CI matrix.

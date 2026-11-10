@@ -6,23 +6,23 @@
 // becomes +0. NaN gives an unspecified value.
 // dims = {pairs per row (a multiple of 8), rows, src row stride (floats), dst row stride (words),
 // dst rows}.
-// base: index of the first thread (0 on the GPU; the chunk start under pcuda chunking).
+// base: index of the first thread (0 on the GPU; the chunk start under Kernelcore chunking).
 
-#ifndef PCUDA_ALIGNED8_DEFINED
-#define PCUDA_ALIGNED8_DEFINED
-// Promise that x is a non-negative multiple of 8 (identity). pcuda_mslgen uses it to keep
+#ifndef KC_ALIGNED8_DEFINED
+#define KC_ALIGNED8_DEFINED
+// Promise that x is a non-negative multiple of 8 (identity). kc_mslgen uses it to keep
 // x-based divisions uniform across the 8 lanes of a group, and checks it at run time.
-__device__ int pcuda_aligned8(int x)
+__device__ int kc_aligned8(int x)
 {
     return x;
 }
 #endif
 
-#ifndef PCUDA_F2H_DEFINED
-#define PCUDA_F2H_DEFINED
+#ifndef KC_F2H_DEFINED
+#define KC_F2H_DEFINED
 // out = fp16 bit pattern (low 16 bits) of x, round to nearest even. A macro, not a function:
-// pcuda_mslgen's simd path does not call helpers.
-#define PCUDA_F2H(out, xv)                                                                          \
+// kc_mslgen's simd path does not call helpers.
+#define KC_F2H(out, xv)                                                                          \
     {                                                                                               \
         const float f2h_x = (xv);                                                                   \
         const int f2h_sign = f2h_x < 0.0f ? 32768 : 0;                                              \
@@ -66,8 +66,8 @@ __device__ int pcuda_aligned8(int x)
 
 extern "C" __global__ void set_rows_f16(const float* src, const int* idx, int* dst, const int* dims, float base)
 {
-    const int i = pcuda_aligned8((int)base) + blockIdx.x * blockDim.x + threadIdx.x;
-    const int pairs = pcuda_aligned8(dims[0]);  // a multiple of 8
+    const int i = kc_aligned8((int)base) + blockIdx.x * blockDim.x + threadIdx.x;
+    const int pairs = kc_aligned8(dims[0]);  // a multiple of 8
     const int rows = dims[1];
     if (i < pairs * rows) {
         const int r = i / pairs;
@@ -76,8 +76,8 @@ extern "C" __global__ void set_rows_f16(const float* src, const int* idx, int* d
         const int so = r * dims[2] + 2 * j;
         int lo;
         int hi;
-        PCUDA_F2H(lo, src[so]);
-        PCUDA_F2H(hi, src[so + 1]);
+        KC_F2H(lo, src[so]);
+        KC_F2H(hi, src[so + 1]);
         if ((unsigned)row < (unsigned)dims[4]) dst[row * dims[3] + j] = lo | (hi << 16);
     }
 }

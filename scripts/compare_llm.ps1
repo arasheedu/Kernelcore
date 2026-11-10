@@ -1,13 +1,13 @@
 <#
 .SYNOPSIS
   Like-for-like token generation: real llama.cpp (Ollama, llama3.2 = Llama 3.2 3B Q4_K_M)
-  versus the same decode loop built from pcuda's .cu kernels on every code path and on CUDA.
+  versus the same decode loop built from Kernelcore's .cu kernels on every code path and on CUDA.
 
   Matched: model shapes (Llama 3.2 3B), weight bytes per token (Q4: 2.0 GB vs 2.02 GB),
   prompt length (taken from Ollama's own prompt_eval_count), number of generated tokens,
   attention over the growing context, logits returned to the host every token.
   Not matched (inherent): Ollama runs real weights through hand-tuned llama.cpp kernels
-  (AVX2 / CUDA); pcuda runs one CUDA C source per kernel through Booth, MSVC or nvcc.
+  (AVX2 / CUDA); Kernelcore runs one CUDA C source per kernel through Booth, MSVC or nvcc.
 
 .EXAMPLE
   .\scripts\compare_llm.ps1                    # needs the windows-msvc-nvidia build and Ollama running
@@ -20,12 +20,12 @@ param(
     [double]$Budget = 20,
     [string]$Server = 'http://127.0.0.1:11434',
     [string]$Bench = '',
-    # pcuda paths to time; booth and native are slow and heat the CPU before the simd run
+    # Kernelcore paths to time; booth and native are slow and heat the CPU before the simd run
     [string]$Paths = 'simd,cuda'
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-if (-not $Bench) { $Bench = Join-Path $root 'build\windows-msvc-nvidia\pcuda_llm_bench.exe' }
+if (-not $Bench) { $Bench = Join-Path $root 'build\windows-msvc-nvidia\kc_llm_bench.exe' }
 if (-not (Test-Path $Bench)) { throw "$Bench not found: build with .\scripts\build.ps1 -Preset windows-msvc-nvidia" }
 try { $v = Invoke-RestMethod "$Server/api/version" -TimeoutSec 5 }
 catch { throw "No Ollama server at $Server. Start the Ollama app (or 'ollama serve') first." }
@@ -64,17 +64,17 @@ while ((Get-Date) -lt $deadline) {
 }
 Start-Sleep -Seconds 15
 Write-Host ""
-Write-Host "Running pcuda_llm_bench --model 3b --weights q4x8q8 --prompt $promptTokens --tokens $Tokens --paths $Paths ..."
+Write-Host "Running kc_llm_bench --model 3b --weights q4x8q8 --prompt $promptTokens --tokens $Tokens --paths $Paths ..."
 $out = & $Bench --model 3b --weights q4x8q8 --prompt $promptTokens --tokens $Tokens --budget $Budget --paths $Paths
 $out | Where-Object { $_ -notmatch '^RESULT' } | ForEach-Object { Write-Host $_ }
-if ($LASTEXITCODE -ne 0) { throw "pcuda_llm_bench failed ($LASTEXITCODE)" }
+if ($LASTEXITCODE -ne 0) { throw "kc_llm_bench failed ($LASTEXITCODE)" }
 
 $info = ($out | Where-Object { $_ -match '^RESULT_INFO,' }) -split ','
 $benchGb = [double]$info[1]
 $rows = @()
 foreach ($r in ($out | Where-Object { $_ -match '^RESULT,' })) {
     $f = $r -split ','
-    $rows += [pscustomobject]@{ Run = "pcuda kernels: $($f[1])"; 'ms/token' = [math]::Round([double]$f[2], 1)
+    $rows += [pscustomobject]@{ Run = "Kernelcore kernels: $($f[1])"; 'ms/token' = [math]::Round([double]$f[2], 1)
         'tok/s' = [math]::Round([double]$f[3], 2); 'weights GB/s' = [math]::Round([double]$f[4], 1)
         'GB/token' = [math]::Round($benchGb, 2); 'tokens timed' = "$($f[5])/$Tokens" }
 }

@@ -6,10 +6,10 @@
 #include <metal_stdlib>
 using namespace metal;
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0);
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0)
 {
     return p0;
@@ -67,7 +67,7 @@ kernel void sumsq_part(
     device float * v52;
     device float * v53;
     v6 = (int)(p3);
-    v7 = pcuda_aligned8(v6);
+    v7 = kc_aligned8(v6);
     v8 = bid.x;
     v9 = bdim.x;
     v10 = v8 * v9;
@@ -76,7 +76,7 @@ kernel void sumsq_part(
     v13 = v11 + v12;
     v14 = p2 + (0);
     v15 = *(v14);
-    v16 = pcuda_aligned8(v15);
+    v16 = kc_aligned8(v15);
     v17 = p2 + (1);
     v18 = *(v17);
     v19 = p2 + (2);

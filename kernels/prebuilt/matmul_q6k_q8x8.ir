@@ -1,6 +1,6 @@
 ; Booth IR
 
-func @pcuda_dp4a(i32 %0, i32 %1, i32 %2) __device__ {
+func @kc_dp4a(i32 %0, i32 %1, i32 %2) __device__ {
 entry:
     %3 = and i32 %0, 255  ; line 16
     %4 = shl i32 %1, 24  ; line 16
@@ -27,14 +27,14 @@ entry:
     ret i32 %24  ; line 20
 }
 
-func @pcuda_aligned8(i32 %0) __device__ {
+func @kc_aligned8(i32 %0) __device__ {
 entry:
     ret i32 %0  ; line 31
 }
 
 func @matmul_q6k_q8x8(ptr<global, i32> %0, ptr<global, i32> %1, ptr<global, f32> %2, ptr<global, i32> %3, i32 %4) __global__ {
 entry:
-    %5 = call i32 @pcuda_aligned8(%4)  ; line 37
+    %5 = call i32 @kc_aligned8(%4)  ; line 37
     %6 = block_id.x  ; line 37
     %7 = block_dim.x  ; line 37
     %8 = mul i32 %6, %7  ; line 37
@@ -43,7 +43,7 @@ entry:
     %11 = add i32 %9, %10  ; line 37
     %12 = gep ptr<global, i32>, %3, 0  ; line 38
     %13 = load i32, %12  ; line 38
-    %14 = call i32 @pcuda_aligned8(%13)  ; line 38
+    %14 = call i32 @kc_aligned8(%13)  ; line 38
     %15 = gep ptr<global, i32>, %3, 1  ; line 39
     %16 = load i32, %15  ; line 39
     %17 = gep ptr<global, i32>, %3, 2  ; line 40
@@ -570,82 +570,82 @@ for.body:
     %458 = add i32 %457, %431  ; line 157
     %459 = gep ptr<global, i32>, %103, %458  ; line 157
     %460 = load i32, %459  ; line 157
-    %461 = call i32 @pcuda_dp4a(%456, %460, %415)  ; line 157
+    %461 = call i32 @kc_dp4a(%456, %460, %415)  ; line 157
     %462 = mul i32 %370, 8  ; line 158
     %463 = add i32 %462, %431  ; line 158
     %464 = gep ptr<global, i32>, %106, %463  ; line 158
     %465 = load i32, %464  ; line 158
-    %466 = call i32 @pcuda_dp4a(%456, %465, %416)  ; line 158
+    %466 = call i32 @kc_dp4a(%456, %465, %416)  ; line 158
     %467 = mul i32 %370, 8  ; line 159
     %468 = add i32 %467, %431  ; line 159
     %469 = gep ptr<global, i32>, %109, %468  ; line 159
     %470 = load i32, %469  ; line 159
-    %471 = call i32 @pcuda_dp4a(%456, %470, %417)  ; line 159
+    %471 = call i32 @kc_dp4a(%456, %470, %417)  ; line 159
     %472 = mul i32 %370, 8  ; line 160
     %473 = add i32 %472, %431  ; line 160
     %474 = gep ptr<global, i32>, %112, %473  ; line 160
     %475 = load i32, %474  ; line 160
-    %476 = call i32 @pcuda_dp4a(%456, %475, %418)  ; line 160
+    %476 = call i32 @kc_dp4a(%456, %475, %418)  ; line 160
     %477 = mul i32 %370, 8  ; line 161
     %478 = add i32 %477, %431  ; line 161
     %479 = gep ptr<global, i32>, %115, %478  ; line 161
     %480 = load i32, %479  ; line 161
-    %481 = call i32 @pcuda_dp4a(%456, %480, %419)  ; line 161
+    %481 = call i32 @kc_dp4a(%456, %480, %419)  ; line 161
     %482 = mul i32 %370, 8  ; line 162
     %483 = add i32 %482, %431  ; line 162
     %484 = gep ptr<global, i32>, %118, %483  ; line 162
     %485 = load i32, %484  ; line 162
-    %486 = call i32 @pcuda_dp4a(%456, %485, %420)  ; line 162
+    %486 = call i32 @kc_dp4a(%456, %485, %420)  ; line 162
     %487 = mul i32 %370, 8  ; line 163
     %488 = add i32 %487, %431  ; line 163
     %489 = gep ptr<global, i32>, %121, %488  ; line 163
     %490 = load i32, %489  ; line 163
-    %491 = call i32 @pcuda_dp4a(%456, %490, %421)  ; line 163
+    %491 = call i32 @kc_dp4a(%456, %490, %421)  ; line 163
     %492 = mul i32 %370, 8  ; line 164
     %493 = add i32 %492, %431  ; line 164
     %494 = gep ptr<global, i32>, %124, %493  ; line 164
     %495 = load i32, %494  ; line 164
-    %496 = call i32 @pcuda_dp4a(%456, %495, %422)  ; line 164
+    %496 = call i32 @kc_dp4a(%456, %495, %422)  ; line 164
     %497 = mul i32 %370, 8  ; line 165
     %498 = add i32 %497, %431  ; line 165
     %499 = gep ptr<global, i32>, %103, %498  ; line 165
     %500 = load i32, %499  ; line 165
-    %501 = call i32 @pcuda_dp4a(16843009, %500, %423)  ; line 165
+    %501 = call i32 @kc_dp4a(16843009, %500, %423)  ; line 165
     %502 = mul i32 %370, 8  ; line 166
     %503 = add i32 %502, %431  ; line 166
     %504 = gep ptr<global, i32>, %106, %503  ; line 166
     %505 = load i32, %504  ; line 166
-    %506 = call i32 @pcuda_dp4a(16843009, %505, %424)  ; line 166
+    %506 = call i32 @kc_dp4a(16843009, %505, %424)  ; line 166
     %507 = mul i32 %370, 8  ; line 167
     %508 = add i32 %507, %431  ; line 167
     %509 = gep ptr<global, i32>, %109, %508  ; line 167
     %510 = load i32, %509  ; line 167
-    %511 = call i32 @pcuda_dp4a(16843009, %510, %425)  ; line 167
+    %511 = call i32 @kc_dp4a(16843009, %510, %425)  ; line 167
     %512 = mul i32 %370, 8  ; line 168
     %513 = add i32 %512, %431  ; line 168
     %514 = gep ptr<global, i32>, %112, %513  ; line 168
     %515 = load i32, %514  ; line 168
-    %516 = call i32 @pcuda_dp4a(16843009, %515, %426)  ; line 168
+    %516 = call i32 @kc_dp4a(16843009, %515, %426)  ; line 168
     %517 = mul i32 %370, 8  ; line 169
     %518 = add i32 %517, %431  ; line 169
     %519 = gep ptr<global, i32>, %115, %518  ; line 169
     %520 = load i32, %519  ; line 169
-    %521 = call i32 @pcuda_dp4a(16843009, %520, %427)  ; line 169
+    %521 = call i32 @kc_dp4a(16843009, %520, %427)  ; line 169
     %522 = mul i32 %370, 8  ; line 170
     %523 = add i32 %522, %431  ; line 170
     %524 = gep ptr<global, i32>, %118, %523  ; line 170
     %525 = load i32, %524  ; line 170
-    %526 = call i32 @pcuda_dp4a(16843009, %525, %428)  ; line 170
+    %526 = call i32 @kc_dp4a(16843009, %525, %428)  ; line 170
     %527 = mul i32 %370, 8  ; line 171
     %528 = add i32 %527, %431  ; line 171
     %529 = gep ptr<global, i32>, %121, %528  ; line 171
     %530 = load i32, %529  ; line 171
-    %531 = call i32 @pcuda_dp4a(16843009, %530, %429)  ; line 171
+    %531 = call i32 @kc_dp4a(16843009, %530, %429)  ; line 171
     %532 = mul i32 %370, 8  ; line 172
     %533 = add i32 %532, %431  ; line 172
     %534 = gep ptr<global, i32>, %124, %533  ; line 172
     %535 = load i32, %534  ; line 172
-    %536 = call i32 @pcuda_dp4a(16843009, %535, %430)  ; line 172
+    %536 = call i32 @kc_dp4a(16843009, %535, %430)  ; line 172
     br for.inc  ; line 172
 
 for.inc:
@@ -696,42 +696,42 @@ for.body:
     %576 = add i32 %575, %549  ; line 178
     %577 = gep ptr<global, i32>, %103, %576  ; line 178
     %578 = load i32, %577  ; line 178
-    %579 = call i32 @pcuda_dp4a(%574, %578, %541)  ; line 178
+    %579 = call i32 @kc_dp4a(%574, %578, %541)  ; line 178
     %580 = mul i32 %370, 8  ; line 179
     %581 = add i32 %580, %549  ; line 179
     %582 = gep ptr<global, i32>, %106, %581  ; line 179
     %583 = load i32, %582  ; line 179
-    %584 = call i32 @pcuda_dp4a(%574, %583, %542)  ; line 179
+    %584 = call i32 @kc_dp4a(%574, %583, %542)  ; line 179
     %585 = mul i32 %370, 8  ; line 180
     %586 = add i32 %585, %549  ; line 180
     %587 = gep ptr<global, i32>, %109, %586  ; line 180
     %588 = load i32, %587  ; line 180
-    %589 = call i32 @pcuda_dp4a(%574, %588, %543)  ; line 180
+    %589 = call i32 @kc_dp4a(%574, %588, %543)  ; line 180
     %590 = mul i32 %370, 8  ; line 181
     %591 = add i32 %590, %549  ; line 181
     %592 = gep ptr<global, i32>, %112, %591  ; line 181
     %593 = load i32, %592  ; line 181
-    %594 = call i32 @pcuda_dp4a(%574, %593, %544)  ; line 181
+    %594 = call i32 @kc_dp4a(%574, %593, %544)  ; line 181
     %595 = mul i32 %370, 8  ; line 182
     %596 = add i32 %595, %549  ; line 182
     %597 = gep ptr<global, i32>, %115, %596  ; line 182
     %598 = load i32, %597  ; line 182
-    %599 = call i32 @pcuda_dp4a(%574, %598, %545)  ; line 182
+    %599 = call i32 @kc_dp4a(%574, %598, %545)  ; line 182
     %600 = mul i32 %370, 8  ; line 183
     %601 = add i32 %600, %549  ; line 183
     %602 = gep ptr<global, i32>, %118, %601  ; line 183
     %603 = load i32, %602  ; line 183
-    %604 = call i32 @pcuda_dp4a(%574, %603, %546)  ; line 183
+    %604 = call i32 @kc_dp4a(%574, %603, %546)  ; line 183
     %605 = mul i32 %370, 8  ; line 184
     %606 = add i32 %605, %549  ; line 184
     %607 = gep ptr<global, i32>, %121, %606  ; line 184
     %608 = load i32, %607  ; line 184
-    %609 = call i32 @pcuda_dp4a(%574, %608, %547)  ; line 184
+    %609 = call i32 @kc_dp4a(%574, %608, %547)  ; line 184
     %610 = mul i32 %370, 8  ; line 185
     %611 = add i32 %610, %549  ; line 185
     %612 = gep ptr<global, i32>, %124, %611  ; line 185
     %613 = load i32, %612  ; line 185
-    %614 = call i32 @pcuda_dp4a(%574, %613, %548)  ; line 185
+    %614 = call i32 @kc_dp4a(%574, %613, %548)  ; line 185
     br for.inc  ; line 185
 
 for.inc:

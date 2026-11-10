@@ -1,14 +1,14 @@
 <#
 .SYNOPSIS
-  Grants the "Lock pages in memory" right (SeLockMemoryPrivilege) to a user, so that pcuda can
-  back large allocations with 2 MB pages (PCUDA_LARGE_PAGES=1).
+  Grants the "Lock pages in memory" right (SeLockMemoryPrivilege) to a user, so that Kernelcore can
+  back large allocations with 2 MB pages (KC_LARGE_PAGES=1).
 
   Works on Windows Home too (it has no secpol.msc): it calls LsaAddAccountRights directly.
   Run it from an elevated PowerShell, then sign out and back in: the right is added to the
   logon token at sign-in.
 
-  Large-page memory is locked: it is never paged out while allocated. pcuda uses it only for
-  allocations of 2 MB or more, and only when PCUDA_LARGE_PAGES=1.
+  Large-page memory is locked: it is never paged out while allocated. Kernelcore uses it only for
+  allocations of 2 MB or more, and only when KC_LARGE_PAGES=1.
 
 .EXAMPLE
   .\scripts\grant_lock_pages.ps1              # the current user
@@ -72,6 +72,6 @@ if ($Revoke) {
     Write-Host "Removed 'Lock pages in memory' from $User. Sign out and back in for it to take effect."
 } else {
     Write-Host "Granted 'Lock pages in memory' to $User."
-    Write-Host 'Sign out and back in, then run with PCUDA_LARGE_PAGES=1, for example:'
-    Write-Host '  $env:PCUDA_LARGE_PAGES = "1"; .\build\windows-msvc-nvidia\pcuda_llm_bench.exe --paths simd,cuda'
+    Write-Host 'Sign out and back in, then run with KC_LARGE_PAGES=1, for example:'
+    Write-Host '  $env:KC_LARGE_PAGES = "1"; .\build\windows-msvc-nvidia\kc_llm_bench.exe --paths simd,cuda'
 }

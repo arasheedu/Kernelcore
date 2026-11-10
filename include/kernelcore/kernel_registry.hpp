@@ -5,13 +5,13 @@
 // arguments in registers (the last one is Booth's hidden nthreads) and up to 8
 // float arguments in xmm registers. Every integer goes in as a full 64-bit value.
 
-#include <pcuda/error.hpp>
+#include <kernelcore/error.hpp>
 
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 
-namespace pcuda {
+namespace kc {
 
 struct LaunchArgs {
     uint64_t gpr[6] = {};   // rdi, rsi, rdx, rcx, r8, r9
@@ -88,17 +88,17 @@ private:
     bool overflow_ = false;
 };
 
-} // namespace pcuda
+} // namespace kc
 
 // Declares the symbols produced by booth_add_kernel() for an embedded kernel object.
-#define PCUDA_DECLARE_KERNEL_IMAGE(kname)                                   \
-    extern "C" const unsigned char pcuda_kimg_##kname[];                   \
-    extern "C" const std::size_t   pcuda_kimg_##kname##_size;              \
-    extern "C" const char          pcuda_kimg_##kname##_sha256[];          \
-    extern "C" const char          pcuda_kimg_##kname##_provenance[];      \
-    extern "C" const pcuda::NativeKernel pcuda_knat_##kname
+#define KC_DECLARE_KERNEL_IMAGE(kname)                                   \
+    extern "C" const unsigned char kc_kimg_##kname[];                   \
+    extern "C" const std::size_t   kc_kimg_##kname##_size;              \
+    extern "C" const char          kc_kimg_##kname##_sha256[];          \
+    extern "C" const char          kc_kimg_##kname##_provenance[];      \
+    extern "C" const kc::NativeKernel kc_knat_##kname
 
-#define PCUDA_KERNEL_IMAGE_FIELDS(kname)                                    \
-    pcuda_kimg_##kname, pcuda_kimg_##kname##_size,                          \
-    pcuda_kimg_##kname##_sha256, pcuda_kimg_##kname##_provenance,           \
-    &pcuda_knat_##kname
+#define KC_KERNEL_IMAGE_FIELDS(kname)                                    \
+    kc_kimg_##kname, kc_kimg_##kname##_size,                          \
+    kc_kimg_##kname##_sha256, kc_kimg_##kname##_provenance,           \
+    &kc_knat_##kname

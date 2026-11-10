@@ -3,13 +3,13 @@
 // Backend seam. CpuBackend implements it today; an NVIDIA backend would implement
 // the same contract where semantics genuinely match.
 
-#include <pcuda/error.hpp>
-#include <pcuda/kernel_registry.hpp>
-#include <pcuda/types.hpp>
+#include <kernelcore/error.hpp>
+#include <kernelcore/kernel_registry.hpp>
+#include <kernelcore/types.hpp>
 
 #include <cstddef>
 
-namespace pcuda {
+namespace kc {
 
 class IBackend {
 public:
@@ -22,4 +22,4 @@ public:
     virtual Error launch(const KernelEntry& entry, const LaunchArgs& args) noexcept = 0;
 };
 
-} // namespace pcuda
+} // namespace kc

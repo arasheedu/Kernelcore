@@ -1,10 +1,10 @@
-// pcuda_kquant_vs_cuda: the K-quant kernels of the ggml backend (quantize_cols, matvec_q4k/q6k_q8,
-// matmul_q4k/q6k_q8x4/x8) on pcuda (CPU) and on the NVIDIA GPU (the same .cu files, compiled by
+// kc_kquant_vs_cuda: the K-quant kernels of the ggml backend (quantize_cols, matvec_q4k/q6k_q8,
+// matmul_q4k/q6k_q8x4/x8) on Kernelcore (CPU) and on the NVIDIA GPU (the same .cu files, compiled by
 // nvcc). Shapes: one Llama 3.2 3B layer as in a Q4_K_M file (q, k, o, gate, up Q4_K; v, down Q6_K),
-// random weights. For each batch size it checks the GPU results against pcuda's and times the
+// random weights. For each batch size it checks the GPU results against Kernelcore's and times the
 // layer's matmuls (two input quantizations, seven matrices) on both.
 //
-//   pcuda_kquant_vs_cuda [--ncols 1,32,128,512] [--reps N] [--format per32|per256|both] [--check]
+//   kc_kquant_vs_cuda [--ncols 1,32,128,512] [--reps N] [--format per32|per256|both] [--check]
 //
 // --format: activation scales per 32 values (quantize_cols, matvec, matmul_*_q8x*) or per 256
 // (quantize_cols_k, matmul_*_q8kx*: the ggml backend's batches; 1 token uses the 4-column kernel).
@@ -16,7 +16,7 @@
 #include "llm_kernels.hpp"
 #include "llm_reference.hpp"
 
-#include <pcuda/api.hpp>
+#include <kernelcore/api.hpp>
 
 #include <cuda_runtime_api.h>
 
@@ -39,8 +39,8 @@ using Clock = std::chrono::steady_clock;
 void ck(cudaError_t e, const char* what) {
     if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
 }
-void pk(pcuda::Error e, const char* what) {
-    if (e != pcuda::Error::Success) throw std::runtime_error(std::string(what) + ": " + pcudaGetLastErrorDetail());
+void pk(kc::Error e, const char* what) {
+    if (e != kc::Error::Success) throw std::runtime_error(std::string(what) + ": " + kcGetLastErrorDetail());
 }
 
 struct Matrix {
@@ -53,15 +53,15 @@ struct Matrix {
 // Device buffers of one matrix on both sides.
 struct Weights {
     Matrix m;
-    int*   pc = nullptr;  // pcuda
+    int*   pc = nullptr;  // Kernelcore
     int*   gp = nullptr;  // GPU
 };
 
 template <class T>
-T* pcudaUpload(const std::vector<T>& v) {
+T* kcUpload(const std::vector<T>& v) {
     void* p = nullptr;
-    pk(pcudaMalloc(&p, std::max<size_t>(1, v.size() * sizeof(T))), "pcudaMalloc");
-    if (!v.empty()) pk(pcudaMemcpy(p, v.data(), v.size() * sizeof(T), pcuda::CopyKind::HostToDevice), "pcudaMemcpy");
+    pk(kcMalloc(&p, std::max<size_t>(1, v.size() * sizeof(T))), "kcMalloc");
+    if (!v.empty()) pk(kcMemcpy(p, v.data(), v.size() * sizeof(T), kc::CopyKind::HostToDevice), "kcMemcpy");
     return static_cast<T*>(p);
 }
 template <class T>
@@ -72,9 +72,9 @@ T* gpuUpload(const std::vector<T>& v) {
     return static_cast<T*>(p);
 }
 template <class T>
-std::vector<T> pcudaDownload(const T* p, size_t n) {
+std::vector<T> kcDownload(const T* p, size_t n) {
     std::vector<T> v(n);
-    pk(pcudaMemcpy(v.data(), p, n * sizeof(T), pcuda::CopyKind::DeviceToHost), "pcudaMemcpy");
+    pk(kcMemcpy(v.data(), p, n * sizeof(T), kc::CopyKind::DeviceToHost), "kcMemcpy");
     return v;
 }
 template <class T>
@@ -117,7 +117,7 @@ std::vector<int> parseList(const char* s) {
 
 struct Diff {
     size_t n = 0, identical = 0;
-    double max_rel = 0;  // max |gpu - pcuda| / max |pcuda| over the output
+    double max_rel = 0;  // max |gpu - Kernelcore| / max |Kernelcore| over the output
 };
 Diff compare(const std::vector<float>& gpu, const std::vector<float>& pc) {
     Diff d;
@@ -145,7 +145,7 @@ int main(int argc, char** argv) try {
         else if (a == "--check") check = true;
         else if (a == "--format" && i + 1 < argc) format = argv[++i];
         else {
-            std::fprintf(stderr, "usage: pcuda_kquant_vs_cuda [--ncols 1,32,128,512] [--reps N] [--format per32|per256|both] [--check]\n");
+            std::fprintf(stderr, "usage: kc_kquant_vs_cuda [--ncols 1,32,128,512] [--reps N] [--format per32|per256|both] [--check]\n");
             return 2;
         }
     }
@@ -156,10 +156,10 @@ int main(int argc, char** argv) try {
     }
     cudaDeviceProp prop{};
     ck(cudaGetDeviceProperties(&prop, 0), "cudaGetDeviceProperties");
-    pk(pcudaInit(), "pcudaInit");
+    pk(kcInit(), "kcInit");
     pk(llm::registerKernels(), "registerKernels");
-    pcuda::DeviceProperties pp{};
-    pk(pcudaGetDeviceProperties(&pp, 0), "pcudaGetDeviceProperties");
+    kc::DeviceProperties pp{};
+    pk(kcGetDeviceProperties(&pp, 0), "kcGetDeviceProperties");
     const unsigned all_workers = pp.worker_count + 1, fast_workers = pp.performance_workers;
 
     // Llama 3.2 3B: hidden 3072, FFN 8192, 8 KV heads of 128, 28 layers. --check: small shapes.
@@ -171,7 +171,7 @@ int main(int argc, char** argv) try {
         {"down", hidden, ffn, true, 1},
     };
     std::printf("GPU  : %s (%d SMs)\n", prop.name, prop.multiProcessorCount);
-    std::printf("CPU  : pcuda pool of %u threads + caller (%u for bandwidth-bound launches)\n", pp.worker_count, fast_workers);
+    std::printf("CPU  : Kernelcore pool of %u threads + caller (%u for bandwidth-bound launches)\n", pp.worker_count, fast_workers);
     std::printf("Layer: Llama 3.2 3B shapes, q/k/o/gate/up Q4_K, v/down Q6_K, random weights%s\n\n",
                 check ? " (--check: small shapes)" : "");
 
@@ -179,7 +179,7 @@ int main(int argc, char** argv) try {
     double weight_bytes = 0;
     for (size_t i = 0; i < mats.size(); ++i) {
         const auto qw = randomWeights(mats[i], unsigned(1234 + i));
-        ws.push_back({mats[i], pcudaUpload(qw), gpuUpload(qw)});
+        ws.push_back({mats[i], kcUpload(qw), gpuUpload(qw)});
         weight_bytes += double(qw.size()) * 4;
     }
     const int ins[2] = {hidden, ffn};
@@ -188,8 +188,8 @@ int main(int argc, char** argv) try {
     for (int q8k = 0; q8k < 2; ++q8k) {
     if ((q8k && format == "per32") || (!q8k && format == "per256")) continue;
     std::printf("Activations scaled per %s:\n", q8k ? "256 values (quantize_cols_k, matmul_*_q8kx*)" : "32 values (quantize_cols, matvec, matmul_*_q8x*)");
-    std::printf("%6s | %-34s | %10s %10s | %12s %12s | %8s\n", "tokens", "GPU vs pcuda (all 7 matrices)", "pcuda ms", "GPU ms",
-                "pcuda tok/s", "GPU tok/s", "GPU/pcuda");
+    std::printf("%6s | %-34s | %10s %10s | %12s %12s | %8s\n", "tokens", "GPU vs Kernelcore (7 matrices)", "KC ms", "GPU ms",
+                "KC tok/s", "GPU tok/s", "GPU/KC");
     for (int ncols : ncols_list) {
         // Inputs and their 8-bit slots, per input size, on both sides.
         struct Input {
@@ -205,35 +205,35 @@ int main(int argc, char** argv) try {
             const int nb = ins[j] / 32;
             const int slot = q8k ? llm::scratchKInts(ins[j] / 256) : llm::scratchInts(nb);
             const std::vector<int> zero(size_t(slot) * ncols, 0), dims = {q8k ? ins[j] / 256 : nb, ncols};
-            in[j] = {ins[j], nb, pcudaUpload(x), gpuUpload(x), pcudaUpload(zero), gpuUpload(zero), pcudaUpload(dims), gpuUpload(dims)};
+            in[j] = {ins[j], nb, kcUpload(x), gpuUpload(x), kcUpload(zero), gpuUpload(zero), kcUpload(dims), gpuUpload(dims)};
         }
         std::vector<float*> pc_y, gp_y;
         std::vector<int*>   pc_md, gp_md;
         for (const auto& w : ws) {
             const std::vector<float> zero(size_t(w.m.rows) * ncols, 0.0f);
             const std::vector<int>   dims = {w.m.rows, w.m.k, ncols, 8};
-            pc_y.push_back(pcudaUpload(zero)), gp_y.push_back(gpuUpload(zero));
-            pc_md.push_back(pcudaUpload(dims)), gp_md.push_back(gpuUpload(dims));
+            pc_y.push_back(kcUpload(zero)), gp_y.push_back(gpuUpload(zero));
+            pc_md.push_back(kcUpload(dims)), gp_md.push_back(gpuUpload(dims));
         }
         const int tile = ncols > 4 ? 8 : 4;
         const char* const mm[2][2][2] = {{{"matmul_q4k_q8x4", "matmul_q6k_q8x4"}, {"matmul_q4k_q8x8", "matmul_q6k_q8x8"}},
                                          {{"matmul_q4k_q8kx4", "matmul_q6k_q8kx4"}, {"matmul_q4k_q8kx8", "matmul_q6k_q8kx8"}}};
 
         // One layer's matmuls, as the ggml backend launches them.
-        auto run_pcuda = [&] {
+        auto run_kc = [&] {
             for (auto& x : in) {
                 const llm::QuantizeColsArgs a{x.pc_x, x.pc_q, x.pc_dims, x.k, ncols};
-                pk(pcudaLaunchKernelChunked(q8k ? "quantize_cols_k" : "quantize_cols", &a, fast_workers, q8k ? 8 : 16), "quantize");
+                pk(kcLaunchKernelChunked(q8k ? "quantize_cols_k" : "quantize_cols", &a, fast_workers, q8k ? 8 : 16), "quantize");
             }
             for (size_t i = 0; i < ws.size(); ++i) {
                 const auto& w = ws[i];
                 const auto& x = in[w.m.input];
                 if (ncols == 1 && !q8k) {
                     const llm::MatvecQ4Q8Args a{w.pc, x.pc_q, llm::scratchScales(x.pc_q, x.nb), pc_y[i], pc_md[i], w.m.rows, w.m.k};
-                    pk(pcudaLaunchKernelChunked(w.m.q6 ? "matvec_q6k_q8" : "matvec_q4k_q8", &a, fast_workers, 16), "matvec");
+                    pk(kcLaunchKernelChunked(w.m.q6 ? "matvec_q6k_q8" : "matvec_q4k_q8", &a, fast_workers, 16), "matvec");
                 } else {
                     const llm::MatmulKQ8Args a{w.pc, x.pc_q, pc_y[i], pc_md[i], w.m.rows, w.m.k, ncols, 8};
-                    pk(pcudaLaunchKernelChunked(mm[q8k][tile == 8][w.m.q6], &a, all_workers * 4, 16), "matmul");
+                    pk(kcLaunchKernelChunked(mm[q8k][tile == 8][w.m.q6], &a, all_workers * 4, 16), "matmul");
                 }
             }
         };
@@ -253,7 +253,7 @@ int main(int argc, char** argv) try {
             }
         };
 
-        run_pcuda();
+        run_kc();
         run_gpu();
         ck(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
 
@@ -262,14 +262,14 @@ int main(int argc, char** argv) try {
         size_t qbad = 0;
         for (auto& x : in) {
             const int  slot = q8k ? llm::scratchKInts(x.k / 256) : llm::scratchInts(x.nb), used = q8k ? slot : x.nb * 10;
-            const auto a = pcudaDownload(x.pc_q, size_t(slot) * ncols), b = gpuDownload(x.gp_q, size_t(slot) * ncols);
+            const auto a = kcDownload(x.pc_q, size_t(slot) * ncols), b = gpuDownload(x.gp_q, size_t(slot) * ncols);
             for (int c = 0; c < ncols; ++c)
                 for (int i = 0; i < used; ++i) qbad += a[size_t(c) * slot + i] != b[size_t(c) * slot + i];
         }
         Diff all;
         for (size_t i = 0; i < ws.size(); ++i) {
             const size_t n = size_t(ws[i].m.rows) * ncols;
-            const Diff d = compare(gpuDownload(gp_y[i], n), pcudaDownload(pc_y[i], n));
+            const Diff d = compare(gpuDownload(gp_y[i], n), kcDownload(pc_y[i], n));
             all.n += d.n, all.identical += d.identical, all.max_rel = std::max(all.max_rel, d.max_rel);
         }
         const bool good = qbad == 0 && all.max_rel < 1e-5;
@@ -285,7 +285,7 @@ int main(int argc, char** argv) try {
         ck(cudaEventCreate(&e1), "cudaEventCreate");
         for (int r = 0; r < reps; ++r) {
             const auto t = Clock::now();
-            run_pcuda();
+            run_kc();
             pc_ms = std::min(pc_ms, std::chrono::duration<double, std::milli>(Clock::now() - t).count());
             ck(cudaEventRecord(e0, nullptr), "cudaEventRecord");
             run_gpu();
@@ -302,19 +302,19 @@ int main(int argc, char** argv) try {
                     pc_ms / gp_ms);
 
         for (auto& x : in) {
-            pcudaFree(x.pc_x), pcudaFree(x.pc_q), pcudaFree(x.pc_dims);
+            kcFree(x.pc_x), kcFree(x.pc_q), kcFree(x.pc_dims);
             cudaFree(x.gp_x), cudaFree(x.gp_q), cudaFree(x.gp_dims);
         }
-        for (size_t i = 0; i < ws.size(); ++i) pcudaFree(pc_y[i]), pcudaFree(pc_md[i]), cudaFree(gp_y[i]), cudaFree(gp_md[i]);
+        for (size_t i = 0; i < ws.size(); ++i) kcFree(pc_y[i]), kcFree(pc_md[i]), cudaFree(gp_y[i]), cudaFree(gp_md[i]);
     }
     std::printf("\n");
     }
     std::printf("ms: one layer's 2 quantizations + 7 matmuls (%.1f MB of weights), best of %d.\n", weight_bytes / 1e6, reps);
     std::printf("tok/s: tokens / (28 layers x ms), matmuls only (no attention, norms or output layer).\n");
-    for (auto& w : ws) pcudaFree(w.pc), cudaFree(w.gp);
-    pcudaShutdown();
+    for (auto& w : ws) kcFree(w.pc), cudaFree(w.gp);
+    kcShutdown();
     return ok ? 0 : 1;
 } catch (const std::exception& e) {
-    std::fprintf(stderr, "pcuda_kquant_vs_cuda: %s\n", e.what());
+    std::fprintf(stderr, "kc_kquant_vs_cuda: %s\n", e.what());
     return 1;
 }

@@ -4,13 +4,13 @@
 #include <cstring>
 
 RuntimeFixture::RuntimeFixture() {
-    pcuda::Error e = pcudaInit();
-    if (e != pcuda::Error::Success) {
-        th::fail(__FILE__, __LINE__, "pcudaInit -> " + th::describe(e));
+    kc::Error e = kcInit();
+    if (e != kc::Error::Success) {
+        th::fail(__FILE__, __LINE__, "kcInit -> " + th::describe(e));
         return;
     }
     e = testkernels::registerAll();
-    if (e != pcuda::Error::Success) {
+    if (e != kc::Error::Success) {
         th::fail(__FILE__, __LINE__, "register test kernels -> " + th::describe(e));
         return;
     }
@@ -18,8 +18,8 @@ RuntimeFixture::RuntimeFixture() {
 }
 
 RuntimeFixture::~RuntimeFixture() {
-    const pcuda::Error e = pcudaShutdown();
-    if (e != pcuda::Error::Success) th::fail(__FILE__, __LINE__, "pcudaShutdown -> " + th::describe(e));
+    const kc::Error e = kcShutdown();
+    if (e != kc::Error::Success) th::fail(__FILE__, __LINE__, "kcShutdown -> " + th::describe(e));
 }
 
 int main(int argc, char** argv) {

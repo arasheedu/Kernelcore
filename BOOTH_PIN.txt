@@ -1,4 +1,4 @@
-Booth pin for pcuda (machine-readable copy: cmake/BoothPin.cmake)
+Booth pin for Kernelcore (machine-readable copy: cmake/BoothPin.cmake)
 
 version   : 0.6.1
 tag       : v0.6.1 (published 2026-10-26)
@@ -30,7 +30,7 @@ Facts verified against real kath 0.6.1 output on 2026-11-06 (Phase 0):
 
 Exact command lines:
   kath --cpu <file.cu> -o <file.o>
-  pcuda_objcheck <file.o> --kernel <name>
+  kc_objcheck <file.o> --kernel <name>
 
 Metal backend (--metal) and IR (--ir), used by the native/simd code paths (tools/mslgen.cpp):
   F13 --metal prints the optimized IR as structured C: three-address statements, while(true) loops
@@ -44,7 +44,7 @@ Metal backend (--metal) and IR (--ir), used by the native/simd code paths (tools
   F16 inline float ops in --cpu code: fmax(a,b) = maxss a,b (b on NaN or equality); sqrt = sqrtss.
                                                                                          verified (objdump)
   F17 --metal prints negative i32 constants as unsigned decimals (-127 -> 4294967169), which C++
-      reads as 64-bit values (x < 4294967169 is always true). pcuda_mslgen rewrites them.  verified (quantize_q8x4)
+      reads as 64-bit values (x < 4294967169 is always true). kc_mslgen rewrites them.  verified (quantize_q8x4)
   F18 --metal drops the fall-through copy of a phi for an `if` without `else`
       (`a = v; if (c) a = w;` prints only `if (c) { a = w; }`). The IR and --cpu code are right.
       Kernels use explicit else branches; MSVC's C4701 (kept as an error) flags any occurrence.
@@ -54,9 +54,9 @@ Metal backend (--metal) and IR (--ir), used by the native/simd code paths (tools
                                                                                          verified
   F20 #ifndef/#define/#endif guards work (two kernels can share a helper definition when nvcc
       sees them in one translation unit); an identity helper prints as `return p0;`.
-      A kernel takes at most 5 integer/pointer parameters (pcuda_mslgen rejects more).
+      A kernel takes at most 5 integer/pointer parameters (kc_mslgen rejects more).
                                                                                          verified (kv_append, attn_*)
 Exact command lines for the native paths:
   kath --metal <file.cu> -o <file.metal>
   kath --ir <file.cu> > <file.ir>
-  pcuda_mslgen --metal <file.metal> --ir <file.ir> --kernel <name> --native <n.cpp> --simd <s.cpp>
+  kc_mslgen --metal <file.metal> --ir <file.ir> --kernel <name> --native <n.cpp> --simd <s.cpp>

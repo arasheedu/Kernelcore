@@ -63,7 +63,7 @@ Config tinyConfig(Weights w);               // small shapes for correctness chec
 
 const char* weightsName(Weights w);
 
-// Memory placement for one backend: pcuda, CUDA or plain host memory.
+// Memory placement for one backend: Kernelcore, CUDA or plain host memory.
 class Allocator {
 public:
     virtual ~Allocator() = default;
@@ -83,9 +83,9 @@ private:
     std::vector<void*> blocks_;
 };
 
-class PcudaAllocator final : public Allocator {
+class KcAllocator final : public Allocator {
 public:
-    ~PcudaAllocator() override;
+    ~KcAllocator() override;
     void* alloc(size_t bytes) override;
     void  upload(void* dst, const void* src, size_t bytes) override;
     void  download(void* dst, const void* src, size_t bytes) override;
@@ -183,7 +183,7 @@ public:
     virtual void upload(float* dst, const float* host, int n) = 0;  // host floats -> backend memory
     virtual void finish() = 0;  // wait until queued work is done
     // Bracket one token's launches (decodeToken calls them). A backend may record the launches
-    // between them and run them as one batch (pcuda / CUDA graphs). `profiling`: per-op timing
+    // between them and run them as one batch (Kernelcore / CUDA graphs). `profiling`: per-op timing
     // is wanted, so run launches one by one.
     virtual void beginToken(bool profiling) { (void)profiling; }
     virtual void endToken() {}
@@ -194,16 +194,16 @@ public:
 // token: the input token for models with embeddings (Model::embed); otherwise a.x0 is used.
 void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* prof = nullptr, int token = -1);
 
-// Synchronous pcuda launches; the kernel code path follows pcudaSetKernelCodegen.
+// Synchronous Kernelcore launches; the kernel code path follows kcSetKernelCodegen.
 // workers == 0: one launch per kernel; workers > 0: matvec, attention, softmax and silu are
-// chunked (pcudaLaunchKernelChunked with that many workers).
-// graphs: run each token as one pcuda graph (pcudaStreamBeginCapture / pcudaGraphLaunch).
+// chunked (kcLaunchKernelChunked with that many workers).
+// graphs: run each token as one Kernelcore graph (kcStreamBeginCapture / kcGraphLaunch).
 // two_rows: Q4X8Q8 matvecs with rows % 16 == 0 use matvec_q4x8_q8x2 (two rows per thread). Off by
 // default: measured no faster on the CPU (memory is already saturated) or on CUDA.
-std::unique_ptr<Backend> makePcudaBackend(const Model& m, unsigned workers, bool graphs = true, bool two_rows = false);
+std::unique_ptr<Backend> makeKcBackend(const Model& m, unsigned workers, bool graphs = true, bool two_rows = false);
 
-// Plain C++ on host memory (single thread), reading the weights of a pcuda Model directly
-// (pcuda device memory is host memory).
+// Plain C++ on host memory (single thread), reading the weights of a Kernelcore Model directly
+// (Kernelcore device memory is host memory).
 std::unique_ptr<Backend> makeCppBackend(const Model& m);
 
 } // namespace llm

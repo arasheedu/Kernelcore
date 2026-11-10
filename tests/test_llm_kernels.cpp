@@ -1,4 +1,4 @@
-// LLM decode kernels (kernels/llm/*.cu) under pcuda: each against the plain C++ reference,
+// LLM decode kernels (kernels/llm/*.cu) under Kernelcore: each against the plain C++ reference,
 // chunked == serial, argument validation, and one full decode token of a tiny model.
 
 #include "harness.hpp"
@@ -16,8 +16,8 @@
 #include <thread>
 #include <vector>
 
-using pcuda::CopyKind;
-using pcuda::Error;
+using kc::CopyKind;
+using kc::Error;
 
 namespace {
 
@@ -30,15 +30,15 @@ struct LlmFixture {
 template <class T>
 T* devCopy(const std::vector<T>& h) {
     void* p = nullptr;
-    if (pcudaMalloc(&p, h.size() * sizeof(T)) != Error::Success) return nullptr;
-    if (pcudaMemcpy(p, h.data(), h.size() * sizeof(T), CopyKind::HostToDevice) != Error::Success) return nullptr;
+    if (kcMalloc(&p, h.size() * sizeof(T)) != Error::Success) return nullptr;
+    if (kcMemcpy(p, h.data(), h.size() * sizeof(T), CopyKind::HostToDevice) != Error::Success) return nullptr;
     return static_cast<T*>(p);
 }
 
 template <class T>
 std::vector<T> hostCopy(const T* d, size_t n) {
     std::vector<T> h(n);
-    if (pcudaMemcpy(h.data(), d, n * sizeof(T), CopyKind::DeviceToHost) != Error::Success) h.clear();
+    if (kcMemcpy(h.data(), d, n * sizeof(T), CopyKind::DeviceToHost) != Error::Success) h.clear();
     return h;
 }
 
@@ -92,15 +92,15 @@ TEST_CASE(matvec_q8_matches_reference_and_chunks) {
         llm::ref::matvecQ8(q.data(), s.data(), x.data(), ref.data(), rows, k);
 
         const llm::MatvecQ8Args a{dq, ds, dx, dy, dd, rows, k};
-        CHECK_OK(pcudaLaunchKernel("matvec_q8", &a));
+        CHECK_OK(kcLaunchKernel("matvec_q8", &a));
         const auto serial = hostCopy(dy, size_t(rows));
         CHECK(bitEqual(serial, ref));  // same loop order, no FMA: bit-exact
-        CHECK_OK(pcudaMemset(dy, 0xFF, size_t(rows) * 4));
-        CHECK_OK(pcudaLaunchKernelChunked("matvec_q8", &a, workers(), 64));
+        CHECK_OK(kcMemset(dy, 0xFF, size_t(rows) * 4));
+        CHECK_OK(kcLaunchKernelChunked("matvec_q8", &a, workers(), 64));
         CHECK(bitEqual(hostCopy(dy, size_t(rows)), serial));
         for (void* p : {static_cast<void*>(dq), static_cast<void*>(ds), static_cast<void*>(dx),
                         static_cast<void*>(dy), static_cast<void*>(dd)})
-            CHECK_OK(pcudaFree(p));
+            CHECK_OK(kcFree(p));
     }
 }
 
@@ -128,10 +128,10 @@ TEST_CASE(matvec_q4x8_matches_reference_and_q4) {
         auto* dd = devCopy(std::vector<int>{rows, k});
         REQUIRE(dq && ds && dx && dy && dd);
         const llm::MatvecQ4Args a{dq, ds, dx, dy, dd, rows, k};
-        CHECK_OK(pcudaLaunchKernel("matvec_q4x8", &a));
+        CHECK_OK(kcLaunchKernel("matvec_q4x8", &a));
         CHECK(bitEqual(hostCopy(dy, size_t(rows)), want8));
-        CHECK_OK(pcudaMemset(dy, 0xFF, size_t(rows) * 4));
-        CHECK_OK(pcudaLaunchKernelChunked("matvec_q4x8", &a, workers(), 8));
+        CHECK_OK(kcMemset(dy, 0xFF, size_t(rows) * 4));
+        CHECK_OK(kcLaunchKernelChunked("matvec_q4x8", &a, workers(), 8));
         CHECK(bitEqual(hostCopy(dy, size_t(rows)), want8));
     }
     // rows must be a multiple of 8
@@ -140,7 +140,7 @@ TEST_CASE(matvec_q4x8_matches_reference_and_q4) {
     auto* dims = devCopy(std::vector<int>{12, 32});
     REQUIRE(buf && q && dims);
     const llm::MatvecQ4Args bad{q, buf, buf, buf, dims, 12, 32};
-    CHECK_ERR(pcudaLaunchKernel("matvec_q4x8", &bad), Error::InvalidValue);
+    CHECK_ERR(kcLaunchKernel("matvec_q4x8", &bad), Error::InvalidValue);
 }
 
 // 8-bit activations + integer dot products: exact against the C++ reference, and within
@@ -174,24 +174,24 @@ TEST_CASE(matvec_q4x8_q8_matches_reference) {
         auto* dd = devCopy(std::vector<int>{rows, k});
         REQUIRE(dx && dqw && dxq && dxd && dy && dd);
         const llm::QuantizeArgs qa{dx, dxq, dxd, nb};
-        CHECK_OK(pcudaLaunchKernel("quantize_q8x4", &qa));
+        CHECK_OK(kcLaunchKernel("quantize_q8x4", &qa));
         CHECK(hostCopy(dxq, xq.size()) == xq);
         CHECK(bitEqual(hostCopy(dxd, xd.size()), xd));
         const llm::MatvecQ4Q8Args a{dqw, dxq, dxd, dy, dd, rows, k};
-        CHECK_OK(pcudaLaunchKernel("matvec_q4x8_q8", &a));
+        CHECK_OK(kcLaunchKernel("matvec_q4x8_q8", &a));
         CHECK(bitEqual(hostCopy(dy, size_t(rows)), want));
-        CHECK_OK(pcudaMemset(dy, 0xFF, size_t(rows) * 4));
-        CHECK_OK(pcudaLaunchKernelChunked("matvec_q4x8_q8", &a, workers(), 8));
+        CHECK_OK(kcMemset(dy, 0xFF, size_t(rows) * 4));
+        CHECK_OK(kcLaunchKernelChunked("matvec_q4x8_q8", &a, workers(), 8));
         CHECK(bitEqual(hostCopy(dy, size_t(rows)), want));
         if (rows % 16 == 0) {  // two rows per thread: the same bits
-            CHECK_OK(pcudaMemset(dy, 0xFF, size_t(rows) * 4));
-            CHECK_OK(pcudaLaunchKernel("matvec_q4x8_q8x2", &a));
+            CHECK_OK(kcMemset(dy, 0xFF, size_t(rows) * 4));
+            CHECK_OK(kcLaunchKernel("matvec_q4x8_q8x2", &a));
             CHECK(bitEqual(hostCopy(dy, size_t(rows)), want));
-            CHECK_OK(pcudaMemset(dy, 0xFF, size_t(rows) * 4));
-            CHECK_OK(pcudaLaunchKernelChunked("matvec_q4x8_q8x2", &a, workers(), 8));
+            CHECK_OK(kcMemset(dy, 0xFF, size_t(rows) * 4));
+            CHECK_OK(kcLaunchKernelChunked("matvec_q4x8_q8x2", &a, workers(), 8));
             CHECK(bitEqual(hostCopy(dy, size_t(rows)), want));
         } else {
-            CHECK_ERR(pcudaLaunchKernel("matvec_q4x8_q8x2", &a), Error::InvalidValue);
+            CHECK_ERR(kcLaunchKernel("matvec_q4x8_q8x2", &a), Error::InvalidValue);
         }
     }
 }
@@ -249,10 +249,10 @@ TEST_CASE(kquant_matvecs_match_reference_and_dequantized_floats) {
             REQUIRE(dqw && dxq && dxd && dy && dd);
             const char* kn = q6 ? "matvec_q6k_q8" : "matvec_q4k_q8";
             const llm::MatvecQ4Q8Args a{dqw, dxq, dxd, dy, dd, rows, k};
-            CHECK_OK(pcudaLaunchKernel(kn, &a));
+            CHECK_OK(kcLaunchKernel(kn, &a));
             CHECK(bitEqual(hostCopy(dy, size_t(rows)), want));
-            CHECK_OK(pcudaMemset(dy, 0xFF, size_t(rows) * 4));
-            CHECK_OK(pcudaLaunchKernelChunked(kn, &a, workers(), 8));
+            CHECK_OK(kcMemset(dy, 0xFF, size_t(rows) * 4));
+            CHECK_OK(kcLaunchKernelChunked(kn, &a, workers(), 8));
             CHECK(bitEqual(hostCopy(dy, size_t(rows)), want));
         }
     }
@@ -266,7 +266,7 @@ TEST_CASE(kquant_matvecs_match_reference_and_dequantized_floats) {
     auto* dff = devCopy(ff);
     REQUIRE(dx && dff);
     const llm::RopeFFArgs ra{dx, dff, pairs, 77, heads * pairs, std::log2(500000.0f)};
-    CHECK_OK(pcudaLaunchKernel("rope_ff", &ra));
+    CHECK_OK(kcLaunchKernel("rope_ff", &ra));
     CHECK(bitEqual(hostCopy(dx, x.size()), rx));
 }
 
@@ -313,7 +313,7 @@ TEST_CASE(kquant_matmuls_equal_per_column_matvecs) {
             auto* dqd = devCopy(std::vector<int>{nb, ncols});
             REQUIRE(dx && dq && dy && dqd);
             const llm::QuantizeColsArgs qa{dx, dq, dqd, k, ncols};
-            CHECK_OK(pcudaLaunchKernelChunked("quantize_cols", &qa, workers(), 8));
+            CHECK_OK(kcLaunchKernelChunked("quantize_cols", &qa, workers(), 8));
             const auto got = hostCopy(dq, scratch.size());
             bool same = true;  // words and {scale, sum}; the partial-sum floats are not written
             for (int c = 0; c < ncols; ++c)
@@ -324,15 +324,15 @@ TEST_CASE(kquant_matmuls_equal_per_column_matvecs) {
                 auto* dmd = devCopy(std::vector<int>{rows, k, ncols, rb});
                 REQUIRE(dmd);
                 const llm::MatmulKQ8Args a{dqw, dq, dy, dmd, rows, k, ncols, rb};
-                CHECK_OK(pcudaMemset(dy, 0xFF, want.size() * 4));
-                CHECK_OK(pcudaLaunchKernel(kn, &a));
+                CHECK_OK(kcMemset(dy, 0xFF, want.size() * 4));
+                CHECK_OK(kcLaunchKernel(kn, &a));
                 CHECK(bitEqual(hostCopy(dy, want.size()), want));
-                CHECK_OK(pcudaMemset(dy, 0xFF, want.size() * 4));
-                CHECK_OK(pcudaLaunchKernelChunked(kn, &a, workers(), 8));
+                CHECK_OK(kcMemset(dy, 0xFF, want.size() * 4));
+                CHECK_OK(kcLaunchKernelChunked(kn, &a, workers(), 8));
                 CHECK(bitEqual(hostCopy(dy, want.size()), want));
                 if (ncols > 1) {  // dims disagree with the arguments
                     const llm::MatmulKQ8Args bad{dqw, dq, dy, dmd, rows, k, ncols - 1, rb};
-                    CHECK_ERR(pcudaLaunchKernel(kn, &bad), Error::InvalidValue);
+                    CHECK_ERR(kcLaunchKernel(kn, &bad), Error::InvalidValue);
                 }
             }
         }
@@ -401,18 +401,18 @@ TEST_CASE(kquant_q8k_matmuls_match_reference) {
             auto* dqd = devCopy(std::vector<int>{nsb, ncols});
             REQUIRE(dx && dq && dy && dqd);
             const llm::QuantizeColsArgs qa{dx, dq, dqd, k, ncols};
-            CHECK_OK(pcudaLaunchKernelChunked("quantize_cols_k", &qa, workers(), 8));
+            CHECK_OK(kcLaunchKernelChunked("quantize_cols_k", &qa, workers(), 8));
             CHECK(hostCopy(dq, want_q.size()) == want_q);
             for (const char* kn : {q6 ? "matmul_q6k_q8kx4" : "matmul_q4k_q8kx4", q6 ? "matmul_q6k_q8kx8" : "matmul_q4k_q8kx8"})
                 for (int rb : {1, 3, 1000}) {
                     auto* dmd = devCopy(std::vector<int>{rows, k, ncols, rb});
                     REQUIRE(dmd);
                     const llm::MatmulKQ8Args a{dqw, dq, dy, dmd, rows, k, ncols, rb};
-                    CHECK_OK(pcudaMemset(dy, 0xFF, want.size() * 4));
-                    CHECK_OK(pcudaLaunchKernel(kn, &a));
+                    CHECK_OK(kcMemset(dy, 0xFF, want.size() * 4));
+                    CHECK_OK(kcLaunchKernel(kn, &a));
                     CHECK(bitEqual(hostCopy(dy, want.size()), want));
-                    CHECK_OK(pcudaMemset(dy, 0xFF, want.size() * 4));
-                    CHECK_OK(pcudaLaunchKernelChunked(kn, &a, workers(), 8));
+                    CHECK_OK(kcMemset(dy, 0xFF, want.size() * 4));
+                    CHECK_OK(kcLaunchKernelChunked(kn, &a, workers(), 8));
                     CHECK(bitEqual(hostCopy(dy, want.size()), want));
                 }
         }
@@ -430,10 +430,10 @@ TEST_CASE(ggml_op_kernels_match_reference) {
     auto *dx = devCopy(x), *dw = devCopy(w), *dy = devCopy(std::vector<float>(x.size(), 0.0f));
     REQUIRE(dx && dw && dy);
     const llm::MulRowsArgs ma{dx, dw, dy, n, n * rows};
-    CHECK_OK(pcudaLaunchKernel("mul_rows", &ma));
+    CHECK_OK(kcLaunchKernel("mul_rows", &ma));
     CHECK(bitEqual(hostCopy(dy, ry.size()), ry));
     const llm::MulRowsArgs bad{dx, dw, dy, 100, 300};  // n must be a multiple of 8
-    CHECK_ERR(pcudaLaunchKernel("mul_rows", &bad), Error::InvalidValue);
+    CHECK_ERR(kcLaunchKernel("mul_rows", &bad), Error::InvalidValue);
 
     const int hd = 128, nh = 6, nt = 3, pairs = hd / 2;
     const auto q = randomFloats(size_t(hd) * nh * nt, 73, -1, 1), ff = randomFloats(size_t(pairs), 74, 1.0f, 8.0f);
@@ -445,10 +445,10 @@ TEST_CASE(ggml_op_kernels_match_reference) {
         auto *dpos = devCopy(pos), *ddims = devCopy(std::vector<int>{pairs, nh, pairs * nt, neox ? 1 : 2, neox ? pairs : 1});
         REQUIRE(dq && dout && dff && dpos && ddims);
         const llm::RopeGgmlArgs ra{dq, dout, dpos, dff, ddims, hd, nh, nt, std::log2(500000.0f), neox};
-        CHECK_OK(pcudaLaunchKernel("rope_ggml", &ra));
+        CHECK_OK(kcLaunchKernel("rope_ggml", &ra));
         CHECK(bitEqual(hostCopy(dout, rq.size()), rq));
         const llm::RopeGgmlArgs wrong{dq, dout, dpos, dff, ddims, hd, nh, nt, std::log2(500000.0f), !neox};
-        CHECK_ERR(pcudaLaunchKernel("rope_ggml", &wrong), Error::InvalidValue);  // dims disagree with the mode
+        CHECK_ERR(kcLaunchKernel("rope_ggml", &wrong), Error::InvalidValue);  // dims disagree with the mode
     }
 }
 
@@ -475,7 +475,7 @@ TEST_CASE(ggml_fused_kernels_match_reference_and_chunk) {
         auto* dd = devCopy(std::vector<int>{n / 32, n, rows});
         REQUIRE(da && db && dw && dout && dy && dq && dd);
         auto run = [&](const char* k, const auto& args) {
-            return chunked ? pcudaLaunchKernelChunked(k, &args, workers(), 16) : pcudaLaunchKernel(k, &args);
+            return chunked ? kcLaunchKernelChunked(k, &args, workers(), 16) : kcLaunchKernel(k, &args);
         };
         CHECK_OK(run("add_sumsq_f", llm::AddSumsqFArgs{da, db, dout, dq, dd, n, rows}));
         CHECK_OK(run("norm_mul_q8_f", llm::NormMulQ8Args{dout, dw, dy, dq, dd, n, rows, 1e-5f}));
@@ -499,7 +499,7 @@ TEST_CASE(ggml_fused_kernels_match_reference_and_chunk) {
         auto* dd = devCopy(std::vector<int>{m, cols});
         REQUIRE(dg && du && dy && dq && dd);
         const llm::SiluMulQ8FArgs sa{dg, du, dy, dq, dd, m, cols};
-        CHECK_OK(chunked ? pcudaLaunchKernelChunked("silu_mul_q8x4f", &sa, workers(), 16) : pcudaLaunchKernel("silu_mul_q8x4f", &sa));
+        CHECK_OK(chunked ? kcLaunchKernelChunked("silu_mul_q8x4f", &sa, workers(), 16) : kcLaunchKernel("silu_mul_q8x4f", &sa));
         CHECK(bitEqual(hostCopy(dy, rs.size()), rs));
         CHECK(hostCopy(dq, rsq.size()) == rsq);
     }
@@ -523,7 +523,7 @@ TEST_CASE(ggml_fused_kernels_match_reference_and_chunk) {
             auto* ddk = devCopy(std::vector<int>{n / 256, n, kr, off});
             REQUIRE(da && db && dw && dout && dy && dq && dd && ddk);
             auto run = [&](const char* k, const auto& args) {
-                return chunked ? pcudaLaunchKernelChunked(k, &args, workers(), 8) : pcudaLaunchKernel(k, &args);
+                return chunked ? kcLaunchKernelChunked(k, &args, workers(), 8) : kcLaunchKernel(k, &args);
             };
             CHECK_OK(run("add_sumsq_f", llm::AddSumsqFArgs{da, db, dout, dq + off, dd, n, kr}));
             CHECK_OK(run("norm_mul_q8k_f", llm::NormMulQ8Args{dout, dw, dy, dq, ddk, n, kr, 1e-5f}));
@@ -556,7 +556,7 @@ TEST_CASE(fused_kernels_equal_unfused_sequences) {
     auto* dy = devCopy(std::vector<float>(size_t(n), 0.0f));
     REQUIRE(dx && dt && dw && dy);
     const llm::AddRmsNormArgs ar{dx, dt, dw, dy, n, 1e-5f};
-    CHECK_OK(pcudaLaunchKernel("add_rms_norm", &ar));
+    CHECK_OK(kcLaunchKernel("add_rms_norm", &ar));
     CHECK(bitEqual(hostCopy(dx, size_t(n)), rx));
     CHECK(bitEqual(hostCopy(dy, size_t(n)), ry));
 
@@ -573,11 +573,11 @@ TEST_CASE(fused_kernels_equal_unfused_sequences) {
     auto* dxd = devCopy(std::vector<float>(xd.size(), 0.0f));
     REQUIRE(dg && du && dxq && dxd);
     const llm::SiluMulQ8Args sq{dg, du, dxq, dxd, count};
-    CHECK_OK(pcudaLaunchKernel("silu_mul_q8x4", &sq));
+    CHECK_OK(kcLaunchKernel("silu_mul_q8x4", &sq));
     CHECK(hostCopy(dxq, xq.size()) == xq);
     CHECK(bitEqual(hostCopy(dxd, xd.size()), xd));
-    CHECK_OK(pcudaMemset(dxq, 0, xq.size() * 4));
-    CHECK_OK(pcudaLaunchKernelChunked("silu_mul_q8x4", &sq, workers(), 8));
+    CHECK_OK(kcMemset(dxq, 0, xq.size() * 4));
+    CHECK_OK(kcLaunchKernelChunked("silu_mul_q8x4", &sq, workers(), 8));
     CHECK(hostCopy(dxq, xq.size()) == xq);
 }
 
@@ -599,8 +599,8 @@ TEST_CASE(parallel_norm_quant_matches_reference_and_chunks) {
         REQUIRE(dx && dt && dw && dq);
         const llm::AddSumsqArgs s{dx, dt, dq, nb};
         const llm::NormQ8Args n{dx, dw, dq, nb, 1e-5f};
-        CHECK_OK(chunked ? pcudaLaunchKernelChunked("add_sumsq", &s, workers(), 16) : pcudaLaunchKernel("add_sumsq", &s));
-        CHECK_OK(chunked ? pcudaLaunchKernelChunked("norm_q8x4", &n, workers(), 16) : pcudaLaunchKernel("norm_q8x4", &n));
+        CHECK_OK(chunked ? kcLaunchKernelChunked("add_sumsq", &s, workers(), 16) : kcLaunchKernel("add_sumsq", &s));
+        CHECK_OK(chunked ? kcLaunchKernelChunked("norm_q8x4", &n, workers(), 16) : kcLaunchKernel("norm_q8x4", &n));
         CHECK(bitEqual(hostCopy(dx, rx.size()), rx));
         CHECK(hostCopy(dq, rq.size()) == rq);  // words, scales and partial sums, bit for bit
     }
@@ -646,16 +646,16 @@ TEST_CASE(attention_kernels_match_reference_and_chunk) {
     std::vector<float> rs(size_t(d.n_heads) * d.ctx_pad), ro(size_t(d.n_heads) * d.head_dim);
     llm::ref::attnScores(q.data(), k.data(), rs.data(), d, scale);
     const llm::AttnScoresArgs sa{dq, dk, dsc, dd, d, scale};
-    CHECK_OK(pcudaLaunchKernel("attn_scores", &sa));
+    CHECK_OK(kcLaunchKernel("attn_scores", &sa));
     const auto scores = hostCopy(dsc, rs.size());
     CHECK(bitEqual(valid(scores), valid(rs)));
-    CHECK_OK(pcudaMemset(dsc, 0xFF, rs.size() * 4));
-    CHECK_OK(pcudaLaunchKernelChunked("attn_scores", &sa, workers(), 64));
+    CHECK_OK(kcMemset(dsc, 0xFF, rs.size() * 4));
+    CHECK_OK(kcLaunchKernelChunked("attn_scores", &sa, workers(), 64));
     CHECK(bitEqual(valid(hostCopy(dsc, rs.size())), valid(scores)));
 
     llm::ref::softmax(rs.data(), d.ctx, d.ctx_pad, d.n_heads);
     const llm::SoftmaxArgs sm{dsc, d.ctx, d.ctx_pad, d.n_heads};
-    CHECK_OK(pcudaLaunchKernel("softmax", &sm));
+    CHECK_OK(kcLaunchKernel("softmax", &sm));
     const auto probs = hostCopy(dsc, rs.size());
     CHECK(relDiff(valid(probs), valid(rs)) < 1e-6);
     for (int h = 0; h < d.n_heads; ++h) {
@@ -666,11 +666,11 @@ TEST_CASE(attention_kernels_match_reference_and_chunk) {
 
     llm::ref::attnValues(probs.data(), v.data(), ro.data(), d);
     const llm::AttnValuesArgs va{dsc, dv, dout, dd, d};
-    CHECK_OK(pcudaLaunchKernel("attn_values", &va));
+    CHECK_OK(kcLaunchKernel("attn_values", &va));
     const auto out = hostCopy(dout, ro.size());
     CHECK(bitEqual(out, ro));
-    CHECK_OK(pcudaMemset(dout, 0xFF, ro.size() * 4));
-    CHECK_OK(pcudaLaunchKernelChunked("attn_values", &va, workers(), 64));
+    CHECK_OK(kcMemset(dout, 0xFF, ro.size() * 4));
+    CHECK_OK(kcLaunchKernelChunked("attn_values", &va, workers(), 64));
     CHECK(bitEqual(hostCopy(dout, ro.size()), out));
 }
 
@@ -698,7 +698,7 @@ TEST_CASE(set_rows_f16_matches_reference) {
         auto *di = devCopy(idxw), *dd = devCopy(std::vector<int>{pairs, rows, src_row, dst_row, dst_rows});
         REQUIRE(ds && dst && di && dd);
         const llm::SetRowsF16Args a{ds, di, dst, dd, pairs, rows, src_row, dst_row, dst_rows};
-        CHECK_OK(chunked ? pcudaLaunchKernelChunked("set_rows_f16", &a, workers(), 8) : pcudaLaunchKernel("set_rows_f16", &a));
+        CHECK_OK(chunked ? kcLaunchKernelChunked("set_rows_f16", &a, workers(), 8) : kcLaunchKernel("set_rows_f16", &a));
         CHECK(hostCopy(dst, refw.size()) == refw);
     }
     // f16ToF32(f32ToF16(x)) is within half an fp16 step of x.
@@ -730,7 +730,7 @@ TEST_CASE(matmul_f16_matches_reference) {
             auto* dd = devCopy(std::vector<int>{rows, k, ncols});
             REQUIRE(dw && dx && dy && dd);
             const llm::MatmulF16Args a{dw, dx, dy, dd, rows, k, ncols};
-            CHECK_OK(chunked ? pcudaLaunchKernelChunked("matmul_f16", &a, workers(), 8) : pcudaLaunchKernel("matmul_f16", &a));
+            CHECK_OK(chunked ? kcLaunchKernelChunked("matmul_f16", &a, workers(), 8) : kcLaunchKernel("matmul_f16", &a));
             CHECK(relDiff(hostCopy(dy, ref.size()), ref) < 1e-6);
         }
     }
@@ -779,7 +779,7 @@ TEST_CASE(flash_attention_kernels_match_reference) {
             auto* dd = devCopy(dims);
             REQUIRE(dq && ds && dk && dv && dm && dmx && dout && dd);
             auto run = [&](const char* name, const auto& a) {
-                return chunked ? pcudaLaunchKernelChunked(name, &a, workers(), 8) : pcudaLaunchKernel(name, &a);
+                return chunked ? kcLaunchKernelChunked(name, &a, workers(), 8) : kcLaunchKernel(name, &a);
             };
             CHECK_OK(run("fa_scores", llm::FaScoresArgs{dq, dk, dm, ds, dd, d, scale}));
             CHECK_OK(run("fa_max", llm::FaMaxArgs{ds, dmx, dd, d}));
@@ -805,14 +805,14 @@ TEST_CASE(kv_append_writes_transposed_k_and_row_major_v) {
     auto* dd = devCopy(std::vector<int>{d.n_heads, d.ctx, d.head_dim, d.kv_stride, d.group, d.ctx_pad, d.k_stride});
     REQUIRE(dk && dv && dkt && dvc && dd);
     const llm::KvAppendArgs a{dk, dv, dkt, dvc, dd, d};
-    CHECK_OK(pcudaLaunchKernel("kv_append", &a));
+    CHECK_OK(kcLaunchKernel("kv_append", &a));
     llm::ref::appendKv(k.data(), v.data(), kt.data(), vc.data(), n, d.k_stride, pos);
     CHECK(bitEqual(hostCopy(dkt, kt.size()), kt));
     CHECK(bitEqual(hostCopy(dvc, vc.size()), vc));
     llm::AttnDims big = d;  // context past the K cache rows
     big.ctx = 25, big.ctx_pad = 32;
     const llm::KvAppendArgs past{dk, dv, dkt, dvc, dd, big};
-    CHECK_ERR(pcudaLaunchKernel("kv_append", &past), Error::InvalidValue);
+    CHECK_ERR(kcLaunchKernel("kv_append", &past), Error::InvalidValue);
 }
 
 TEST_CASE(norm_rope_silu_match_reference) {
@@ -829,9 +829,9 @@ TEST_CASE(norm_rope_silu_match_reference) {
     std::vector<float> ry(x.size());
     llm::ref::rmsNorm(x.data(), w.data(), ry.data(), n, rows, 1e-5f);
     const llm::RmsNormArgs ra{dx, dw, dy, n, rows, 1e-5f};
-    CHECK_OK(pcudaLaunchKernel("rms_norm", &ra));
+    CHECK_OK(kcLaunchKernel("rms_norm", &ra));
     CHECK(relDiff(hostCopy(dy, x.size()), ry) < 1e-6);
-    CHECK_OK(pcudaLaunchKernelChunked("rms_norm", &ra, 2, 1));
+    CHECK_OK(kcLaunchKernelChunked("rms_norm", &ra, 2, 1));
     CHECK(relDiff(hostCopy(dy, x.size()), ry) < 1e-6);
 
     // rope: 3 heads of head_dim 128 at a large position. Booth lowers sin/cos arguments (F11),
@@ -843,7 +843,7 @@ TEST_CASE(norm_rope_silu_match_reference) {
     const float lb = std::log2(500000.0f);
     llm::ref::rope(rx.data(), pairs, pos, heads * pairs, lb);
     const llm::RopeArgs ro{drx, pairs, pos, heads * pairs, lb};
-    CHECK_OK(pcudaLaunchKernel("rope", &ro));
+    CHECK_OK(kcLaunchKernel("rope", &ro));
     CHECK(relDiff(hostCopy(drx, rx.size()), rx) < 1e-3);
 
     const int count = 5000;
@@ -856,9 +856,9 @@ TEST_CASE(norm_rope_silu_match_reference) {
     std::vector<float> rout(static_cast<size_t>(count));
     llm::ref::siluMul(g.data(), u.data(), rout.data(), count);
     const llm::SiluMulArgs sa{dg, du, dout, count};
-    CHECK_OK(pcudaLaunchKernel("silu_mul", &sa));
+    CHECK_OK(kcLaunchKernel("silu_mul", &sa));
     CHECK(bitEqual(hostCopy(dout, size_t(count)), rout));
-    CHECK_OK(pcudaLaunchKernelChunked("silu_mul", &sa, workers(), 64));
+    CHECK_OK(kcLaunchKernelChunked("silu_mul", &sa, workers(), 64));
     CHECK(bitEqual(hostCopy(dout, size_t(count)), rout));
 }
 
@@ -871,29 +871,29 @@ TEST_CASE(llm_argument_validation) {
     REQUIRE(buf && q && dims);
     // k must be a multiple of 32.
     llm::MatvecQ8Args a{q, buf, buf, buf, dims, 64, 31};
-    CHECK_ERR(pcudaLaunchKernel("matvec_q8", &a), Error::InvalidValue);
+    CHECK_ERR(kcLaunchKernel("matvec_q8", &a), Error::InvalidValue);
     // Device dims must agree with the validated sizes.
     a = {q, buf, buf, buf, dims, 32, 32};
-    CHECK_ERR(pcudaLaunchKernel("matvec_q8", &a), Error::InvalidValue);
+    CHECK_ERR(kcLaunchKernel("matvec_q8", &a), Error::InvalidValue);
     // Weight buffer too small for 128 rows.
     auto* dims128 = devCopy(std::vector<int>{128, 32});
     a = {q, buf, buf, buf, dims128, 128, 32};
-    CHECK_ERR(pcudaLaunchKernel("matvec_q8", &a), Error::InvalidPointer);
+    CHECK_ERR(kcLaunchKernel("matvec_q8", &a), Error::InvalidPointer);
     // Heads not divisible by the group size.
     const llm::AttnDims bad{5, 4, 32, 64, 2, 8, 4};
     const llm::AttnScoresArgs s{buf, buf, buf, dims, bad, 1.0f};
-    CHECK_ERR(pcudaLaunchKernel("attn_scores", &s), Error::InvalidValue);
+    CHECK_ERR(kcLaunchKernel("attn_scores", &s), Error::InvalidValue);
     // rope count must be whole heads.
     const llm::RopeArgs r{buf, 64, 0, 100, 1.0f};
-    CHECK_ERR(pcudaLaunchKernel("rope", &r), Error::InvalidValue);
+    CHECK_ERR(kcLaunchKernel("rope", &r), Error::InvalidValue);
 }
 
-TEST_CASE(tiny_decode_token_pcuda_vs_cpp) {
+TEST_CASE(tiny_decode_token_kc_vs_cpp) {
     LlmFixture fx;
     REQUIRE(fx.ok);
     for (llm::Weights w : {llm::Weights::Q8, llm::Weights::Q4, llm::Weights::Q4X8, llm::Weights::Q4X8Q8}) {
         const llm::Config cfg = llm::tinyConfig(w);
-        llm::PcudaAllocator pa;
+        llm::KcAllocator pa;
         llm::HostAllocator ha;
         std::vector<llm::Model> models;
         llm::buildModels(cfg, 42, {&pa}, models);
@@ -901,10 +901,10 @@ TEST_CASE(tiny_decode_token_pcuda_vs_cpp) {
         const llm::Acts ap = llm::allocActs(cfg, pa, 7);
         const llm::Acts ah = llm::allocActs(cfg, ha, 7);
 
-        auto serial = llm::makePcudaBackend(m, 0, false);
-        auto chunked = llm::makePcudaBackend(m, workers(), false);
-        auto graph = llm::makePcudaBackend(m, workers(), true);  // each token as one pcuda graph
-        auto two_rows = llm::makePcudaBackend(m, workers(), true, true);  // matvec_q4x8_q8x2 where rows % 16 == 0
+        auto serial = llm::makeKcBackend(m, 0, false);
+        auto chunked = llm::makeKcBackend(m, workers(), false);
+        auto graph = llm::makeKcBackend(m, workers(), true);  // each token as one Kernelcore graph
+        auto two_rows = llm::makeKcBackend(m, workers(), true, true);  // matvec_q4x8_q8x2 where rows % 16 == 0
         auto cpp = llm::makeCppBackend(m);
 
         // Same position each time: every run appends its K/V at slot 17, then attends over 0..17.

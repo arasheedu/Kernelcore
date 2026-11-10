@@ -1,6 +1,6 @@
 ; Booth IR
 
-func @pcuda_aligned8(i32 %0) __device__ {
+func @kc_aligned8(i32 %0) __device__ {
 entry:
     ret i32 %0  ; line 11
 }
@@ -8,7 +8,7 @@ entry:
 func @fa_exp(ptr<global, f32> %0, ptr<global, f32> %1, ptr<global, i32> %2, f32 %3) __global__ {
 entry:
     %4 = fptosi f32 %3 to i32  ; line 17
-    %5 = call i32 @pcuda_aligned8(%4)  ; line 17
+    %5 = call i32 @kc_aligned8(%4)  ; line 17
     %6 = block_id.x  ; line 17
     %7 = block_dim.x  ; line 17
     %8 = mul i32 %6, %7  ; line 17
@@ -17,7 +17,7 @@ entry:
     %11 = add i32 %9, %10  ; line 17
     %12 = gep ptr<global, i32>, %2, 4  ; line 18
     %13 = load i32, %12  ; line 18
-    %14 = call i32 @pcuda_aligned8(%13)  ; line 18
+    %14 = call i32 @kc_aligned8(%13)  ; line 18
     %15 = gep ptr<global, i32>, %2, 0  ; line 19
     %16 = load i32, %15  ; line 19
     %17 = gep ptr<global, i32>, %2, 9  ; line 19

@@ -1,17 +1,17 @@
-// pcuda_vs_cuda: runs the same kernel sources on pcuda (Booth --cpu code on this CPU) and on
+// kc_vs_cuda: runs the same kernel sources on Kernelcore (Booth --cpu code on this CPU) and on
 // the NVIDIA GPU (nvcc), compares the results and times both.
 //
-//   pcuda_vs_cuda           full table, 1K to 16M elements
-//   pcuda_vs_cuda --quick   table up to 1M elements
-//   pcuda_vs_cuda --check   correctness only, on small and awkward sizes; exit 1 on mismatch
+//   kc_vs_cuda           full table, 1K to 16M elements
+//   kc_vs_cuda --quick   table up to 1M elements
+//   kc_vs_cuda --check   correctness only, on small and awkward sizes; exit 1 on mismatch
 //
 // Exit code 77 means no usable CUDA device (ctest reports the check as skipped).
 
 #include "cuda_kernels.hpp"
 #include "test_kernels.hpp"
 
-#include <pcuda/api.hpp>
-#include <pcuda/kernels.hpp>
+#include <kernelcore/api.hpp>
+#include <kernelcore/kernels.hpp>
 
 #include <cuda_runtime_api.h>
 #include <intrin.h>
@@ -42,9 +42,9 @@ void ck(cudaError_t e, const char* what) {
     if (e != cudaSuccess) fail(std::string(what) + ": " + cudaGetErrorString(e));
 }
 
-void ck(pcuda::Error e, const char* what) {
-    if (e != pcuda::Error::Success)
-        fail(std::string(what) + ": " + pcudaGetErrorString(e) + " (" + pcudaGetLastErrorDetail() + ")");
+void ck(kc::Error e, const char* what) {
+    if (e != kc::Error::Success)
+        fail(std::string(what) + ": " + kcGetErrorString(e) + " (" + kcGetLastErrorDetail() + ")");
 }
 
 // ---- kernels under test -------------------------------------------------------
@@ -57,7 +57,7 @@ struct Spec {
     const char* formula;
     int         inputs;
     float       lo, hi;       // input range (keeps results away from zero, so ULP is meaningful)
-    int         max_ulp;      // allowed GPU vs pcuda difference
+    int         max_ulp;      // allowed GPU vs Kernelcore difference
     double      max_rel;      // allowed error of either side vs the double reference
 };
 
@@ -99,24 +99,24 @@ void cppKernel(Kind k, const float* __restrict a, const float* __restrict b, flo
 }
 
 // workers == 0: one synchronous launch on the calling thread; otherwise chunked over a pool.
-void pcudaRun(Kind k, const float* a, const float* b, float* out, int n, unsigned workers) {
+void kcRun(Kind k, const float* a, const float* b, float* out, int n, unsigned workers) {
     switch (k) {
     case Kind::VectorAdd: {
-        const pcuda::kernels::VectorAddArgs args{a, b, out, n};
-        ck(workers ? pcudaLaunchKernelChunked("vector_add", &args, workers) : pcudaLaunchKernel("vector_add", &args),
-           "pcuda vector_add");
+        const kc::kernels::VectorAddArgs args{a, b, out, n};
+        ck(workers ? kcLaunchKernelChunked("vector_add", &args, workers) : kcLaunchKernel("vector_add", &args),
+           "Kernelcore vector_add");
         break;
     }
     case Kind::ScaleAdd: {
         const testkernels::ScaleAddArgs args{a, out, kScale, kBias, n};
-        ck(workers ? pcudaLaunchKernelChunked("scale_add", &args, workers) : pcudaLaunchKernel("scale_add", &args),
-           "pcuda scale_add");
+        ck(workers ? kcLaunchKernelChunked("scale_add", &args, workers) : kcLaunchKernel("scale_add", &args),
+           "Kernelcore scale_add");
         break;
     }
     case Kind::TrigMix: {
         const testkernels::TrigMixArgs args{a, out, n};
-        ck(workers ? pcudaLaunchKernelChunked("trig_mix", &args, workers) : pcudaLaunchKernel("trig_mix", &args),
-           "pcuda trig_mix");
+        ck(workers ? kcLaunchKernelChunked("trig_mix", &args, workers) : kcLaunchKernel("trig_mix", &args),
+           "Kernelcore trig_mix");
         break;
     }
     }
@@ -136,31 +136,31 @@ struct Buffers {
     int    n = 0;
     float* h_in[2] = {};      // pinned host inputs (shared by every path)
     float* h_gpu = nullptr;   // pinned host copy of the GPU result
-    std::vector<float> h_pcuda, h_cpp;
-    float* p_in[2] = {};      // pcuda "device" memory
+    std::vector<float> h_kc, h_cpp;
+    float* p_in[2] = {};      // Kernelcore "device" memory
     float* p_out = nullptr;
     float* d_in[2] = {};      // CUDA device memory
     float* d_out = nullptr;
 
-    explicit Buffers(int count) : n(count), h_pcuda(size_t(count)), h_cpp(size_t(count)) {
+    explicit Buffers(int count) : n(count), h_kc(size_t(count)), h_cpp(size_t(count)) {
         const size_t bytes = size_t(n) * sizeof(float);
         for (int i = 0; i < 2; ++i) {
             ck(cudaMallocHost(reinterpret_cast<void**>(&h_in[i]), bytes), "cudaMallocHost");
-            ck(pcudaMalloc(reinterpret_cast<void**>(&p_in[i]), bytes), "pcudaMalloc");
+            ck(kcMalloc(reinterpret_cast<void**>(&p_in[i]), bytes), "kcMalloc");
             ck(cudaMalloc(reinterpret_cast<void**>(&d_in[i]), bytes), "cudaMalloc");
         }
         ck(cudaMallocHost(reinterpret_cast<void**>(&h_gpu), bytes), "cudaMallocHost");
-        ck(pcudaMalloc(reinterpret_cast<void**>(&p_out), bytes), "pcudaMalloc");
+        ck(kcMalloc(reinterpret_cast<void**>(&p_out), bytes), "kcMalloc");
         ck(cudaMalloc(reinterpret_cast<void**>(&d_out), bytes), "cudaMalloc");
     }
     ~Buffers() {
         for (int i = 0; i < 2; ++i) {
             cudaFreeHost(h_in[i]);
-            pcudaFree(p_in[i]);
+            kcFree(p_in[i]);
             cudaFree(d_in[i]);
         }
         cudaFreeHost(h_gpu);
-        pcudaFree(p_out);
+        kcFree(p_out);
         cudaFree(d_out);
     }
     Buffers(const Buffers&) = delete;
@@ -176,10 +176,10 @@ void fillInputs(const Spec& s, Buffers& b, unsigned seed) {
         for (int i = 0; i < b.n; ++i) b.h_in[j][i] = dist(rng);
 }
 
-// Copies inputs to both "devices" (pcuda inputs stay resident for the kernel-only timings).
+// Copies inputs to both "devices" (Kernelcore inputs stay resident for the kernel-only timings).
 void uploadInputs(const Spec& s, Buffers& b, cudaStream_t st) {
     for (int j = 0; j < s.inputs; ++j) {
-        ck(pcudaMemcpy(b.p_in[j], b.h_in[j], b.bytes(), pcuda::CopyKind::HostToDevice), "pcudaMemcpy H2D");
+        ck(kcMemcpy(b.p_in[j], b.h_in[j], b.bytes(), kc::CopyKind::HostToDevice), "kcMemcpy H2D");
         ck(cudaMemcpyAsync(b.d_in[j], b.h_in[j], b.bytes(), cudaMemcpyHostToDevice, st), "cudaMemcpy H2D");
     }
     ck(cudaStreamSynchronize(st), "cudaStreamSynchronize");
@@ -194,18 +194,18 @@ int64_t orderedBits(float f) {
 
 struct Accuracy {
     int64_t elements = 0;
-    int64_t differ = 0;        // GPU vs pcuda, bitwise
-    int64_t max_ulp = 0;       // GPU vs pcuda
-    double  rel_pcuda = 0.0;   // max relative error vs double reference
+    int64_t differ = 0;        // GPU vs Kernelcore, bitwise
+    int64_t max_ulp = 0;       // GPU vs Kernelcore
+    double  rel_kc = 0.0;   // max relative error vs double reference
     double  rel_gpu = 0.0;
     bool    nan = false;
 
     void add(const Spec& s, const Buffers& b) {
         for (int i = 0; i < b.n; ++i) {
-            const float p = b.h_pcuda[size_t(i)], g = b.h_gpu[i];
+            const float p = b.h_kc[size_t(i)], g = b.h_gpu[i];
             if (std::isnan(p) || std::isnan(g)) { nan = true; continue; }
             const double ref = reference(s.kind, b.h_in[0][i], b.h_in[1][i]);
-            rel_pcuda = std::max(rel_pcuda, std::abs((double(p) - ref) / ref));
+            rel_kc = std::max(rel_kc, std::abs((double(p) - ref) / ref));
             rel_gpu = std::max(rel_gpu, std::abs((double(g) - ref) / ref));
             if (std::bit_cast<uint32_t>(p) != std::bit_cast<uint32_t>(g)) {
                 ++differ;
@@ -218,22 +218,22 @@ struct Accuracy {
     // vector_add is exact on both sides: compare to the correctly rounded float sum.
     bool ok(const Spec& s) const {
         if (nan) return false;
-        if (s.kind == Kind::VectorAdd) return differ == 0 && rel_pcuda <= 6.0e-8 && rel_gpu <= 6.0e-8;
-        return max_ulp <= s.max_ulp && rel_pcuda <= s.max_rel && rel_gpu <= s.max_rel;
+        if (s.kind == Kind::VectorAdd) return differ == 0 && rel_kc <= 6.0e-8 && rel_gpu <= 6.0e-8;
+        return max_ulp <= s.max_ulp && rel_kc <= s.max_rel && rel_gpu <= s.max_rel;
     }
 };
 
-// Runs each path once and fills h_pcuda / h_gpu. Also checks serial == chunked on pcuda.
+// Runs each path once and fills h_kc / h_gpu. Also checks serial == chunked on Kernelcore.
 void runOnceAndCollect(const Spec& s, Buffers& b, unsigned workers, cudaStream_t st, bool* chunk_mismatch) {
-    ck(pcudaMemset(b.p_out, 0xFF, b.bytes()), "pcudaMemset");
-    pcudaRun(s.kind, b.p_in[0], b.p_in[1], b.p_out, b.n, 0);
+    ck(kcMemset(b.p_out, 0xFF, b.bytes()), "kcMemset");
+    kcRun(s.kind, b.p_in[0], b.p_in[1], b.p_out, b.n, 0);
     std::vector<float> serial(size_t(b.n));
-    ck(pcudaMemcpy(serial.data(), b.p_out, b.bytes(), pcuda::CopyKind::DeviceToHost), "pcudaMemcpy D2H");
+    ck(kcMemcpy(serial.data(), b.p_out, b.bytes(), kc::CopyKind::DeviceToHost), "kcMemcpy D2H");
 
-    ck(pcudaMemset(b.p_out, 0xFF, b.bytes()), "pcudaMemset");
-    pcudaRun(s.kind, b.p_in[0], b.p_in[1], b.p_out, b.n, workers);
-    ck(pcudaMemcpy(b.h_pcuda.data(), b.p_out, b.bytes(), pcuda::CopyKind::DeviceToHost), "pcudaMemcpy D2H");
-    *chunk_mismatch = std::memcmp(serial.data(), b.h_pcuda.data(), b.bytes()) != 0;
+    ck(kcMemset(b.p_out, 0xFF, b.bytes()), "kcMemset");
+    kcRun(s.kind, b.p_in[0], b.p_in[1], b.p_out, b.n, workers);
+    ck(kcMemcpy(b.h_kc.data(), b.p_out, b.bytes(), kc::CopyKind::DeviceToHost), "kcMemcpy D2H");
+    *chunk_mismatch = std::memcmp(serial.data(), b.h_kc.data(), b.bytes()) != 0;
 
     ck(cudaMemsetAsync(b.d_out, 0xFF, b.bytes(), st), "cudaMemset");
     gpuLaunch(s.kind, b.d_in[0], b.d_in[1], b.d_out, b.n, st);
@@ -277,22 +277,22 @@ void gpuWarmUp(const Spec& s, Buffers& b, cudaStream_t st) {
 }
 
 struct Timings {
-    double cpp, pcuda1, pcudaN, pcudaCopies, cudaKernel, cudaCopies;
+    double cpp, kc1, kcN, kcCopies, cudaKernel, cudaCopies;
 };
 
 Timings timeAll(const Spec& s, Buffers& b, unsigned workers, cudaStream_t st, cudaEvent_t e0, cudaEvent_t e1) {
     Timings t{};
     const int n = b.n;
     t.cpp = median([&] { return hostMicros([&] { cppKernel(s.kind, b.h_in[0], b.h_in[1], b.h_cpp.data(), n); }); });
-    t.pcuda1 = median([&] { return hostMicros([&] { pcudaRun(s.kind, b.p_in[0], b.p_in[1], b.p_out, n, 0); }); });
-    t.pcudaN = median([&] { return hostMicros([&] { pcudaRun(s.kind, b.p_in[0], b.p_in[1], b.p_out, n, workers); }); });
+    t.kc1 = median([&] { return hostMicros([&] { kcRun(s.kind, b.p_in[0], b.p_in[1], b.p_out, n, 0); }); });
+    t.kcN = median([&] { return hostMicros([&] { kcRun(s.kind, b.p_in[0], b.p_in[1], b.p_out, n, workers); }); });
     // The same program shape a CUDA port runs: copy in, launch, copy out.
-    t.pcudaCopies = median([&] {
+    t.kcCopies = median([&] {
         return hostMicros([&] {
             for (int j = 0; j < s.inputs; ++j)
-                ck(pcudaMemcpy(b.p_in[j], b.h_in[j], b.bytes(), pcuda::CopyKind::HostToDevice), "pcudaMemcpy");
-            pcudaRun(s.kind, b.p_in[0], b.p_in[1], b.p_out, n, workers);
-            ck(pcudaMemcpy(b.h_pcuda.data(), b.p_out, b.bytes(), pcuda::CopyKind::DeviceToHost), "pcudaMemcpy");
+                ck(kcMemcpy(b.p_in[j], b.h_in[j], b.bytes(), kc::CopyKind::HostToDevice), "kcMemcpy");
+            kcRun(s.kind, b.p_in[0], b.p_in[1], b.p_out, n, workers);
+            ck(kcMemcpy(b.h_kc.data(), b.p_out, b.bytes(), kc::CopyKind::DeviceToHost), "kcMemcpy");
         });
     });
     // The GPU drops to idle clocks while the CPU measurements run (seconds at 16M elements),
@@ -358,11 +358,11 @@ std::string fmtCount(int n) {
 }
 
 void printAccuracy(const Spec& s, const Accuracy& a, bool chunk_mismatch) {
-    std::printf("  accuracy over %lld elements: GPU vs pcuda %lld differ (max %lld ULP); "
-                "max relative error vs double: pcuda %.2e, GPU %.2e%s%s\n",
+    std::printf("  accuracy over %lld elements: GPU vs Kernelcore %lld differ (max %lld ULP); "
+                "max relative error vs double: Kernelcore %.2e, GPU %.2e%s%s\n",
                 static_cast<long long>(a.elements), static_cast<long long>(a.differ),
-                static_cast<long long>(a.max_ulp), a.rel_pcuda, a.rel_gpu, a.nan ? "; NaN seen" : "",
-                chunk_mismatch ? "; pcuda chunked != serial" : "");
+                static_cast<long long>(a.max_ulp), a.rel_kc, a.rel_gpu, a.nan ? "; NaN seen" : "",
+                chunk_mismatch ? "; Kernelcore chunked != serial" : "");
     std::printf("  %s\n", a.ok(s) && !chunk_mismatch ? "PASS" : "FAIL");
 }
 
@@ -371,16 +371,16 @@ int launchOverhead(cudaStream_t st, unsigned workers) {
     const Spec& s = kSpecs[0];
     fillInputs(s, b, 1);
     uploadInputs(s, b, st);
-    const double p1 = median([&] { return hostMicros([&] { pcudaRun(s.kind, b.p_in[0], b.p_in[1], b.p_out, 1, 0); }); });
+    const double p1 = median([&] { return hostMicros([&] { kcRun(s.kind, b.p_in[0], b.p_in[1], b.p_out, 1, 0); }); });
     const double pN =
-        median([&] { return hostMicros([&] { pcudaRun(s.kind, b.p_in[0], b.p_in[1], b.p_out, 1, workers); }); });
+        median([&] { return hostMicros([&] { kcRun(s.kind, b.p_in[0], b.p_in[1], b.p_out, 1, workers); }); });
     const double g = median([&] {
         return hostMicros([&] {
             gpuLaunch(s.kind, b.d_in[0], b.d_in[1], b.d_out, 1, st);
             ck(cudaStreamSynchronize(st), "cudaStreamSynchronize");
         });
     });
-    std::printf("\nLaunch overhead (1 element, launch and wait): pcuda %s, pcuda chunked %s, CUDA %s\n",
+    std::printf("\nLaunch overhead (1 element, launch and wait): Kernelcore %s, Kernelcore chunked %s, CUDA %s\n",
                 fmtTime(p1).c_str(), fmtTime(pN).c_str(), fmtTime(g).c_str());
     return 0;
 }
@@ -391,14 +391,14 @@ int run(int argc, char** argv) {
         if (!std::strcmp(argv[i], "--check")) check = true;
         else if (!std::strcmp(argv[i], "--quick")) quick = true;
         else {
-            std::fprintf(stderr, "usage: pcuda_vs_cuda [--check | --quick]\n");
+            std::fprintf(stderr, "usage: kc_vs_cuda [--check | --quick]\n");
             return 2;
         }
     }
 
     int devices = 0;
     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) {
-        std::printf("pcuda_vs_cuda: no usable CUDA device (%s); skipping\n", cudaGetErrorString(cudaGetLastError()));
+        std::printf("kc_vs_cuda: no usable CUDA device (%s); skipping\n", cudaGetErrorString(cudaGetLastError()));
         return 77;
     }
     ck(cudaSetDevice(0), "cudaSetDevice");
@@ -408,16 +408,16 @@ int run(int argc, char** argv) {
     cudaDriverGetVersion(&drv);
     cudaRuntimeGetVersion(&rt);
 
-    ck(pcudaInit(), "pcudaInit");
+    ck(kcInit(), "kcInit");
     ck(testkernels::registerAll(), "register test kernels");
     const unsigned workers = std::max(1u, std::thread::hardware_concurrency());
 
     std::printf("GPU : %s, compute %d.%d, %d SMs, %zu MiB (driver %d.%d, runtime %d.%d)\n", prop.name, prop.major,
                 prop.minor, prop.multiProcessorCount, prop.totalGlobalMem >> 20, drv / 1000, (drv % 1000) / 10,
                 rt / 1000, (rt % 1000) / 10);
-    std::printf("CPU : %s, %u logical processors (pcuda chunked launches use all of them)\n", cpuName().c_str(),
+    std::printf("CPU : %s, %u logical processors (Kernelcore chunked launches use all of them)\n", cpuName().c_str(),
                 workers);
-    std::printf("Same .cu source: Booth kath --cpu for pcuda, nvcc for the GPU.\n");
+    std::printf("Same .cu source: Booth kath --cpu for Kernelcore, nvcc for the GPU.\n");
 
     cudaStream_t st{};
     cudaEvent_t e0{}, e1{};
@@ -437,8 +437,8 @@ int run(int argc, char** argv) {
     for (const Spec& s : kSpecs) {
         std::printf("\n%s: %s\n", s.name, s.formula);
         if (!check)
-            std::printf("  %9s %10s %10s %10s %13s %12s %13s %9s %9s\n", "elements", "C++ /O2", "pcuda 1T",
-                        ("pcuda " + std::to_string(workers) + "T").c_str(), "pcuda+copies", "CUDA kernel",
+            std::printf("  %9s %10s %10s %10s %13s %12s %13s %9s %9s\n", "elements", "C++ /O2", "KC 1T",
+                        ("KC " + std::to_string(workers) + "T").c_str(), "KC+copies", "CUDA kernel",
                         "CUDA+copies", "kernel", "end2end");
         Accuracy acc;
         bool chunk_mismatch = false;
@@ -453,10 +453,10 @@ int run(int argc, char** argv) {
             if (check) continue;
             const Timings t = timeAll(s, b, workers, st, e0, e1);
             std::printf("  %9s %10s %10s %10s %13s %12s %13s %9s %9s\n", fmtCount(n).c_str(), fmtTime(t.cpp).c_str(),
-                        fmtTime(t.pcuda1).c_str(), fmtTime(t.pcudaN).c_str(), fmtTime(t.pcudaCopies).c_str(),
+                        fmtTime(t.kc1).c_str(), fmtTime(t.kcN).c_str(), fmtTime(t.kcCopies).c_str(),
                         fmtTime(t.cudaKernel).c_str(), fmtTime(t.cudaCopies).c_str(),
-                        fmtRatio(std::min(t.pcuda1, t.pcudaN) / t.cudaKernel).c_str(),
-                        fmtRatio(t.pcudaCopies / t.cudaCopies).c_str());
+                        fmtRatio(std::min(t.kc1, t.kcN) / t.cudaKernel).c_str(),
+                        fmtRatio(t.kcCopies / t.cudaCopies).c_str());
             std::fflush(stdout);
         }
         printAccuracy(s, acc, chunk_mismatch);
@@ -465,15 +465,15 @@ int run(int argc, char** argv) {
 
     if (!check) {
         launchOverhead(st, workers);
-        std::printf("\nkernel  = best pcuda (1T or %uT) / CUDA kernel time (cudaEvent).\n"
-                    "end2end = pcuda+copies / CUDA+copies (copy inputs in, launch, copy result out; pinned host memory).\n",
+        std::printf("\nkernel  = best Kernelcore (1T or %uT) / CUDA kernel time (cudaEvent).\n"
+                    "end2end = Kernelcore+copies / CUDA+copies (copy inputs in, launch, copy result out; pinned host memory).\n",
                     workers);
     }
 
     cudaEventDestroy(e0);
     cudaEventDestroy(e1);
     cudaStreamDestroy(st);
-    pcudaShutdown();
+    kcShutdown();
     std::printf("\n%s\n", all_ok ? "ALL PASS" : "SOME CHECKS FAILED");
     return all_ok ? 0 : 1;
 }
@@ -484,7 +484,7 @@ int main(int argc, char** argv) {
     try {
         return run(argc, argv);
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "pcuda_vs_cuda: %s\n", e.what());
+        std::fprintf(stderr, "kc_vs_cuda: %s\n", e.what());
         return 1;
     }
 }

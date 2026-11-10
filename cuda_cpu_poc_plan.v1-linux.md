@@ -46,7 +46,7 @@ Do **not** make the POC depend on PantheonSim's internal code or pretend to impl
 
 ### Consequence for scope
 
-The first POC is a **CUDA-inspired source/runtime subset**, not a drop-in `libcudart` replacement. Use project-prefixed APIs such as `pcudaMalloc` and `pcudaLaunchKernel` to avoid collisions with NVIDIA's actual CUDA headers and libraries.
+The first POC is a **CUDA-inspired source/runtime subset**, not a drop-in `libcudart` replacement. Use project-prefixed APIs such as `kcMalloc` and `kcLaunchKernel` to avoid collisions with NVIDIA's actual CUDA headers and libraries.
 
 ## 3. Non-goals for POC 0.1
 
@@ -83,7 +83,7 @@ The POC host program will call a typed kernel wrapper. Kernel compilation happen
 |             POC Host Application                 |
 |                                                  |
 |  typed kernel adapter / KernelRegistry           |
-|  POC runtime API (pcuda*)                        |
+|  POC runtime API (Kernelcore*)                        |
 +--------------------------+-----------------------+
                            |
                            v
@@ -129,7 +129,7 @@ cuda-cpu-poc/
 │   └── BoothKernel.cmake
 ├── kernels/
 │   └── vector_add.cu
-├── include/pcuda/
+├── include/kernelcore/
 │   ├── api.hpp
 │   ├── types.hpp
 │   ├── backend.hpp
@@ -162,7 +162,7 @@ cuda-cpu-poc/
 Use a project-specific namespace and names. The API should look familiar to CUDA developers without claiming binary/source compatibility with CUDA Runtime API.
 
 ```cpp
-namespace pcuda {
+namespace kc {
 
 enum class Error {
     Success,
@@ -250,7 +250,7 @@ extern "C" void vector_add(
     int count,
     int nthreads);
 
-namespace pcuda::kernels {
+namespace kc::kernels {
 void launchVectorAddCpu(
     const float* a,
     const float* b,
@@ -284,12 +284,12 @@ class IBackend {
 public:
     virtual ~IBackend() = default;
     virtual const char* name() const noexcept = 0;
-    virtual pcuda::Error allocate(void** ptr, size_t bytes) = 0;
-    virtual pcuda::Error release(void* ptr) = 0;
-    virtual pcuda::Error copy(
+    virtual kc::Error allocate(void** ptr, size_t bytes) = 0;
+    virtual kc::Error release(void* ptr) = 0;
+    virtual kc::Error copy(
         void* dst, const void* src, size_t bytes,
-        pcuda::CopyKind kind) = 0;
-    virtual pcuda::Error synchronize() = 0;
+        kc::CopyKind kind) = 0;
+    virtual kc::Error synchronize() = 0;
 };
 ```
 
@@ -397,7 +397,7 @@ The chunked experiment should use a second explicit kernel/adapter if the simple
 
 ### Phase 3 — End-to-end runtime launch (2–3 days)
 
-- Implement `pcudaLaunchVectorAdd` using the typed adapter.
+- Implement `kcLaunchVectorAdd` using the typed adapter.
 - Validate device selection and pointer ownership before launch.
 - Track launch errors and synchronization state.
 - Add an end-to-end test: allocate → H2D copy → launch → synchronize → D2H copy → compare.
@@ -454,7 +454,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 
 # 4. Run the POC.
-./build/pcuda_poc
+./build/kc_poc
 
 # 5. Run tests.
 ctest --test-dir build --output-on-failure

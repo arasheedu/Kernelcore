@@ -1,13 +1,13 @@
 <#
 .SYNOPSIS
-  Real-model check: Ollama's llama3.2 (Llama 3.2 3B Instruct, Q4_K_M GGUF) run through pcuda's CUDA C
+  Real-model check: Ollama's llama3.2 (Llama 3.2 3B Instruct, Q4_K_M GGUF) run through Kernelcore's CUDA C
   kernels on the CPU, compared with llama.cpp on the same file.
 
   1. Finds the model blob in Ollama's store (no copy).
   2. Starts llama.cpp's llama-server on the CPU, tokenizes the prompt and generates -Tokens tokens
      greedily with the top-5 log-probabilities of every step (the reference).
   3. Times Ollama on the CPU on the same prompt (raw, greedy) for the speed comparison.
-  4. Runs pcuda_llm_real: bit-exactness against its C++ mirror, teacher forcing on llama.cpp's tokens,
+  4. Runs kc_llm_real: bit-exactness against its C++ mirror, teacher forcing on llama.cpp's tokens,
      and a timed greedy free run.
 
 .EXAMPLE
@@ -26,8 +26,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-if (-not $Bench) { $Bench = Join-Path $root 'build\windows-msvc-nvidia\pcuda_llm_real.exe' }
-if (-not (Test-Path $Bench)) { $Bench = Join-Path $root 'build\windows-msvc\pcuda_llm_real.exe' }
+if (-not $Bench) { $Bench = Join-Path $root 'build\windows-msvc-nvidia\kc_llm_real.exe' }
+if (-not (Test-Path $Bench)) { $Bench = Join-Path $root 'build\windows-msvc\kc_llm_real.exe' }
 
 # 1. The GGUF file inside Ollama's model store.
 $models = if ($env:OLLAMA_MODELS) { $env:OLLAMA_MODELS } else { Join-Path $env:USERPROFILE '.ollama\models' }
@@ -39,10 +39,10 @@ $gguf = Join-Path $models ("blobs\" + $digest.Replace(':', '-'))
 Write-Host "Model file: $gguf"
 
 # 2. llama.cpp reference (CPU).
-$ref = Join-Path $env:TEMP 'pcuda_real_ref.txt'
+$ref = Join-Path $env:TEMP 'kc_real_ref.txt'
 $server = Start-Process -FilePath $LlamaServer -PassThru -WindowStyle Hidden `
     -ArgumentList @('-m', $gguf, '--port', "$Port", '-ngl', '0', '-c', '4096', '--no-webui') `
-    -RedirectStandardError (Join-Path $env:TEMP 'pcuda_real_server.txt') -RedirectStandardOutput (Join-Path $env:TEMP 'pcuda_real_server_out.txt')
+    -RedirectStandardError (Join-Path $env:TEMP 'kc_real_server.txt') -RedirectStandardOutput (Join-Path $env:TEMP 'kc_real_server_out.txt')
 try {
     $ok = $false
     for ($i = 0; $i -lt 120 -and -not $ok; $i++) {
@@ -78,7 +78,7 @@ for ($i = 0; $i -lt 60; $i++) {  # let Ollama unload and the CPU cool down
 }
 Start-Sleep -Seconds 15
 
-# 4. pcuda.
+# 4. Kernelcore.
 Write-Host ""
 $out = & $Bench --gguf $gguf --ref $ref
 $out | Where-Object { $_ -notmatch '^RESULT' } | ForEach-Object { Write-Host $_ }
@@ -87,7 +87,7 @@ $r = (($out | Where-Object { $_ -match '^RESULT_REAL,' }) -split ',')
 if ($r.Count -ge 11) {
     Write-Host ""
     Write-Host ("Decode speed on the real model (Llama 3.2 3B Q4_K_M, {0} GB/token):" -f $r[10])
-    [pscustomobject]@{ Run = 'pcuda (CUDA C kernels, simd path)'; 'tok/s' = [math]::Round([double]$r[9], 2); 'ms/token' = [math]::Round([double]$r[8], 1) },
+    [pscustomobject]@{ Run = 'Kernelcore (CUDA C kernels, simd path)'; 'tok/s' = [math]::Round([double]$r[9], 2); 'ms/token' = [math]::Round([double]$r[8], 1) },
     [pscustomobject]@{ Run = 'Ollama (llama.cpp), CPU only'; 'tok/s' = [math]::Round($ollamaTps, 2); 'ms/token' = [math]::Round(1000 / $ollamaTps, 1) } |
         Format-Table -AutoSize | Out-String -Width 200 | Write-Host
 }

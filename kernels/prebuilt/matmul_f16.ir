@@ -1,11 +1,11 @@
 ; Booth IR
 
-func @pcuda_aligned8(i32 %0) __device__ {
+func @kc_aligned8(i32 %0) __device__ {
 entry:
     ret i32 %0  ; line 17
 }
 
-func @pcuda_h2f(i32 %0) __device__ {
+func @kc_h2f(i32 %0) __device__ {
 entry:
     %1 = ashr i32 %0, 10  ; line 29
     %2 = and i32 %1, 31  ; line 29
@@ -61,7 +61,7 @@ entry:
 func @matmul_f16(ptr<global, i32> %0, ptr<global, f32> %1, ptr<global, f32> %2, ptr<global, i32> %3, f32 %4) __global__ {
 entry:
     %5 = fptosi f32 %4 to i32  ; line 42
-    %6 = call i32 @pcuda_aligned8(%5)  ; line 42
+    %6 = call i32 @kc_aligned8(%5)  ; line 42
     %7 = block_id.x  ; line 42
     %8 = block_dim.x  ; line 42
     %9 = mul i32 %7, %8  ; line 42
@@ -70,7 +70,7 @@ entry:
     %12 = add i32 %10, %11  ; line 42
     %13 = gep ptr<global, i32>, %3, 0  ; line 43
     %14 = load i32, %13  ; line 43
-    %15 = call i32 @pcuda_aligned8(%14)  ; line 43
+    %15 = call i32 @kc_aligned8(%14)  ; line 43
     %16 = gep ptr<global, i32>, %3, 1  ; line 44
     %17 = load i32, %16  ; line 44
     %18 = gep ptr<global, i32>, %3, 2  ; line 45
@@ -129,10 +129,10 @@ for.body:
     %63 = gep ptr<global, i32>, %0, %62  ; line 67
     %64 = load i32, %63  ; line 67
     %65 = and i32 %64, 65535  ; line 68
-    %66 = call f32 @pcuda_h2f(%65)  ; line 68
+    %66 = call f32 @kc_h2f(%65)  ; line 68
     %67 = ashr i32 %64, 16  ; line 69
     %68 = and i32 %67, 65535  ; line 69
-    %69 = call f32 @pcuda_h2f(%68)  ; line 69
+    %69 = call f32 @kc_h2f(%68)  ; line 69
     %70 = mul i32 2, %58  ; line 70
     %71 = add i32 %48, %70  ; line 70
     %72 = gep ptr<global, f32>, %1, %71  ; line 70

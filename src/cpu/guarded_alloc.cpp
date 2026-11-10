@@ -6,7 +6,7 @@
 #include <cstring>
 #include <limits>
 
-namespace pcuda::cpu {
+namespace kc::cpu {
 namespace {
 
 bool roundUp(size_t v, size_t a, size_t& r) noexcept {
@@ -125,4 +125,4 @@ void releaseBlock(const HostBlock& b) noexcept {
     }
 }
 
-} // namespace pcuda::cpu
+} // namespace kc::cpu

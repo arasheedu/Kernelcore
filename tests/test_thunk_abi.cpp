@@ -10,13 +10,13 @@
 #include <cstdint>
 #include <thread>
 
-using pcuda::ArgPacker;
-using pcuda::Error;
-using pcuda::LaunchArgs;
-using pcuda::cpu::KernelScope;
+using kc::ArgPacker;
+using kc::Error;
+using kc::LaunchArgs;
+using kc::cpu::KernelScope;
 
 extern "C" {
-uint64_t pcuda_test_check_preserved(const void* entry, const uint64_t* gpr6, const uint64_t* xmm8, void** anchor);
+uint64_t kc_test_check_preserved(const void* entry, const uint64_t* gpr6, const uint64_t* xmm8, void** anchor);
 void sysv_echo_clobber();
 void sysv_fault_read();
 void sysv_div0();
@@ -26,8 +26,8 @@ void sysv_recurse();
 namespace {
 
 struct GuardRef {
-    GuardRef() { pcuda::cpu::acquireFaultGuard(); }
-    ~GuardRef() { pcuda::cpu::releaseFaultGuard(); }
+    GuardRef() { kc::cpu::acquireFaultGuard(); }
+    ~GuardRef() { kc::cpu::releaseFaultGuard(); }
 };
 
 constexpr const char* kRegNames[] = {"rbx", "rbp", "rdi", "rsi", "r12", "r13", "r14", "r15",
@@ -51,7 +51,7 @@ TEST_CASE(arguments_and_alignment_reach_sysv_code) {
     uint64_t r;
     {
         KernelScope scope("echo", nullptr, 0);
-        r = pcuda_test_check_preserved(reinterpret_cast<const void*>(&sysv_echo_clobber), gpr, xmm, scope.anchorSlot());
+        r = kc_test_check_preserved(reinterpret_cast<const void*>(&sysv_echo_clobber), gpr, xmm, scope.anchorSlot());
         CHECK(!scope.faulted());
     }
     CHECK((r & 0xFF) == 0);  // normal return
@@ -67,15 +67,15 @@ TEST_CASE(recovery_path_restores_registers_after_access_violation) {
     const uint64_t xmm[8] = {};
     for (int round = 0; round < 100; ++round) {
         uint64_t r;
-        pcuda::FaultInfo f{};
+        kc::FaultInfo f{};
         {
             KernelScope scope("fault_read", nullptr, 0);
-            r = pcuda_test_check_preserved(reinterpret_cast<const void*>(&sysv_fault_read), gpr, xmm,
+            r = kc_test_check_preserved(reinterpret_cast<const void*>(&sysv_fault_read), gpr, xmm,
                                            scope.anchorSlot());
             REQUIRE(scope.faulted());
             f = scope.fault();
         }
-        CHECK((r & 0xFF) == 1);  // resumed at pcuda_sysv_recover
+        CHECK((r & 0xFF) == 1);  // resumed at kc_sysv_recover
         reportMask(r >> 8);
         CHECK(f.code == EXCEPTION_ACCESS_VIOLATION);
         CHECK(f.fault_address == 0);
@@ -88,10 +88,10 @@ TEST_CASE(recovery_from_integer_divide_by_zero) {
     const uint64_t gpr[6] = {};
     const uint64_t xmm[8] = {};
     uint64_t r;
-    pcuda::FaultInfo f{};
+    kc::FaultInfo f{};
     {
         KernelScope scope("div0", nullptr, 0);
-        r = pcuda_test_check_preserved(reinterpret_cast<const void*>(&sysv_div0), gpr, xmm, scope.anchorSlot());
+        r = kc_test_check_preserved(reinterpret_cast<const void*>(&sysv_div0), gpr, xmm, scope.anchorSlot());
         f = scope.fault();
     }
     CHECK((r & 0xFF) == 1);
@@ -105,20 +105,20 @@ TEST_CASE(stack_overflow_is_recovered_repeatedly_on_one_thread) {
     int recovered = 0;
     // Default std::thread stack (1 MB) keeps this quick; three rounds prove the guard page is re-armed.
     std::thread t([&] {
-        // Like pcuda's own threads (startThread): reserve room for exception dispatch after an
+        // Like Kernelcore's own threads (startThread): reserve room for exception dispatch after an
         // overflow. Without it the remaining stack is OS-dependent and the handler can fault again.
         ULONG guarantee = 64 * 1024;
         SetThreadStackGuarantee(&guarantee);
         LaunchArgs a{};
         for (int i = 0; i < 3; ++i) {
-            const auto res = pcuda::cpu::invokeSysV(reinterpret_cast<const void*>(&sysv_recurse), a, "recurse",
+            const auto res = kc::cpu::invokeSysV(reinterpret_cast<const void*>(&sysv_recurse), a, "recurse",
                                                     nullptr, 0);
             if (!res.faulted || res.fault.code != EXCEPTION_STACK_OVERFLOW) ok = false;
             else ++recovered;
         }
         alignas(16) uint64_t out[16] = {};
         a.gpr[0] = reinterpret_cast<uint64_t>(out);
-        const auto res = pcuda::cpu::invokeSysV(reinterpret_cast<const void*>(&sysv_echo_clobber), a, "echo",
+        const auto res = kc::cpu::invokeSysV(reinterpret_cast<const void*>(&sysv_echo_clobber), a, "echo",
                                                 nullptr, 0);
         if (res.faulted || out[0] != a.gpr[0]) ok = false;
     });

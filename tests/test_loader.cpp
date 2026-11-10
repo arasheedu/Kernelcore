@@ -14,11 +14,11 @@
 #include <string>
 #include <vector>
 
-using pcuda::Error;
-using pcuda::cpu::BoothImage;
-using pcuda::cpu::ElfImageInfo;
-using pcuda::cpu::ElfLimits;
-using pcuda::cpu::validateBoothElf;
+using kc::Error;
+using kc::cpu::BoothImage;
+using kc::cpu::ElfImageInfo;
+using kc::cpu::ElfLimits;
+using kc::cpu::validateBoothElf;
 
 namespace {
 
@@ -30,7 +30,7 @@ std::vector<unsigned char> bytesOf(const char* name) {
 
 ElfLimits limits() {
     ElfLimits l;
-    l.allowed_externals = pcuda::cpu::defaultAllowedExternals();
+    l.allowed_externals = kc::cpu::defaultAllowedExternals();
     return l;
 }
 
@@ -82,7 +82,7 @@ TEST_CASE(all_embedded_objects_validate) {
         CHECK(validateBoothElf(b, r.name, limits(), info, why));
         if (!why.empty()) std::fprintf(stderr, "  %s: %s\n", r.name, why.c_str());
         CHECK(info.kernel_name == r.name);
-        CHECK(pcuda::cpu::sha256Hex(b) == r.sha256);
+        CHECK(kc::cpu::sha256Hex(b) == r.sha256);
     }
 }
 

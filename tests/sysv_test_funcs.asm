@@ -1,14 +1,14 @@
 ; Test helpers for the Win64 -> System V thunk.
 ;
 ; sysv_* functions are System V-convention "kernels" that misbehave on purpose.
-; pcuda_test_check_preserved is a Win64 harness: it loads sentinels into every Win64
-; non-volatile register, calls pcuda_sysv_invoke, and reports which ones changed.
+; kc_test_check_preserved is a Win64 harness: it loads sentinels into every Win64
+; non-volatile register, calls kc_sysv_invoke, and reports which ones changed.
 
 OPTION CASEMAP:NONE
 
-EXTERN pcuda_sysv_invoke:PROC
+EXTERN kc_sysv_invoke:PROC
 
-PUBLIC pcuda_test_check_preserved
+PUBLIC kc_test_check_preserved
 PUBLIC sysv_echo_clobber
 PUBLIC sysv_fault_read
 PUBLIC sysv_div0
@@ -49,10 +49,10 @@ CHECK_XMM MACRO reg, index
 @@:
 ENDM
 
-; uint64_t pcuda_test_check_preserved(entry, gpr6, xmm8, anchor_slot)
+; uint64_t kc_test_check_preserved(entry, gpr6, xmm8, anchor_slot)
 ; returns (corruption_mask << 8) | thunk_result
 ;   mask bits: 0 rbx, 1 rbp, 2 rdi, 3 rsi, 4-7 r12-r15, 8-17 xmm6-xmm15, 18 DF set, 19 MXCSR changed
-pcuda_test_check_preserved PROC FRAME
+kc_test_check_preserved PROC FRAME
         push    rbp
         .pushreg rbp
         push    rbx
@@ -114,7 +114,7 @@ pcuda_test_check_preserved PROC FRAME
         movdqa  xmm15, xmmword ptr [rax+144]
         stmxcsr dword ptr [rsp+192]
 
-        call    pcuda_sysv_invoke       ; rcx, rdx, r8, r9 passed through untouched
+        call    kc_sysv_invoke       ; rcx, rdx, r8, r9 passed through untouched
         mov     dword ptr [rsp+196], eax
 
         xor     r10, r10
@@ -174,7 +174,7 @@ pcuda_test_check_preserved PROC FRAME
         pop     rbx
         pop     rbp
         ret
-pcuda_test_check_preserved ENDP
+kc_test_check_preserved ENDP
 
 ; System V: rdi = uint64_t out[16]. Records incoming argument registers and stack
 ; alignment, then trashes every register it can, sets DF and changes MXCSR.

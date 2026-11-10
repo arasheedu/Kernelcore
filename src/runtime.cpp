@@ -1,4 +1,4 @@
-// pcuda runtime core: lifecycle, device, memory, launch, streams, events, diagnostics.
+// Kernelcore runtime core: lifecycle, device, memory, launch, streams, events, diagnostics.
 
 #include "allocation_registry.hpp"
 #include "builtin_kernels.hpp"
@@ -6,7 +6,7 @@
 #include "detail.hpp"
 #include "stream.hpp"
 
-#include <pcuda/api.hpp>
+#include <kernelcore/api.hpp>
 
 #include <windows.h>
 
@@ -24,15 +24,15 @@
 #include <vector>
 
 #if !defined(_M_X64) || defined(_M_ARM64EC)
-#error "pcuda requires a native x64 build: Booth --cpu emits x86-64 System V code"
+#error "Kernelcore requires a native x64 build: Booth --cpu emits x86-64 System V code"
 #endif
 
-using pcuda::Error;
+using kc::Error;
 
 // ---------------------------------------------------------------- handles
 
-struct pcudaStream_st {
-    std::unique_ptr<pcuda::Stream> stream;
+struct kcStream_st {
+    std::unique_ptr<kc::Stream> stream;
 };
 
 namespace {
@@ -83,36 +83,36 @@ CoreCounts coreCounts() {
 unsigned performanceLogicalProcessors() { return coreCounts().performance; }
 } // namespace
 
-struct pcudaEvent_st {
+struct kcEvent_st {
     std::shared_ptr<EventState> state = std::make_shared<EventState>();
 };
 
 namespace {
 // One captured kernel launch: its argument sets (one per chunk), validated at capture.
 struct GraphNode {
-    const pcuda::KernelEntry*      entry;
+    const kc::KernelEntry*      entry;
     std::string                    name;
-    std::vector<pcuda::LaunchArgs> parts;
+    std::vector<kc::LaunchArgs> parts;
     bool                           join_previous = false;  // recorded in a concurrent group: same step
     unsigned                       threads = 0;            // chunked: the launch's workers (thread cap); 0 = all
 };
-// Immutable once captured; a running launch keeps it alive after pcudaGraphDestroy.
+// Immutable once captured; a running launch keeps it alive after kcGraphDestroy.
 struct GraphData {
     std::vector<GraphNode>                        nodes;
-    std::vector<std::vector<pcuda::Stream::Task>> tasks;      // per step: one task per part of its nodes
-    std::vector<pcuda::WorkerPool::Step>          steps;
+    std::vector<std::vector<kc::Stream::Task>> tasks;      // per step: one task per part of its nodes
+    std::vector<kc::WorkerPool::Step>          steps;
     std::vector<size_t>                           step_node;  // per step: its first node (error messages)
     std::vector<unsigned>                         step_threads;  // per step: thread cap (0 = all)
 };
 } // namespace
 
-struct pcudaGraph_st {
+struct kcGraph_st {
     std::shared_ptr<const GraphData> data;
 };
 
 // ---------------------------------------------------------------- diagnostics
 
-namespace pcuda::detail {
+namespace kc::detail {
 namespace {
 thread_local std::string t_detail;
 thread_local bool        t_runtime_thread = false;
@@ -128,11 +128,11 @@ void clearDetail() noexcept { t_detail.clear(); }
 const std::string& lastDetail() noexcept { return t_detail; }
 void markRuntimeThread() noexcept { t_runtime_thread = true; }
 bool isRuntimeThread() noexcept { return t_runtime_thread; }
-} // namespace pcuda::detail
+} // namespace kc::detail
 
 namespace {
 
-using namespace pcuda;
+using namespace kc;
 using detail::setDetail;
 
 constexpr size_t kMiB = 1024 * 1024;
@@ -143,11 +143,11 @@ struct Runtime {
     std::atomic<bool> poisoned{false};
 
     bool     guard_pages = true;
-    bool     large_pages = false;  // PCUDA_LARGE_PAGES=1 and the privilege could be enabled
+    bool     large_pages = false;  // KC_LARGE_PAGES=1 and the privilege could be enabled
     size_t   stack_bytes = 8 * kMiB;
     unsigned hw_threads = 1;
     unsigned chunks_per_worker = 4;  // chunked launches: chunks = workers * this (load balance)
-    int      chunk_plan = 0;         // PCUDA_CHUNK_PLAN: 0 auto, 1 even, 2 guided (decreasing chunk sizes)
+    int      chunk_plan = 0;         // KC_CHUNK_PLAN: 0 auto, 1 even, 2 guided (decreasing chunk sizes)
     unsigned pool_spin_us = 50;      // pool threads spin this long before sleeping
     int      current_device = 0;
 
@@ -156,15 +156,15 @@ struct Runtime {
     std::unique_ptr<Stream>          default_stream;
 
     std::mutex                                                       objects_mutex;
-    std::map<pcudaStream_t, std::unique_ptr<pcudaStream_st>>         streams;
-    std::map<pcudaEvent_t, std::unique_ptr<pcudaEvent_st>>           events;
-    std::map<pcudaGraph_t, std::unique_ptr<pcudaGraph_st>>           graphs;
+    std::map<kcStream_t, std::unique_ptr<kcStream_st>>         streams;
+    std::map<kcEvent_t, std::unique_ptr<kcEvent_st>>           events;
+    std::map<kcGraph_t, std::unique_ptr<kcGraph_st>>           graphs;
 
     // Streams being captured: launches on them are recorded into a graph instead of run.
     std::mutex                                                 capture_mutex;
     std::map<Stream*, std::shared_ptr<std::vector<GraphNode>>> captures;
     std::atomic<int>                                           capture_count{0};
-    // Streams inside pcudaStreamConcurrentBegin/End: 1 = open, 2 = open and a node recorded.
+    // Streams inside kcStreamConcurrentBegin/End: 1 = open, 2 = open and a node recorded.
     std::map<Stream*, int>                                     concurrent;
 
     std::mutex                                kernels_mutex;
@@ -178,8 +178,8 @@ struct Runtime {
     FaultInfo  last_fault{};
     bool       has_fault = false;
 
-    // Kernel code generation path; kept across device resets. Set from PCUDA_CODEGEN at first
-    // init unless pcudaSetKernelCodegen ran earlier.
+    // Kernel code generation path; kept across device resets. Set from KC_CODEGEN at first
+    // init unless kcSetKernelCodegen ran earlier.
     std::atomic<Codegen> codegen{Codegen::Auto};
     std::atomic<bool>    codegen_set{false};
 };
@@ -210,7 +210,7 @@ template <class F>
 Error api(const char* fn, F&& body) noexcept {
     detail::clearDetail();
     if (detail::isRuntimeThread()) {
-        setDetail(std::format("{}: pcuda API called from a runtime worker thread (host funcs must not call pcuda)", fn));
+        setDetail(std::format("{}: Kernelcore API called from a runtime worker thread (host funcs must not call Kernelcore)", fn));
         return Error::UnsupportedOperation;
     }
     try {
@@ -229,7 +229,7 @@ Error api(const char* fn, F&& body) noexcept {
 
 Error requireInit(const Runtime& r) {
     if (!r.initialized) {
-        setDetail("runtime not initialized: call pcudaInit first");
+        setDetail("runtime not initialized: call kcInit first");
         return Error::NotInitialized;
     }
     return Error::Success;
@@ -238,7 +238,7 @@ Error requireInit(const Runtime& r) {
 Error requireUsable(const Runtime& r) {
     if (Error e = requireInit(r); e != Error::Success) return e;
     if (r.poisoned.load()) {
-        setDetail("context poisoned by an earlier kernel fault: call pcudaDeviceReset");
+        setDetail("context poisoned by an earlier kernel fault: call kcDeviceReset");
         return Error::ContextPoisoned;
     }
     return Error::Success;
@@ -262,7 +262,7 @@ void waitAllIdle(Runtime& r) {
     for (Stream* s : snap) s->waitIdle();
 }
 
-Error findStream(Runtime& r, pcudaStream_t h, Stream** out) {
+Error findStream(Runtime& r, kcStream_t h, Stream** out) {
     if (!h) {
         *out = r.default_stream.get();
         return Error::Success;
@@ -277,7 +277,7 @@ Error findStream(Runtime& r, pcudaStream_t h, Stream** out) {
     return Error::Success;
 }
 
-Error findEvent(Runtime& r, pcudaEvent_t h, std::shared_ptr<EventState>* out) {
+Error findEvent(Runtime& r, kcEvent_t h, std::shared_ptr<EventState>* out) {
     std::lock_guard lk(r.objects_mutex);
     auto it = r.events.find(h);
     if (!h || it == r.events.end()) {
@@ -341,20 +341,20 @@ private:
 
 // Creates backend, default stream and kernel table. Caller holds lifecycle exclusively.
 Error startDevice(Runtime& r) {
-    r.guard_pages = envInt("PCUDA_GUARD_PAGES", 1, 0, 1) != 0;
-    r.stack_bytes = static_cast<size_t>(envInt("PCUDA_KERNEL_STACK_MB", 8, 1, 1024)) * kMiB;
+    r.guard_pages = envInt("KC_GUARD_PAGES", 1, 0, 1) != 0;
+    r.stack_bytes = static_cast<size_t>(envInt("KC_KERNEL_STACK_MB", 8, 1, 1024)) * kMiB;
     // Threads in the chunked-launch pool, besides the launching (stream) thread, which runs chunks
     // too. A launch's `workers` argument sets its chunk count and how many threads take part.
     // Default: see coreCounts(); without efficiency cores, one thread per logical processor.
     const CoreCounts cc = coreCounts();
     r.hw_threads = static_cast<unsigned>(
-        envInt("PCUDA_POOL_THREADS", std::max(1u, cc.all + cc.slow_cores - 1), 1, 1024));
-    r.chunks_per_worker = static_cast<unsigned>(envInt("PCUDA_CHUNKS_PER_WORKER", 4, 1, 64));
-    const std::string plan = envString("PCUDA_CHUNK_PLAN");
+        envInt("KC_POOL_THREADS", std::max(1u, cc.all + cc.slow_cores - 1), 1, 1024));
+    r.chunks_per_worker = static_cast<unsigned>(envInt("KC_CHUNKS_PER_WORKER", 4, 1, 64));
+    const std::string plan = envString("KC_CHUNK_PLAN");
     r.chunk_plan = plan == "even" ? 1 : plan == "guided" ? 2 : 0;
-    r.pool_spin_us = static_cast<unsigned>(envInt("PCUDA_POOL_SPIN_US", 50, 0, 10000));
+    r.pool_spin_us = static_cast<unsigned>(envInt("KC_POOL_SPIN_US", 50, 0, 10000));
     if (!r.codegen_set.load()) {
-        const std::string cg = envString("PCUDA_CODEGEN");
+        const std::string cg = envString("KC_CODEGEN");
         if (cg == "booth") r.codegen.store(Codegen::Booth);
         else if (cg == "native") r.codegen.store(Codegen::Native);
         else if (cg == "simd") r.codegen.store(Codegen::Simd);
@@ -362,10 +362,10 @@ Error startDevice(Runtime& r) {
     }
     // Large pages for big allocations (opt-in): needs the "Lock pages in memory" right
     // (scriptsgrant_lock_pages.ps1). Without it, allocations silently use normal pages.
-    r.large_pages = envInt("PCUDA_LARGE_PAGES", 0, 0, 1) != 0 && cpu::enableLargePages();
+    r.large_pages = envInt("KC_LARGE_PAGES", 0, 0, 1) != 0 && cpu::enableLargePages();
     r.backend = std::make_unique<cpu::CpuBackend>(r.registry, r.guard_pages, r.large_pages);
     r.backend->setCodegen(r.codegen.load());
-    r.default_stream = std::make_unique<Stream>(r.stack_bytes, L"pcuda default stream", r.pool_spin_us);
+    r.default_stream = std::make_unique<Stream>(r.stack_bytes, L"Kernelcore default stream", r.pool_spin_us);
     r.poisoned.store(false);
     {
         std::lock_guard lk(r.fault_mutex);
@@ -385,7 +385,7 @@ Error startDevice(Runtime& r) {
 // Drains and destroys everything device-side. Caller holds lifecycle exclusively.
 size_t stopDevice(Runtime& r) {
     {
-        std::map<pcudaStream_t, std::unique_ptr<pcudaStream_st>> streams;
+        std::map<kcStream_t, std::unique_ptr<kcStream_st>> streams;
         {
             std::lock_guard lk(r.objects_mutex);
             streams.swap(r.streams);
@@ -417,8 +417,8 @@ size_t stopDevice(Runtime& r) {
 Error checkPlatform() {
     USHORT process_machine = 0, native_machine = 0;
     if (IsWow64Process2(GetCurrentProcess(), &process_machine, &native_machine) &&
-        native_machine != IMAGE_FILE_MACHINE_AMD64 && envString("PCUDA_ALLOW_EMULATION") != "1") {
-        setDetail("host CPU is not x64 (running under emulation); set PCUDA_ALLOW_EMULATION=1 to try anyway");
+        native_machine != IMAGE_FILE_MACHINE_AMD64 && envString("KC_ALLOW_EMULATION") != "1") {
+        setDetail("host CPU is not x64 (running under emulation); set KC_ALLOW_EMULATION=1 to try anyway");
         return Error::UnsupportedOperation;
     }
     return Error::Success;
@@ -459,7 +459,7 @@ bool isCapturing(Runtime& r, Stream* s) {
     return r.captures.count(s) != 0;
 }
 
-Error launchCommon(const char* name, const void* typed_args, pcudaStream_t stream, bool chunked,
+Error launchCommon(const char* name, const void* typed_args, kcStream_t stream, bool chunked,
                    unsigned workers, int64_t min_chunk) {
     Runtime& r = R();
     std::shared_lock life(r.lifecycle);
@@ -562,8 +562,8 @@ Error launchCommon(const char* name, const void* typed_args, pcudaStream_t strea
 
 // ================================================================ lifecycle
 
-Error pcudaInit() noexcept {
-    return api("pcudaInit", [] {
+Error kcInit() noexcept {
+    return api("kcInit", [] {
         Runtime& r = R();
         std::unique_lock life(r.lifecycle);
         if (r.initialized) return Error::Success;
@@ -582,8 +582,8 @@ Error pcudaInit() noexcept {
     });
 }
 
-Error pcudaShutdown() noexcept {
-    return api("pcudaShutdown", [] {
+Error kcShutdown() noexcept {
+    return api("kcShutdown", [] {
         Runtime& r = R();
         std::unique_lock life(r.lifecycle);
         if (!r.initialized) return Error::Success;
@@ -594,13 +594,13 @@ Error pcudaShutdown() noexcept {
             r.builtins_registered = false;
         }
         r.initialized = false;
-        if (leaked) setDetail(std::format("pcudaShutdown freed {} allocation(s) still live", leaked));
+        if (leaked) setDetail(std::format("kcShutdown freed {} allocation(s) still live", leaked));
         return Error::Success;
     });
 }
 
-Error pcudaDeviceReset() noexcept {
-    return api("pcudaDeviceReset", [] {
+Error kcDeviceReset() noexcept {
+    return api("kcDeviceReset", [] {
         Runtime& r = R();
         std::unique_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
@@ -616,8 +616,8 @@ Error pcudaDeviceReset() noexcept {
 
 // ================================================================ device
 
-Error pcudaGetDeviceCount(int* count) noexcept {
-    return api("pcudaGetDeviceCount", [&] {
+Error kcGetDeviceCount(int* count) noexcept {
+    return api("kcGetDeviceCount", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
@@ -627,15 +627,15 @@ Error pcudaGetDeviceCount(int* count) noexcept {
     });
 }
 
-Error pcudaGetDeviceProperties(DeviceProperties* props, int device) noexcept {
-    return api("pcudaGetDeviceProperties", [&] {
+Error kcGetDeviceProperties(DeviceProperties* props, int device) noexcept {
+    return api("kcGetDeviceProperties", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
         if (!props) return Error::InvalidValue;
         if (device != 0) return Error::InvalidDevice;
         DeviceProperties p{};
-        std::snprintf(p.name, sizeof p.name, "pcuda CPU device (Booth x86-64 backend, %s)", r.backend->name());
+        std::snprintf(p.name, sizeof p.name, "Kernelcore CPU device (Booth x86-64 backend, %s)", r.backend->name());
         p.worker_count = r.hw_threads;
         p.performance_workers = std::min(r.hw_threads + 1, performanceLogicalProcessors());
         MEMORYSTATUSEX ms{};
@@ -650,8 +650,8 @@ Error pcudaGetDeviceProperties(DeviceProperties* props, int device) noexcept {
     });
 }
 
-Error pcudaSetDevice(int device) noexcept {
-    return api("pcudaSetDevice", [&] {
+Error kcSetDevice(int device) noexcept {
+    return api("kcSetDevice", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
@@ -664,8 +664,8 @@ Error pcudaSetDevice(int device) noexcept {
     });
 }
 
-Error pcudaGetDevice(int* device) noexcept {
-    return api("pcudaGetDevice", [&] {
+Error kcGetDevice(int* device) noexcept {
+    return api("kcGetDevice", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
@@ -675,12 +675,12 @@ Error pcudaGetDevice(int* device) noexcept {
     });
 }
 
-Error pcudaDeviceSynchronize() noexcept {
-    return api("pcudaDeviceSynchronize", [] {
+Error kcDeviceSynchronize() noexcept {
+    return api("kcDeviceSynchronize", [] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
-        if (Error e = rejectDuringCapture(r, "pcudaDeviceSynchronize"); e != Error::Success) return e;
+        if (Error e = rejectDuringCapture(r, "kcDeviceSynchronize"); e != Error::Success) return e;
         Error first = r.default_stream->synchronize();
         std::string first_detail = detail::lastDetail();
         std::vector<Stream*> snap;
@@ -705,8 +705,8 @@ Error pcudaDeviceSynchronize() noexcept {
 
 // ================================================================ memory
 
-Error pcudaMalloc(void** ptr, size_t bytes) noexcept {
-    return api("pcudaMalloc", [&] {
+Error kcMalloc(void** ptr, size_t bytes) noexcept {
+    return api("kcMalloc", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireUsable(r); e != Error::Success) return e;
@@ -723,24 +723,24 @@ Error pcudaMalloc(void** ptr, size_t bytes) noexcept {
     });
 }
 
-Error pcudaFree(void* ptr) noexcept {
-    return api("pcudaFree", [&] {
+Error kcFree(void* ptr) noexcept {
+    return api("kcFree", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
-        if (Error e = rejectDuringCapture(r, "pcudaFree"); e != Error::Success) return e;
+        if (Error e = rejectDuringCapture(r, "kcFree"); e != Error::Success) return e;
         if (!ptr) return Error::Success;
         waitAllIdle(r);  // a queued kernel may still use this memory
         return r.backend->release(ptr);
     });
 }
 
-Error pcudaMemcpy(void* dst, const void* src, size_t bytes, CopyKind kind) noexcept {
-    return api("pcudaMemcpy", [&] {
+Error kcMemcpy(void* dst, const void* src, size_t bytes, CopyKind kind) noexcept {
+    return api("kcMemcpy", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireUsable(r); e != Error::Success) return e;
-        if (Error e = rejectDuringCapture(r, "pcudaMemcpy"); e != Error::Success) return e;
+        if (Error e = rejectDuringCapture(r, "kcMemcpy"); e != Error::Success) return e;
         const int k = static_cast<int>(kind);
         if (k < 0 || k > 3) {
             setDetail("invalid CopyKind");
@@ -756,12 +756,12 @@ Error pcudaMemcpy(void* dst, const void* src, size_t bytes, CopyKind kind) noexc
     });
 }
 
-Error pcudaMemset(void* dst, int value, size_t bytes) noexcept {
-    return api("pcudaMemset", [&] {
+Error kcMemset(void* dst, int value, size_t bytes) noexcept {
+    return api("kcMemset", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireUsable(r); e != Error::Success) return e;
-        if (Error e = rejectDuringCapture(r, "pcudaMemset"); e != Error::Success) return e;
+        if (Error e = rejectDuringCapture(r, "kcMemset"); e != Error::Success) return e;
         if (bytes == 0) return Error::Success;
         std::string why;
         if (Error e = r.registry.checkRange(dst, bytes, why); e != Error::Success) {
@@ -776,8 +776,8 @@ Error pcudaMemset(void* dst, int value, size_t bytes) noexcept {
 
 // ================================================================ kernels
 
-Error pcudaRegisterKernel(const KernelEntry* entry) noexcept {
-    return api("pcudaRegisterKernel", [&] {
+Error kcRegisterKernel(const KernelEntry* entry) noexcept {
+    return api("kcRegisterKernel", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
@@ -785,27 +785,27 @@ Error pcudaRegisterKernel(const KernelEntry* entry) noexcept {
     });
 }
 
-Error pcudaLaunchKernel(const char* name, const void* typed_args, pcudaStream_t stream) noexcept {
-    return api("pcudaLaunchKernel", [&] { return launchCommon(name, typed_args, stream, false, 1, 1); });
+Error kcLaunchKernel(const char* name, const void* typed_args, kcStream_t stream) noexcept {
+    return api("kcLaunchKernel", [&] { return launchCommon(name, typed_args, stream, false, 1, 1); });
 }
 
-Error pcudaLaunchKernelChunked(const char* name, const void* typed_args, unsigned workers, int64_t min_chunk,
-                               pcudaStream_t stream) noexcept {
-    return api("pcudaLaunchKernelChunked",
+Error kcLaunchKernelChunked(const char* name, const void* typed_args, unsigned workers, int64_t min_chunk,
+                               kcStream_t stream) noexcept {
+    return api("kcLaunchKernelChunked",
                [&] { return launchCommon(name, typed_args, stream, true, workers, min_chunk); });
 }
 
 // ================================================================ streams
 
-Error pcudaStreamCreate(pcudaStream_t* stream) noexcept {
-    return api("pcudaStreamCreate", [&] {
+Error kcStreamCreate(kcStream_t* stream) noexcept {
+    return api("kcStreamCreate", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireUsable(r); e != Error::Success) return e;
         if (!stream) return Error::InvalidValue;
-        auto s = std::make_unique<pcudaStream_st>();
-        s->stream = std::make_unique<Stream>(r.stack_bytes, L"pcuda stream", r.pool_spin_us);
-        pcudaStream_t h = s.get();
+        auto s = std::make_unique<kcStream_st>();
+        s->stream = std::make_unique<Stream>(r.stack_bytes, L"Kernelcore stream", r.pool_spin_us);
+        kcStream_t h = s.get();
         std::lock_guard lk(r.objects_mutex);
         r.streams.emplace(h, std::move(s));
         *stream = h;
@@ -813,12 +813,12 @@ Error pcudaStreamCreate(pcudaStream_t* stream) noexcept {
     });
 }
 
-Error pcudaStreamDestroy(pcudaStream_t stream) noexcept {
-    return api("pcudaStreamDestroy", [&] {
+Error kcStreamDestroy(kcStream_t stream) noexcept {
+    return api("kcStreamDestroy", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
-        std::unique_ptr<pcudaStream_st> owned;
+        std::unique_ptr<kcStream_st> owned;
         {
             std::lock_guard lk(r.objects_mutex);
             auto it = r.streams.find(stream);
@@ -834,21 +834,21 @@ Error pcudaStreamDestroy(pcudaStream_t stream) noexcept {
     });
 }
 
-Error pcudaStreamSynchronize(pcudaStream_t stream) noexcept {
-    return api("pcudaStreamSynchronize", [&] {
+Error kcStreamSynchronize(kcStream_t stream) noexcept {
+    return api("kcStreamSynchronize", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
         Stream* s = nullptr;
         if (Error e = findStream(r, stream, &s); e != Error::Success) return e;
-        if (isCapturing(r, s)) return rejectDuringCapture(r, "pcudaStreamSynchronize on a capturing stream");
+        if (isCapturing(r, s)) return rejectDuringCapture(r, "kcStreamSynchronize on a capturing stream");
         if (Error e = s->synchronize(); e != Error::Success) return e;
         return requireUsable(r);
     });
 }
 
-Error pcudaStreamQuery(pcudaStream_t stream) noexcept {
-    return api("pcudaStreamQuery", [&] {
+Error kcStreamQuery(kcStream_t stream) noexcept {
+    return api("kcStreamQuery", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
@@ -858,15 +858,15 @@ Error pcudaStreamQuery(pcudaStream_t stream) noexcept {
     });
 }
 
-Error pcudaLaunchHostFunc(pcudaStream_t stream, void (*fn)(void*), void* user) noexcept {
-    return api("pcudaLaunchHostFunc", [&] {
+Error kcLaunchHostFunc(kcStream_t stream, void (*fn)(void*), void* user) noexcept {
+    return api("kcLaunchHostFunc", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireUsable(r); e != Error::Success) return e;
         if (!fn) return Error::InvalidValue;
         Stream* s = nullptr;
         if (Error e = findStream(r, stream, &s); e != Error::Success) return e;
-        if (isCapturing(r, s)) return rejectDuringCapture(r, "pcudaLaunchHostFunc on a capturing stream");
+        if (isCapturing(r, s)) return rejectDuringCapture(r, "kcLaunchHostFunc on a capturing stream");
         Stream::Task t = [fn, user]() -> Error {
             fn(user);
             return Error::Success;
@@ -879,8 +879,8 @@ Error pcudaLaunchHostFunc(pcudaStream_t stream, void (*fn)(void*), void* user) n
 
 // ================================================================ graphs
 
-Error pcudaStreamBeginCapture(pcudaStream_t stream) noexcept {
-    return api("pcudaStreamBeginCapture", [&] {
+Error kcStreamBeginCapture(kcStream_t stream) noexcept {
+    return api("kcStreamBeginCapture", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireUsable(r); e != Error::Success) return e;
@@ -897,8 +897,8 @@ Error pcudaStreamBeginCapture(pcudaStream_t stream) noexcept {
     });
 }
 
-Error pcudaStreamEndCapture(pcudaStream_t stream, pcudaGraph_t* graph) noexcept {
-    return api("pcudaStreamEndCapture", [&] {
+Error kcStreamEndCapture(kcStream_t stream, kcGraph_t* graph) noexcept {
+    return api("kcStreamEndCapture", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
@@ -938,9 +938,9 @@ Error pcudaStreamEndCapture(pcudaStream_t stream, pcudaGraph_t* graph) noexcept 
         }
         for (size_t i = 0; i < data->tasks.size(); ++i)
             data->steps.push_back({data->tasks[i].data(), data->tasks[i].size(), data->step_threads[i]});
-        auto g = std::make_unique<pcudaGraph_st>();
+        auto g = std::make_unique<kcGraph_st>();
         g->data = std::move(data);
-        pcudaGraph_t h = g.get();
+        kcGraph_t h = g.get();
         std::lock_guard lk(r.objects_mutex);
         r.graphs.emplace(h, std::move(g));
         *graph = h;
@@ -948,8 +948,8 @@ Error pcudaStreamEndCapture(pcudaStream_t stream, pcudaGraph_t* graph) noexcept 
     });
 }
 
-Error pcudaStreamConcurrentBegin(pcudaStream_t stream) noexcept {
-    return api("pcudaStreamConcurrentBegin", [&] {
+Error kcStreamConcurrentBegin(kcStream_t stream) noexcept {
+    return api("kcStreamConcurrentBegin", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
@@ -969,8 +969,8 @@ Error pcudaStreamConcurrentBegin(pcudaStream_t stream) noexcept {
     });
 }
 
-Error pcudaStreamConcurrentEnd(pcudaStream_t stream) noexcept {
-    return api("pcudaStreamConcurrentEnd", [&] {
+Error kcStreamConcurrentEnd(kcStream_t stream) noexcept {
+    return api("kcStreamConcurrentEnd", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
@@ -985,8 +985,8 @@ Error pcudaStreamConcurrentEnd(pcudaStream_t stream) noexcept {
     });
 }
 
-Error pcudaGraphLaunch(pcudaGraph_t graph, pcudaStream_t stream) noexcept {
-    return api("pcudaGraphLaunch", [&] {
+Error kcGraphLaunch(kcGraph_t graph, kcStream_t stream) noexcept {
+    return api("kcGraphLaunch", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireUsable(r); e != Error::Success) return e;
@@ -1002,7 +1002,7 @@ Error pcudaGraphLaunch(pcudaGraph_t graph, pcudaStream_t stream) noexcept {
         }
         Stream* s = nullptr;
         if (Error e = findStream(r, stream, &s); e != Error::Success) return e;
-        if (isCapturing(r, s)) return rejectDuringCapture(r, "pcudaGraphLaunch on a capturing stream");
+        if (isCapturing(r, s)) return rejectDuringCapture(r, "kcGraphLaunch on a capturing stream");
         if (data->nodes.empty()) return Error::Success;
         WorkerPool* pool = ensurePool(r);
         Stream::Task task = [data, pool]() -> Error {
@@ -1021,8 +1021,8 @@ Error pcudaGraphLaunch(pcudaGraph_t graph, pcudaStream_t stream) noexcept {
     });
 }
 
-Error pcudaGraphDestroy(pcudaGraph_t graph) noexcept {
-    return api("pcudaGraphDestroy", [&] {
+Error kcGraphDestroy(kcGraph_t graph) noexcept {
+    return api("kcGraphDestroy", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
@@ -1039,14 +1039,14 @@ Error pcudaGraphDestroy(pcudaGraph_t graph) noexcept {
 
 // ================================================================ events
 
-Error pcudaEventCreate(pcudaEvent_t* event) noexcept {
-    return api("pcudaEventCreate", [&] {
+Error kcEventCreate(kcEvent_t* event) noexcept {
+    return api("kcEventCreate", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireUsable(r); e != Error::Success) return e;
         if (!event) return Error::InvalidValue;
-        auto ev = std::make_unique<pcudaEvent_st>();
-        pcudaEvent_t h = ev.get();
+        auto ev = std::make_unique<kcEvent_st>();
+        kcEvent_t h = ev.get();
         std::lock_guard lk(r.objects_mutex);
         r.events.emplace(h, std::move(ev));
         *event = h;
@@ -1054,8 +1054,8 @@ Error pcudaEventCreate(pcudaEvent_t* event) noexcept {
     });
 }
 
-Error pcudaEventDestroy(pcudaEvent_t event) noexcept {
-    return api("pcudaEventDestroy", [&] {
+Error kcEventDestroy(kcEvent_t event) noexcept {
+    return api("kcEventDestroy", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
@@ -1070,8 +1070,8 @@ Error pcudaEventDestroy(pcudaEvent_t event) noexcept {
     });
 }
 
-Error pcudaEventRecord(pcudaEvent_t event, pcudaStream_t stream) noexcept {
-    return api("pcudaEventRecord", [&] {
+Error kcEventRecord(kcEvent_t event, kcStream_t stream) noexcept {
+    return api("kcEventRecord", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireUsable(r); e != Error::Success) return e;
@@ -1079,7 +1079,7 @@ Error pcudaEventRecord(pcudaEvent_t event, pcudaStream_t stream) noexcept {
         if (Error e = findEvent(r, event, &st); e != Error::Success) return e;
         Stream* s = nullptr;
         if (Error e = findStream(r, stream, &s); e != Error::Success) return e;
-        if (isCapturing(r, s)) return rejectDuringCapture(r, "pcudaEventRecord on a capturing stream");
+        if (isCapturing(r, s)) return rejectDuringCapture(r, "kcEventRecord on a capturing stream");
         uint64_t gen;
         {
             std::lock_guard lk(st->mutex);
@@ -1097,8 +1097,8 @@ Error pcudaEventRecord(pcudaEvent_t event, pcudaStream_t stream) noexcept {
     });
 }
 
-Error pcudaEventSynchronize(pcudaEvent_t event) noexcept {
-    return api("pcudaEventSynchronize", [&] {
+Error kcEventSynchronize(kcEvent_t event) noexcept {
+    return api("kcEventSynchronize", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
@@ -1111,8 +1111,8 @@ Error pcudaEventSynchronize(pcudaEvent_t event) noexcept {
     });
 }
 
-Error pcudaEventQuery(pcudaEvent_t event) noexcept {
-    return api("pcudaEventQuery", [&] {
+Error kcEventQuery(kcEvent_t event) noexcept {
+    return api("kcEventQuery", [&] {
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
         if (Error e = requireInit(r); e != Error::Success) return e;
@@ -1123,8 +1123,8 @@ Error pcudaEventQuery(pcudaEvent_t event) noexcept {
     });
 }
 
-Error pcudaStreamWaitEvent(pcudaStream_t, pcudaEvent_t) noexcept {
-    return api("pcudaStreamWaitEvent", [] {
+Error kcStreamWaitEvent(kcStream_t, kcEvent_t) noexcept {
+    return api("kcStreamWaitEvent", [] {
         setDetail("cross-stream waits are not implemented in this POC");
         return Error::UnsupportedOperation;
     });
@@ -1132,8 +1132,8 @@ Error pcudaStreamWaitEvent(pcudaStream_t, pcudaEvent_t) noexcept {
 
 // ================================================================ code generation path
 
-Error pcudaSetKernelCodegen(Codegen codegen) noexcept {
-    return api("pcudaSetKernelCodegen", [&] {
+Error kcSetKernelCodegen(Codegen codegen) noexcept {
+    return api("kcSetKernelCodegen", [&] {
         const int c = static_cast<int>(codegen);
         if (c < 0 || c > 3) {
             setDetail("codegen must be Auto, Booth, Native or Simd");
@@ -1148,16 +1148,16 @@ Error pcudaSetKernelCodegen(Codegen codegen) noexcept {
     });
 }
 
-Error pcudaGetKernelCodegen(Codegen* codegen) noexcept {
-    return api("pcudaGetKernelCodegen", [&] {
+Error kcGetKernelCodegen(Codegen* codegen) noexcept {
+    return api("kcGetKernelCodegen", [&] {
         if (!codegen) return Error::InvalidValue;
         *codegen = R().codegen.load();
         return Error::Success;
     });
 }
 
-Error pcudaGetKernelCodegenFor(const char* name, Codegen* used) noexcept {
-    return api("pcudaGetKernelCodegenFor", [&] {
+Error kcGetKernelCodegenFor(const char* name, Codegen* used) noexcept {
+    return api("kcGetKernelCodegenFor", [&] {
         if (!used) return Error::InvalidValue;
         Runtime& r = R();
         std::shared_lock life(r.lifecycle);
@@ -1169,7 +1169,7 @@ Error pcudaGetKernelCodegenFor(const char* name, Codegen* used) noexcept {
     });
 }
 
-const char* pcudaCodegenName(Codegen codegen) noexcept {
+const char* kcCodegenName(Codegen codegen) noexcept {
     switch (codegen) {
     case Codegen::Auto: return "auto";
     case Codegen::Booth: return "booth";
@@ -1181,8 +1181,8 @@ const char* pcudaCodegenName(Codegen codegen) noexcept {
 
 // ================================================================ diagnostics
 
-Error pcudaGetLastFault(FaultInfo* info) noexcept {
-    return api("pcudaGetLastFault", [&] {
+Error kcGetLastFault(FaultInfo* info) noexcept {
+    return api("kcGetLastFault", [&] {
         if (!info) return Error::InvalidValue;
         Runtime& r = R();
         std::lock_guard lk(r.fault_mutex);
@@ -1192,7 +1192,7 @@ Error pcudaGetLastFault(FaultInfo* info) noexcept {
     });
 }
 
-const char* pcudaGetErrorString(Error e) noexcept {
+const char* kcGetErrorString(Error e) noexcept {
     switch (e) {
     case Error::Success: return "Success";
     case Error::NotInitialized: return "NotInitialized";
@@ -1214,4 +1214,4 @@ const char* pcudaGetErrorString(Error e) noexcept {
     return "UnknownError";
 }
 
-const char* pcudaGetLastErrorDetail() noexcept { return detail::lastDetail().c_str(); }
+const char* kcGetLastErrorDetail() noexcept { return detail::lastDetail().c_str(); }

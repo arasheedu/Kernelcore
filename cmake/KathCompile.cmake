@@ -3,7 +3,7 @@
 #         KATH (exe mode), WSL_KATH (wsl mode), BOOTH_VERSION,
 #         EMIT: cpu (default) -> OUTPUT is the --cpu object;
 #               metal         -> OUTPUT is the --metal source and OUTPUT_IR the --ir dump
-#                                (input of pcuda_mslgen, the native code paths).
+#                                (input of kc_mslgen, the native code paths).
 # Writes OUTPUT(.provenance, .srcsha256) [and OUTPUT_IR]. Fails loudly on any problem.
 cmake_minimum_required(VERSION 3.26)
 

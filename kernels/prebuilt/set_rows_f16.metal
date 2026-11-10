@@ -6,10 +6,10 @@
 #include <metal_stdlib>
 using namespace metal;
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0);
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0)
 {
     return p0;
@@ -191,7 +191,7 @@ kernel void set_rows_f16(
     int v173;
     int v174;
     v7 = (int)(p4);
-    v8 = pcuda_aligned8(v7);
+    v8 = kc_aligned8(v7);
     v9 = bid.x;
     v10 = bdim.x;
     v11 = v9 * v10;
@@ -200,7 +200,7 @@ kernel void set_rows_f16(
     v14 = v12 + v13;
     v15 = p3 + (0);
     v16 = *(v15);
-    v17 = pcuda_aligned8(v16);
+    v17 = kc_aligned8(v16);
     v18 = p3 + (1);
     v19 = *(v18);
     v20 = v17 * v19;

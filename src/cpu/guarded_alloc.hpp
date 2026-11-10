@@ -9,11 +9,11 @@
 // through big buffers. The block still ends flush against a reserved no-access range in
 // guarded mode. If large pages can't be had (fragmented memory), normal pages are used.
 
-#include <pcuda/error.hpp>
+#include <kernelcore/error.hpp>
 
 #include <cstddef>
 
-namespace pcuda::cpu {
+namespace kc::cpu {
 
 constexpr size_t kAllocAlignment = 64;
 
@@ -35,4 +35,4 @@ void  releaseBlock(const HostBlock& block) noexcept;
 bool   enableLargePages() noexcept;
 size_t largePageSize() noexcept;  // 0 when unsupported
 
-} // namespace pcuda::cpu
+} // namespace kc::cpu

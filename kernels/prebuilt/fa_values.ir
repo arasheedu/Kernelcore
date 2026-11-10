@@ -1,11 +1,11 @@
 ; Booth IR
 
-func @pcuda_aligned8(i32 %0) __device__ {
+func @kc_aligned8(i32 %0) __device__ {
 entry:
     ret i32 %0  ; line 13
 }
 
-func @pcuda_h2f(i32 %0) __device__ {
+func @kc_h2f(i32 %0) __device__ {
 entry:
     %1 = ashr i32 %0, 10  ; line 25
     %2 = and i32 %1, 31  ; line 25
@@ -61,7 +61,7 @@ entry:
 func @fa_values(ptr<global, f32> %0, ptr<global, i32> %1, ptr<global, f32> %2, ptr<global, i32> %3, f32 %4) __global__ {
 entry:
     %5 = fptosi f32 %4 to i32  ; line 38
-    %6 = call i32 @pcuda_aligned8(%5)  ; line 38
+    %6 = call i32 @kc_aligned8(%5)  ; line 38
     %7 = block_id.x  ; line 38
     %8 = block_dim.x  ; line 38
     %9 = mul i32 %7, %8  ; line 38
@@ -74,7 +74,7 @@ entry:
     %16 = load i32, %15  ; line 40
     %17 = gep ptr<global, i32>, %3, 2  ; line 41
     %18 = load i32, %17  ; line 41
-    %19 = call i32 @pcuda_aligned8(%18)  ; line 41
+    %19 = call i32 @kc_aligned8(%18)  ; line 41
     %20 = gep ptr<global, i32>, %3, 3  ; line 42
     %21 = load i32, %20  ; line 42
     %22 = gep ptr<global, i32>, %3, 4  ; line 43
@@ -84,7 +84,7 @@ entry:
     %26 = gep ptr<global, i32>, %3, 14  ; line 45
     %27 = load i32, %26  ; line 45
     %28 = mul i32 %27, %19  ; line 46
-    %29 = call i32 @pcuda_aligned8(%28)  ; line 46
+    %29 = call i32 @kc_aligned8(%28)  ; line 46
     %30 = mul i32 %25, %29  ; line 47
     %31 = icmp slt i32 %12, %30  ; line 47
     br_cond %31, if.then, if.end merge if.end  ; line 47
@@ -178,7 +178,7 @@ for.body:
     %104 = load i32, %103  ; line 73
     %105 = ashr i32 %104, %45  ; line 73
     %106 = and i32 %105, 65535  ; line 73
-    %107 = call f32 @pcuda_h2f(%106)  ; line 74
+    %107 = call f32 @kc_h2f(%106)  ; line 74
     %108 = add i32 %67, %92  ; line 75
     %109 = gep ptr<global, f32>, %0, %108  ; line 75
     %110 = load f32, %109  ; line 75

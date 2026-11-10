@@ -3,11 +3,11 @@
 // One thread per (column, super-block of 256). Column c: y[c * n ...], slot q + c * nsb * 85.
 // dims = {n, columns}; n % 256 == 0. base: first thread as a float (chunking).
 
-#ifndef PCUDA_ALIGNED8_DEFINED
-#define PCUDA_ALIGNED8_DEFINED
-// Promise that x is a non-negative multiple of 8 (identity). pcuda_mslgen uses it to keep
+#ifndef KC_ALIGNED8_DEFINED
+#define KC_ALIGNED8_DEFINED
+// Promise that x is a non-negative multiple of 8 (identity). kc_mslgen uses it to keep
 // x-based divisions uniform across the 8 lanes of a group, and checks it at run time.
-__device__ int pcuda_aligned8(int x)
+__device__ int kc_aligned8(int x)
 {
     return x;
 }
@@ -15,7 +15,7 @@ __device__ int pcuda_aligned8(int x)
 
 extern "C" __global__ void silu_mul_q8kf(const float* g, const float* u, float* y, int* q, const int* dims, float base)
 {
-    const int idx = pcuda_aligned8((int)base) + blockIdx.x * blockDim.x + threadIdx.x;
+    const int idx = kc_aligned8((int)base) + blockIdx.x * blockDim.x + threadIdx.x;
     const int n = dims[0];
     const int cols = dims[1];
     const int nsb = n / 256;

@@ -2,12 +2,12 @@
 
 #include <cstdint>
 
-namespace pcuda {
+namespace kc {
 
 // Stable error codes. Values are part of the POC contract; append only.
 enum class Error : int {
     Success = 0,
-    NotInitialized,         // API used before pcudaInit or after pcudaShutdown
+    NotInitialized,         // API used before kcInit or after kcShutdown
     InvalidValue,           // bad argument (null, negative count, bad enum, unreadable host pointer)
     InvalidDevice,          // device index other than 0
     OutOfMemory,
@@ -19,12 +19,12 @@ enum class Error : int {
     DynamicCodeBlocked,     // process policy (ACG) forbids executable memory
     LaunchFailure,          // launch rejected before execution
     KernelFault,            // hardware exception inside kernel code (sticky)
-    ContextPoisoned,        // returned by most calls after a KernelFault until pcudaDeviceReset
+    ContextPoisoned,        // returned by most calls after a KernelFault until kcDeviceReset
     NotReady,               // query: work still pending
-    InternalError           // unexpected internal failure (bug); see pcudaGetLastErrorDetail
+    InternalError           // unexpected internal failure (bug); see kcGetLastErrorDetail
 };
 
-// Filled when a kernel faults. Read with pcudaGetLastFault.
+// Filled when a kernel faults. Read with kcGetLastFault.
 struct FaultInfo {
     uint32_t code = 0;   // e.g. 0xC0000005 access violation
     uint64_t fault_address = 0;    // data address for access violations
@@ -35,4 +35,4 @@ struct FaultInfo {
     char     kernel[64] = {};
 };
 
-} // namespace pcuda
+} // namespace kc

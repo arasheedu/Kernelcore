@@ -8,11 +8,11 @@
 // dims = {pairs_per_head (head_dim / 2, a multiple of 8), n_head, n_tokens * pairs_per_head, m1, m2}:
 // pair i of a head is at offsets i * m1 and i * m1 + m2 (NORM: 2, 1; NEOX: 1, pairs_per_head).
 
-#ifndef PCUDA_ALIGNED8_DEFINED
-#define PCUDA_ALIGNED8_DEFINED
-// Promise that x is a non-negative multiple of 8 (identity). pcuda_mslgen uses it to keep
+#ifndef KC_ALIGNED8_DEFINED
+#define KC_ALIGNED8_DEFINED
+// Promise that x is a non-negative multiple of 8 (identity). kc_mslgen uses it to keep
 // x-based divisions uniform across the 8 lanes of a group, and checks it at run time.
-__device__ int pcuda_aligned8(int x)
+__device__ int kc_aligned8(int x)
 {
     return x;
 }
@@ -22,7 +22,7 @@ extern "C" __global__ void rope_ggml(const float* x, float* y, const int* pos, c
                                      float log2_base)
 {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    const int pairs = pcuda_aligned8(dims[0]);
+    const int pairs = kc_aligned8(dims[0]);
     const int nh = dims[1];
     const int count = dims[2];
     if (idx < count) {

@@ -6,12 +6,12 @@
 #include <metal_stdlib>
 using namespace metal;
 
-int pcuda_dp4a(
+int kc_dp4a(
     int p0,
     int p1,
     int p2);
 
-int pcuda_dp4a(
+int kc_dp4a(
     int p0,
     int p1,
     int p2)
@@ -245,15 +245,15 @@ kernel void matvec_q4x8_q8x2(
                         v105 = p1 + (v104);
                         v106 = *(v105);
                         v107 = v92 & 252645135;
-                        v108 = pcuda_dp4a(v107, v101, v77);
+                        v108 = kc_dp4a(v107, v101, v77);
                         v109 = v92 >> 4;
                         v110 = v109 & 252645135;
-                        v111 = pcuda_dp4a(v110, v106, v78);
+                        v111 = kc_dp4a(v110, v106, v78);
                         v112 = v97 & 252645135;
-                        v113 = pcuda_dp4a(v112, v101, v79);
+                        v113 = kc_dp4a(v112, v101, v79);
                         v114 = v97 >> 4;
                         v115 = v114 & 252645135;
-                        v116 = pcuda_dp4a(v115, v106, v80);
+                        v116 = kc_dp4a(v115, v106, v80);
                         v118 = v81 + 1;
                         v77 = v108;
                         v78 = v111;

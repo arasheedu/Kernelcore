@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Configure, build and (optionally) test pcuda from any PowerShell window.
+  Configure, build and (optionally) test Kernelcore from any PowerShell window.
   Locates Visual Studio 2022 with vswhere and loads the x64 developer environment,
   so cl, ml64 and ninja are found without opening a Developer prompt.
 

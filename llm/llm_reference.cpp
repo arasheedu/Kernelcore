@@ -104,7 +104,7 @@ void quantizeQ8x4(const float* x, int* xq, float* xd, int count) {
 }
 
 namespace {
-int dp4a(int a, int b, int c) {  // u8 x s8, as pcuda_dp4a
+int dp4a(int a, int b, int c) {  // u8 x s8, as kc_dp4a
     for (int i = 0; i < 4; ++i)
         c += ((a >> (8 * i)) & 255) * static_cast<int8_t>(static_cast<uint32_t>(b) >> (8 * i));
     return c;
@@ -168,7 +168,7 @@ void rope(float* x, int pairs_per_head, int pos, int count, float log2_base) {
             static_cast<float>(pos) *
             std::exp2(-static_cast<float>(i) / static_cast<float>(pairs_per_head) * log2_base);
         // Booth lowers sinf/cosf(theta) to sinf/cosf((theta * 1/(2pi)) * 2pi) in float
-        // (BOOTH_PIN F11); reproduce it so the reference is bit-exact with every pcuda path.
+        // (BOOTH_PIN F11); reproduce it so the reference is bit-exact with every Kernelcore path.
         const float turns = theta * 0.159154943f;
         const float c = std::cos(turns * 6.28318548f);
         const float s = std::sin(turns * 6.28318548f);

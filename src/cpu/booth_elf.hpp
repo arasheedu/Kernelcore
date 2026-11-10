@@ -14,7 +14,7 @@
 #include <string_view>
 #include <vector>
 
-namespace pcuda::cpu {
+namespace kc::cpu {
 
 struct ElfReloc {
     uint64_t offset = 0;     // into .text; 4 bytes patched
@@ -48,4 +48,4 @@ std::span<const std::string_view> defaultAllowedExternals() noexcept;
 bool validateBoothElf(std::span<const unsigned char> bytes, std::string_view expected_kernel,
                       const ElfLimits& limits, ElfImageInfo& out, std::string& reason);
 
-} // namespace pcuda::cpu
+} // namespace kc::cpu

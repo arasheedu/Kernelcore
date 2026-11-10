@@ -7,7 +7,7 @@
 
 #include "llm_kernels.hpp"
 
-#include <pcuda/kernels.hpp>
+#include <kernelcore/kernels.hpp>
 
 #include <windows.h>
 
@@ -19,9 +19,9 @@
 #include <string>
 #include <vector>
 
-using pcuda::Codegen;
-using pcuda::CopyKind;
-using pcuda::Error;
+using kc::Codegen;
+using kc::CopyKind;
+using kc::Error;
 
 namespace {
 
@@ -31,21 +31,21 @@ struct Fixture {
     RuntimeFixture rt;
     bool ok = false;
     Fixture() { ok = rt.ok && llm::registerKernels() == Error::Success; }
-    ~Fixture() { pcudaSetKernelCodegen(Codegen::Auto); }
+    ~Fixture() { kcSetKernelCodegen(Codegen::Auto); }
 };
 
 template <class T>
 T* dev(const std::vector<T>& h) {
     void* p = nullptr;
-    if (pcudaMalloc(&p, h.size() * sizeof(T)) != Error::Success) return nullptr;
-    if (pcudaMemcpy(p, h.data(), h.size() * sizeof(T), CopyKind::HostToDevice) != Error::Success) return nullptr;
+    if (kcMalloc(&p, h.size() * sizeof(T)) != Error::Success) return nullptr;
+    if (kcMemcpy(p, h.data(), h.size() * sizeof(T), CopyKind::HostToDevice) != Error::Success) return nullptr;
     return static_cast<T*>(p);
 }
 
 template <class T>
 std::vector<T> host(const T* d, size_t n) {
     std::vector<T> h(n);
-    pcudaMemcpy(h.data(), d, n * sizeof(T), CopyKind::DeviceToHost);
+    kcMemcpy(h.data(), d, n * sizeof(T), CopyKind::DeviceToHost);
     return h;
 }
 
@@ -71,23 +71,23 @@ void sameOnAllPaths(const char* what, void* out, size_t out_bytes, const std::fu
     std::vector<uint8_t> want;
     for (Codegen c : kPaths) {
         for (int chunked = 0; chunked <= (chunkable ? 1 : 0); ++chunked) {
-            REQUIRE_OK(pcudaSetKernelCodegen(c));
-            REQUIRE_OK(pcudaMemset(out, 0xA5, out_bytes));
+            REQUIRE_OK(kcSetKernelCodegen(c));
+            REQUIRE_OK(kcMemset(out, 0xA5, out_bytes));
             const Error e = launch(chunked != 0);
             if (e != Error::Success) {
                 th::fail(__FILE__, __LINE__,
-                         std::string(what) + " on " + pcudaCodegenName(c) + ": " + th::describe(e));
+                         std::string(what) + " on " + kcCodegenName(c) + ": " + th::describe(e));
                 return;
             }
             std::vector<uint8_t> got(out_bytes);
-            REQUIRE_OK(pcudaMemcpy(got.data(), out, out_bytes, CopyKind::DeviceToHost));
+            REQUIRE_OK(kcMemcpy(got.data(), out, out_bytes, CopyKind::DeviceToHost));
             if (want.empty()) {
                 want = got;
             } else if (got != want) {
                 size_t i = 0;
                 while (i < got.size() && got[i] == want[i]) ++i;
                 th::fail(__FILE__, __LINE__,
-                         std::string(what) + ": " + pcudaCodegenName(c) + (chunked ? " chunked" : "") +
+                         std::string(what) + ": " + kcCodegenName(c) + (chunked ? " chunked" : "") +
                              " differs from booth at byte " + std::to_string(i));
                 return;
             }
@@ -101,22 +101,22 @@ TEST_CASE(paths_resolve_as_documented) {
     Fixture fx;
     REQUIRE(fx.ok);
     Codegen used{};
-    REQUIRE_OK(pcudaSetKernelCodegen(Codegen::Booth));
-    REQUIRE_OK(pcudaGetKernelCodegenFor("vector_add", &used));
+    REQUIRE_OK(kcSetKernelCodegen(Codegen::Booth));
+    REQUIRE_OK(kcGetKernelCodegenFor("vector_add", &used));
     CHECK(used == Codegen::Booth);
-    REQUIRE_OK(pcudaSetKernelCodegen(Codegen::Native));
-    REQUIRE_OK(pcudaGetKernelCodegenFor("vector_add", &used));
+    REQUIRE_OK(kcSetKernelCodegen(Codegen::Native));
+    REQUIRE_OK(kcGetKernelCodegenFor("vector_add", &used));
     CHECK(used == Codegen::Native);
-    REQUIRE_OK(pcudaSetKernelCodegen(Codegen::Simd));
-    REQUIRE_OK(pcudaGetKernelCodegenFor("vector_add", &used));
+    REQUIRE_OK(kcSetKernelCodegen(Codegen::Simd));
+    REQUIRE_OK(kcGetKernelCodegenFor("vector_add", &used));
     CHECK(used == Codegen::Simd);
     // deep_recursion calls a helper function: no simd translation, native is used instead.
-    REQUIRE_OK(pcudaGetKernelCodegenFor("deep_recursion", &used));
+    REQUIRE_OK(kcGetKernelCodegenFor("deep_recursion", &used));
     CHECK(used == Codegen::Native);
-    REQUIRE_OK(pcudaSetKernelCodegen(Codegen::Auto));
-    REQUIRE_OK(pcudaGetKernelCodegenFor("matvec_q8", &used));
+    REQUIRE_OK(kcSetKernelCodegen(Codegen::Auto));
+    REQUIRE_OK(kcGetKernelCodegenFor("matvec_q8", &used));
     CHECK(used == Codegen::Simd);
-    CHECK_ERR(pcudaSetKernelCodegen(static_cast<Codegen>(9)), Error::InvalidValue);
+    CHECK_ERR(kcSetKernelCodegen(static_cast<Codegen>(9)), Error::InvalidValue);
 }
 
 TEST_CASE(elementwise_kernels_identical_on_all_paths) {
@@ -128,20 +128,20 @@ TEST_CASE(elementwise_kernels_identical_on_all_paths) {
         REQUIRE(da && db && dout);
         const std::string tag = " n=" + std::to_string(n);
         sameOnAllPaths(("vector_add" + tag).c_str(), dout, size_t(n) * 4, [&](bool ch) {
-            return ch ? pcuda::kernels::launchVectorAddChunked(da, db, dout, n, 4, 64)
-                      : pcuda::kernels::launchVectorAdd(da, db, dout, n);
+            return ch ? kc::kernels::launchVectorAddChunked(da, db, dout, n, 4, 64)
+                      : kc::kernels::launchVectorAdd(da, db, dout, n);
         }, true);
         const testkernels::ScaleAddArgs sa{da, dout, 2.5f, -1.25f, n};
         sameOnAllPaths(("scale_add" + tag).c_str(), dout, size_t(n) * 4, [&](bool ch) {
-            return ch ? pcudaLaunchKernelChunked("scale_add", &sa, 4, 64) : pcudaLaunchKernel("scale_add", &sa);
+            return ch ? kcLaunchKernelChunked("scale_add", &sa, 4, 64) : kcLaunchKernel("scale_add", &sa);
         }, true);
         const testkernels::TrigMixArgs tm{da, dout, n};
         sameOnAllPaths(("trig_mix" + tag).c_str(), dout, size_t(n) * 4, [&](bool ch) {
-            return ch ? pcudaLaunchKernelChunked("trig_mix", &tm, 4, 64) : pcudaLaunchKernel("trig_mix", &tm);
+            return ch ? kcLaunchKernelChunked("trig_mix", &tm, 4, 64) : kcLaunchKernel("trig_mix", &tm);
         }, true);
         const llm::SiluMulArgs si{da, db, dout, n};
         sameOnAllPaths(("silu_mul" + tag).c_str(), dout, size_t(n) * 4, [&](bool ch) {
-            return ch ? pcudaLaunchKernelChunked("silu_mul", &si, 4, 64) : pcudaLaunchKernel("silu_mul", &si);
+            return ch ? kcLaunchKernelChunked("silu_mul", &si, 4, 64) : kcLaunchKernel("silu_mul", &si);
         }, true);
     }
     // Integer division (lane-by-lane in simd), negative operands included.
@@ -150,7 +150,7 @@ TEST_CASE(elementwise_kernels_identical_on_all_paths) {
     int *dia = dev(ia), *dio = dev(std::vector<int>(ia.size()));
     REQUIRE(dia && dio);
     const testkernels::IntDivArgs id{dia, dio, -7, int(ia.size())};
-    sameOnAllPaths("int_div", dio, ia.size() * 4, [&](bool) { return pcudaLaunchKernel("int_div", &id); }, false);
+    sameOnAllPaths("int_div", dio, ia.size() * 4, [&](bool) { return kcLaunchKernel("int_div", &id); }, false);
 }
 
 TEST_CASE(llm_kernels_identical_on_all_paths) {
@@ -170,15 +170,15 @@ TEST_CASE(llm_kernels_identical_on_all_paths) {
         const std::string tag = " " + std::to_string(rows) + "x" + std::to_string(k);
         const llm::MatvecQ8Args a8{reinterpret_cast<const int8_t*>(dq), ds, dx, dy, dd, rows, k};
         sameOnAllPaths(("matvec_q8" + tag).c_str(), dy, size_t(rows) * 4, [&](bool ch) {
-            return ch ? pcudaLaunchKernelChunked("matvec_q8", &a8, 4, 1) : pcudaLaunchKernel("matvec_q8", &a8);
+            return ch ? kcLaunchKernelChunked("matvec_q8", &a8, 4, 1) : kcLaunchKernel("matvec_q8", &a8);
         }, true);
         const llm::MatvecQ4Args a4{dq, ds, dx, dy, dd, rows, k};
         sameOnAllPaths(("matvec_q4" + tag).c_str(), dy, size_t(rows) * 4, [&](bool ch) {
-            return ch ? pcudaLaunchKernelChunked("matvec_q4", &a4, 4, 1) : pcudaLaunchKernel("matvec_q4", &a4);
+            return ch ? kcLaunchKernelChunked("matvec_q4", &a4, 4, 1) : kcLaunchKernel("matvec_q4", &a4);
         }, true);
         if (rows % 8 == 0)  // interleaved layout (the bytes are just a different arrangement here)
             sameOnAllPaths(("matvec_q4x8" + tag).c_str(), dy, size_t(rows) * 4, [&](bool ch) {
-                return ch ? pcudaLaunchKernelChunked("matvec_q4x8", &a4, 4, 8) : pcudaLaunchKernel("matvec_q4x8", &a4);
+                return ch ? kcLaunchKernelChunked("matvec_q4x8", &a4, 4, 8) : kcLaunchKernel("matvec_q4x8", &a4);
             }, true);
     }
     // 8-bit activations and the integer dot-product matvec (AVX-VNNI on the simd path).
@@ -199,18 +199,18 @@ TEST_CASE(llm_kernels_identical_on_all_paths) {
         REQUIRE(dx && dqw && dxq && dxd && dy && dd);
         const llm::QuantizeArgs qa{dx, dxq, dxd, nb};
         sameOnAllPaths("quantize_q8x4", dxq, size_t(nb) * 8 * 4, [&](bool ch) {
-            return ch ? pcudaLaunchKernelChunked("quantize_q8x4", &qa, 4, 1) : pcudaLaunchKernel("quantize_q8x4", &qa);
+            return ch ? kcLaunchKernelChunked("quantize_q8x4", &qa, 4, 1) : kcLaunchKernel("quantize_q8x4", &qa);
         }, true);
-        REQUIRE_OK(pcudaSetKernelCodegen(Codegen::Booth));
-        REQUIRE_OK(pcudaLaunchKernel("quantize_q8x4", &qa));
+        REQUIRE_OK(kcSetKernelCodegen(Codegen::Booth));
+        REQUIRE_OK(kcLaunchKernel("quantize_q8x4", &qa));
         const llm::MatvecQ4Q8Args a{dqw, dxq, dxd, dy, dd, rows, k};
         sameOnAllPaths(("matvec_q4x8_q8 " + std::to_string(rows)).c_str(), dy, size_t(rows) * 4, [&](bool ch) {
-            return ch ? pcudaLaunchKernelChunked("matvec_q4x8_q8", &a, 4, 8) : pcudaLaunchKernel("matvec_q4x8_q8", &a);
+            return ch ? kcLaunchKernelChunked("matvec_q4x8_q8", &a, 4, 8) : kcLaunchKernel("matvec_q4x8_q8", &a);
         }, true);
         if (rows % 16 == 0) {
             const auto one_row = host(dy, size_t(rows));  // the last path's matvec_q4x8_q8 result
             sameOnAllPaths(("matvec_q4x8_q8x2 " + std::to_string(rows)).c_str(), dy, size_t(rows) * 4, [&](bool ch) {
-                return ch ? pcudaLaunchKernelChunked("matvec_q4x8_q8x2", &a, 4, 8) : pcudaLaunchKernel("matvec_q4x8_q8x2", &a);
+                return ch ? kcLaunchKernelChunked("matvec_q4x8_q8x2", &a, 4, 8) : kcLaunchKernel("matvec_q4x8_q8x2", &a);
             }, true);
             CHECK(host(dy, size_t(rows)) == one_row);
         }
@@ -226,10 +226,10 @@ TEST_CASE(llm_kernels_identical_on_all_paths) {
         const llm::AddSumsqArgs s{dx, dt, dq, nb};
         const llm::NormQ8Args n{dx, dw, dq, nb, 1e-5f};
         sameOnAllPaths("add_sumsq + norm_q8x4", dq, size_t(llm::scratchInts(nb)) * 4, [&](bool ch) {
-            pcudaMemcpy(dx, x.data(), x.size() * 4, CopyKind::HostToDevice);  // x is updated in place
-            const Error e = ch ? pcudaLaunchKernelChunked("add_sumsq", &s, 4, 16) : pcudaLaunchKernel("add_sumsq", &s);
+            kcMemcpy(dx, x.data(), x.size() * 4, CopyKind::HostToDevice);  // x is updated in place
+            const Error e = ch ? kcLaunchKernelChunked("add_sumsq", &s, 4, 16) : kcLaunchKernel("add_sumsq", &s);
             if (e != Error::Success) return e;
-            return ch ? pcudaLaunchKernelChunked("norm_q8x4", &n, 4, 16) : pcudaLaunchKernel("norm_q8x4", &n);
+            return ch ? kcLaunchKernelChunked("norm_q8x4", &n, 4, 16) : kcLaunchKernel("norm_q8x4", &n);
         }, true);
     }
 
@@ -242,7 +242,7 @@ TEST_CASE(llm_kernels_identical_on_all_paths) {
         REQUIRE(dg && du && dxq && dxd);
         const llm::SiluMulQ8Args sq{dg, du, dxq, dxd, count};
         sameOnAllPaths("silu_mul_q8x4", dxq, size_t(count) * 8 * 4, [&](bool ch) {
-            return ch ? pcudaLaunchKernelChunked("silu_mul_q8x4", &sq, 4, 8) : pcudaLaunchKernel("silu_mul_q8x4", &sq);
+            return ch ? kcLaunchKernelChunked("silu_mul_q8x4", &sq, 4, 8) : kcLaunchKernel("silu_mul_q8x4", &sq);
         }, true);
     }
 
@@ -257,19 +257,19 @@ TEST_CASE(llm_kernels_identical_on_all_paths) {
     REQUIRE(dq && dk && dsc && dout && dd);
     const llm::AttnScoresArgs sa{dq, dk, dsc, dd, d, 0.125f};
     sameOnAllPaths("attn_scores", dsc, size_t(d.n_heads) * d.ctx_pad * 4, [&](bool ch) {
-        return ch ? pcudaLaunchKernelChunked("attn_scores", &sa, 4, 64) : pcudaLaunchKernel("attn_scores", &sa);
+        return ch ? kcLaunchKernelChunked("attn_scores", &sa, 4, 64) : kcLaunchKernel("attn_scores", &sa);
     }, true);
-    REQUIRE_OK(pcudaSetKernelCodegen(Codegen::Booth));
-    REQUIRE_OK(pcudaLaunchKernel("attn_scores", &sa));
+    REQUIRE_OK(kcSetKernelCodegen(Codegen::Booth));
+    REQUIRE_OK(kcLaunchKernel("attn_scores", &sa));
     const auto scores = host(dsc, size_t(d.n_heads) * d.ctx_pad);
     const llm::SoftmaxArgs sm{dsc, d.ctx, d.ctx_pad, d.n_heads};
     sameOnAllPaths("softmax", dsc, scores.size() * 4, [&](bool) {
-        pcudaMemcpy(dsc, scores.data(), scores.size() * 4, CopyKind::HostToDevice);
-        return pcudaLaunchKernel("softmax", &sm);
+        kcMemcpy(dsc, scores.data(), scores.size() * 4, CopyKind::HostToDevice);
+        return kcLaunchKernel("softmax", &sm);
     }, false);
     const llm::AttnValuesArgs va{dsc, dk, dout, dd, d};
     sameOnAllPaths("attn_values", dout, size_t(d.n_heads) * d.head_dim * 4, [&](bool ch) {
-        return ch ? pcudaLaunchKernelChunked("attn_values", &va, 4, 64) : pcudaLaunchKernel("attn_values", &va);
+        return ch ? kcLaunchKernelChunked("attn_values", &va, 4, 64) : kcLaunchKernel("attn_values", &va);
     }, true);
 
     const int n = 200, rows = 11;
@@ -278,12 +278,12 @@ TEST_CASE(llm_kernels_identical_on_all_paths) {
     REQUIRE(dxs && dw && dys);
     const llm::RmsNormArgs rn{dxs, dw, dys, n, rows, 1e-5f};
     sameOnAllPaths("rms_norm", dys, xs.size() * 4, [&](bool ch) {
-        return ch ? pcudaLaunchKernelChunked("rms_norm", &rn, 4, 1) : pcudaLaunchKernel("rms_norm", &rn);
+        return ch ? kcLaunchKernelChunked("rms_norm", &rn, 4, 1) : kcLaunchKernel("rms_norm", &rn);
     }, true);
     const llm::RopeArgs ro{dys, 50, 12345, rows * n / 2, 18.93156857f};
     sameOnAllPaths("rope", dys, xs.size() * 4, [&](bool) {
-        pcudaMemcpy(dys, xs.data(), xs.size() * 4, CopyKind::HostToDevice);
-        return pcudaLaunchKernel("rope", &ro);
+        kcMemcpy(dys, xs.data(), xs.size() * 4, CopyKind::HostToDevice);
+        return kcLaunchKernel("rope", &ro);
     }, false);
 }
 
@@ -291,26 +291,26 @@ TEST_CASE(faults_are_contained_on_every_path) {
     Fixture fx;
     REQUIRE(fx.ok);
     for (Codegen c : kPaths) {
-        REQUIRE_OK(pcudaSetKernelCodegen(c));
+        REQUIRE_OK(kcSetKernelCodegen(c));
         float* out = nullptr;
-        REQUIRE_OK(pcudaMalloc(reinterpret_cast<void**>(&out), 1024 * sizeof(float)));
+        REQUIRE_OK(kcMalloc(reinterpret_cast<void**>(&out), 1024 * sizeof(float)));
         const testkernels::OobWriteArgs args{out, 1024};
-        CHECK_ERR(pcudaLaunchKernel("oob_write", &args), Error::KernelFault);
-        pcuda::FaultInfo f{};
-        CHECK_OK(pcudaGetLastFault(&f));
+        CHECK_ERR(kcLaunchKernel("oob_write", &args), Error::KernelFault);
+        kc::FaultInfo f{};
+        CHECK_OK(kcGetLastFault(&f));
         CHECK(f.code == EXCEPTION_ACCESS_VIOLATION);
         CHECK(f.access_type == 1);
         CHECK(f.in_kernel_image == (c == Codegen::Booth));
-        REQUIRE_OK(pcudaDeviceReset());
+        REQUIRE_OK(kcDeviceReset());
 
         int *a = nullptr, *o = nullptr;
-        REQUIRE_OK(pcudaMalloc(reinterpret_cast<void**>(&a), 64 * sizeof(int)));
-        REQUIRE_OK(pcudaMalloc(reinterpret_cast<void**>(&o), 64 * sizeof(int)));
+        REQUIRE_OK(kcMalloc(reinterpret_cast<void**>(&a), 64 * sizeof(int)));
+        REQUIRE_OK(kcMalloc(reinterpret_cast<void**>(&o), 64 * sizeof(int)));
         const testkernels::IntDivArgs div0{a, o, 0, 64};
-        CHECK_ERR(pcudaLaunchKernel("int_div", &div0), Error::KernelFault);
-        CHECK_OK(pcudaGetLastFault(&f));
+        CHECK_ERR(kcLaunchKernel("int_div", &div0), Error::KernelFault);
+        CHECK_OK(kcGetLastFault(&f));
         CHECK(f.code == EXCEPTION_INT_DIVIDE_BY_ZERO);
-        REQUIRE_OK(pcudaDeviceReset());
+        REQUIRE_OK(kcDeviceReset());
         REQUIRE(llm::registerKernels() == Error::Success);
     }
 }

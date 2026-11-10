@@ -2,7 +2,7 @@
 
 // Test-only kernels compiled by Booth (kernels/test/*.cu) and their typed adapters.
 
-#include <pcuda/api.hpp>
+#include <kernelcore/api.hpp>
 
 #include <span>
 
@@ -36,7 +36,7 @@ struct TrigMixArgs {       // out[i] = sinf(x) + cosf(x) + exp2f(x) + log2f(x + 
     int          count;
 };
 
-pcuda::Error registerAll();
+kc::Error registerAll();
 
 // All embedded kernel entries (including the runtime's vector_add), for loader tests.
 struct ImageRef {

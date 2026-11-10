@@ -12,11 +12,11 @@
 // (xd[2b+1]) minus the first half's.
 // rows % 8 == 0, k % 256 == 0, dims = {rows, k}.
 
-#ifndef PCUDA_DP4A_DEFINED
-#define PCUDA_DP4A_DEFINED
+#ifndef KC_DP4A_DEFINED
+#define KC_DP4A_DEFINED
 // u8 x s8 dot product of 4 packed bytes, plus c. The bytes of `a` must be 0..127 so that the
-// GPU's signed __dp4a gives the same result. pcuda_mslgen maps this helper to AVX-VNNI.
-__device__ int pcuda_dp4a(int a, int b, int c)
+// GPU's signed __dp4a gives the same result. kc_mslgen maps this helper to AVX-VNNI.
+__device__ int kc_dp4a(int a, int b, int c)
 {
 #if defined(__NVCC__)
     return __dp4a(a, b, c);
@@ -67,23 +67,23 @@ extern "C" __global__ void matvec_q6k_q8(const int* qw, const int* xq, const flo
                     const int x1 = xq[b * 8 + 8 + w];
                     const int x2 = xq[b * 8 + 16 + w];
                     const int x3 = xq[b * 8 + 24 + w];
-                    d0a = pcuda_dp4a((qa & 252645135) | ((h << 4) & 808464432), x0, d0a);  // 0x0F0F0F0F, 0x30303030
-                    d1a = pcuda_dp4a((qc & 252645135) | ((h << 2) & 808464432), x1, d1a);
-                    d2a = pcuda_dp4a(((qa >> 4) & 252645135) | (h & 808464432), x2, d2a);
-                    d3a = pcuda_dp4a(((qc >> 4) & 252645135) | ((h >> 2) & 808464432), x3, d3a);
-                    s0a = pcuda_dp4a(16843009, x0, s0a);  // 0x01010101: sum of the 4 bytes
-                    s1a = pcuda_dp4a(16843009, x1, s1a);
-                    s2a = pcuda_dp4a(16843009, x2, s2a);
-                    s3a = pcuda_dp4a(16843009, x3, s3a);
+                    d0a = kc_dp4a((qa & 252645135) | ((h << 4) & 808464432), x0, d0a);  // 0x0F0F0F0F, 0x30303030
+                    d1a = kc_dp4a((qc & 252645135) | ((h << 2) & 808464432), x1, d1a);
+                    d2a = kc_dp4a(((qa >> 4) & 252645135) | (h & 808464432), x2, d2a);
+                    d3a = kc_dp4a(((qc >> 4) & 252645135) | ((h >> 2) & 808464432), x3, d3a);
+                    s0a = kc_dp4a(16843009, x0, s0a);  // 0x01010101: sum of the 4 bytes
+                    s1a = kc_dp4a(16843009, x1, s1a);
+                    s2a = kc_dp4a(16843009, x2, s2a);
+                    s3a = kc_dp4a(16843009, x3, s3a);
                 }
                 for (int w = 4; w < 8; ++w) {
                     const int qa = qw[base + (16 * n + w) * 8 + l];
                     const int qc = qw[base + (16 * n + 8 + w) * 8 + l];
                     const int h = qw[base + (32 + 8 * n + w) * 8 + l];
-                    d0b = pcuda_dp4a((qa & 252645135) | ((h << 4) & 808464432), xq[b * 8 + w], d0b);
-                    d1b = pcuda_dp4a((qc & 252645135) | ((h << 2) & 808464432), xq[b * 8 + 8 + w], d1b);
-                    d2b = pcuda_dp4a(((qa >> 4) & 252645135) | (h & 808464432), xq[b * 8 + 16 + w], d2b);
-                    d3b = pcuda_dp4a(((qc >> 4) & 252645135) | ((h >> 2) & 808464432), xq[b * 8 + 24 + w], d3b);
+                    d0b = kc_dp4a((qa & 252645135) | ((h << 4) & 808464432), xq[b * 8 + w], d0b);
+                    d1b = kc_dp4a((qc & 252645135) | ((h << 2) & 808464432), xq[b * 8 + 8 + w], d1b);
+                    d2b = kc_dp4a(((qa >> 4) & 252645135) | (h & 808464432), xq[b * 8 + 16 + w], d2b);
+                    d3b = kc_dp4a(((qc >> 4) & 252645135) | ((h >> 2) & 808464432), xq[b * 8 + 24 + w], d3b);
                 }
                 // signed scales: bytes 8n..8n+7 = words 48 + 2n (blocks 0, 1) and 49 + 2n (blocks 2, 3)
                 const int sw0 = qw[base + (48 + 2 * n) * 8 + l];

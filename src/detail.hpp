@@ -2,7 +2,7 @@
 
 #include <string>
 
-namespace pcuda::detail {
+namespace kc::detail {
 
 // Thread-local diagnostic text for the last failing call on this thread.
 void               setDetail(std::string text) noexcept;
@@ -14,4 +14,4 @@ const std::string& lastDetail() noexcept;
 void markRuntimeThread() noexcept;
 bool isRuntimeThread() noexcept;
 
-} // namespace pcuda::detail
+} // namespace kc::detail

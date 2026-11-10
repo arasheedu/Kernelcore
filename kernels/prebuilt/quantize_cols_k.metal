@@ -6,10 +6,10 @@
 #include <metal_stdlib>
 using namespace metal;
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0);
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0)
 {
     return p0;
@@ -204,7 +204,7 @@ kernel void quantize_cols_k(
     device int * v223;
     device float * v224;
     device float * v225;
-    v6 = pcuda_aligned8(p3);
+    v6 = kc_aligned8(p3);
     v7 = bid.x;
     v8 = bdim.x;
     v9 = v7 * v8;

@@ -10,11 +10,11 @@
 // Weights: 37 words x 8 rows per super-block, as matvec_q4k_q8.cu. y: column c at y + c * rows.
 // Threads, tiles, dims {rows, k, ncols, rb} and base as in matmul_q4k_q8x4.cu.
 
-#ifndef PCUDA_DP4A_DEFINED
-#define PCUDA_DP4A_DEFINED
+#ifndef KC_DP4A_DEFINED
+#define KC_DP4A_DEFINED
 // u8 x s8 dot product of 4 packed bytes, plus c. The bytes of `a` must be 0..127 so that the
-// GPU's signed __dp4a gives the same result. pcuda_mslgen maps this helper to AVX-VNNI.
-__device__ int pcuda_dp4a(int a, int b, int c)
+// GPU's signed __dp4a gives the same result. kc_mslgen maps this helper to AVX-VNNI.
+__device__ int kc_dp4a(int a, int b, int c)
 {
 #if defined(__NVCC__)
     return __dp4a(a, b, c);
@@ -28,11 +28,11 @@ __device__ int pcuda_dp4a(int a, int b, int c)
 }
 #endif
 
-#ifndef PCUDA_ALIGNED8_DEFINED
-#define PCUDA_ALIGNED8_DEFINED
-// Promise that x is a non-negative multiple of 8 (identity). pcuda_mslgen uses it to keep
+#ifndef KC_ALIGNED8_DEFINED
+#define KC_ALIGNED8_DEFINED
+// Promise that x is a non-negative multiple of 8 (identity). kc_mslgen uses it to keep
 // x-based divisions uniform across the 8 lanes of a group, and checks it at run time.
-__device__ int pcuda_aligned8(int x)
+__device__ int kc_aligned8(int x)
 {
     return x;
 }
@@ -40,8 +40,8 @@ __device__ int pcuda_aligned8(int x)
 
 extern "C" __global__ void matmul_q4k_q8kx4(const int* qw, const int* xq, float* y, const int* dims, int base)
 {
-    const int idx = pcuda_aligned8(base) + blockIdx.x * blockDim.x + threadIdx.x;
-    const int rows = pcuda_aligned8(dims[0]);
+    const int idx = kc_aligned8(base) + blockIdx.x * blockDim.x + threadIdx.x;
+    const int rows = kc_aligned8(dims[0]);
     const int k = dims[1];
     const int ncols = dims[2];
     const int rb = dims[3];
@@ -118,10 +118,10 @@ extern "C" __global__ void matmul_q4k_q8kx4(const int* qw, const int* xq, float*
                 int da3 = 0;
                 for (int w = 0; w < 8; ++w) {
                     const int lo = qw[wb + (5 + j * 8 + w) * 8 + l] & 252645135;
-                    da0 = pcuda_dp4a(lo, x0[b * 8 + w], da0);
-                    da1 = pcuda_dp4a(lo, x1[b * 8 + w], da1);
-                    da2 = pcuda_dp4a(lo, x2[b * 8 + w], da2);
-                    da3 = pcuda_dp4a(lo, x3[b * 8 + w], da3);
+                    da0 = kc_dp4a(lo, x0[b * 8 + w], da0);
+                    da1 = kc_dp4a(lo, x1[b * 8 + w], da1);
+                    da2 = kc_dp4a(lo, x2[b * 8 + w], da2);
+                    da3 = kc_dp4a(lo, x3[b * 8 + w], da3);
                 }
                 is0 += sca * da0;
                 is1 += sca * da1;
@@ -133,10 +133,10 @@ extern "C" __global__ void matmul_q4k_q8kx4(const int* qw, const int* xq, float*
                 int db3 = 0;
                 for (int w = 0; w < 8; ++w) {
                     const int hi = (qw[wb + (5 + j * 8 + w) * 8 + l] >> 4) & 252645135;
-                    db0 = pcuda_dp4a(hi, x0[b * 8 + 8 + w], db0);
-                    db1 = pcuda_dp4a(hi, x1[b * 8 + 8 + w], db1);
-                    db2 = pcuda_dp4a(hi, x2[b * 8 + 8 + w], db2);
-                    db3 = pcuda_dp4a(hi, x3[b * 8 + 8 + w], db3);
+                    db0 = kc_dp4a(hi, x0[b * 8 + 8 + w], db0);
+                    db1 = kc_dp4a(hi, x1[b * 8 + 8 + w], db1);
+                    db2 = kc_dp4a(hi, x2[b * 8 + 8 + w], db2);
+                    db3 = kc_dp4a(hi, x3[b * 8 + 8 + w], db3);
                 }
                 is0 += scb * db0;
                 is1 += scb * db1;
@@ -150,10 +150,10 @@ extern "C" __global__ void matmul_q4k_q8kx4(const int* qw, const int* xq, float*
             const int * pm1 = x1 + nsb * 81 + s * 4;
             const int * pm2 = x2 + nsb * 81 + s * 4;
             const int * pm3 = x3 + nsb * 81 + s * 4;
-            const int im0 = 64 * (pcuda_dp4a(mlo, pm0[0], 0) + pcuda_dp4a(mhi, pm0[1], 0)) + pcuda_dp4a(mlo, pm0[2], 0) + pcuda_dp4a(mhi, pm0[3], 0);
-            const int im1 = 64 * (pcuda_dp4a(mlo, pm1[0], 0) + pcuda_dp4a(mhi, pm1[1], 0)) + pcuda_dp4a(mlo, pm1[2], 0) + pcuda_dp4a(mhi, pm1[3], 0);
-            const int im2 = 64 * (pcuda_dp4a(mlo, pm2[0], 0) + pcuda_dp4a(mhi, pm2[1], 0)) + pcuda_dp4a(mlo, pm2[2], 0) + pcuda_dp4a(mhi, pm2[3], 0);
-            const int im3 = 64 * (pcuda_dp4a(mlo, pm3[0], 0) + pcuda_dp4a(mhi, pm3[1], 0)) + pcuda_dp4a(mlo, pm3[2], 0) + pcuda_dp4a(mhi, pm3[3], 0);
+            const int im0 = 64 * (kc_dp4a(mlo, pm0[0], 0) + kc_dp4a(mhi, pm0[1], 0)) + kc_dp4a(mlo, pm0[2], 0) + kc_dp4a(mhi, pm0[3], 0);
+            const int im1 = 64 * (kc_dp4a(mlo, pm1[0], 0) + kc_dp4a(mhi, pm1[1], 0)) + kc_dp4a(mlo, pm1[2], 0) + kc_dp4a(mhi, pm1[3], 0);
+            const int im2 = 64 * (kc_dp4a(mlo, pm2[0], 0) + kc_dp4a(mhi, pm2[1], 0)) + kc_dp4a(mlo, pm2[2], 0) + kc_dp4a(mhi, pm2[3], 0);
+            const int im3 = 64 * (kc_dp4a(mlo, pm3[0], 0) + kc_dp4a(mhi, pm3[1], 0)) + kc_dp4a(mlo, pm3[2], 0) + kc_dp4a(mhi, pm3[3], 0);
             acc0 += (d * xd0[s]) * (float)is0 - (dmin * xd0[s]) * (float)im0;
             acc1 += (d * xd1[s]) * (float)is1 - (dmin * xd1[s]) * (float)im1;
             acc2 += (d * xd2[s]) * (float)is2 - (dmin * xd2[s]) * (float)im2;

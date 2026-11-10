@@ -1,9 +1,9 @@
 #pragma once
 
-// Typed arguments and pcuda registration for the LLM decode kernels in kernels/llm/.
+// Typed arguments and Kernelcore registration for the LLM decode kernels in kernels/llm/.
 // The same .cu files are compiled by nvcc for the GPU side (gpu/cuda_llm.cu).
 
-#include <pcuda/api.hpp>
+#include <kernelcore/api.hpp>
 
 #include <cstdint>
 
@@ -367,6 +367,6 @@ struct FaValuesArgs {  // out[N][H][D]
 
 // Registers matvec_q8, matvec_q4, matvec_q4x8, quantize_q8x4, quantize_cols, matvec_q4x8_q8, matvec_q4x8_q8x2, matvec_q4k_q8, matvec_q6k_q8, matmul_q4k_q8x4, matmul_q6k_q8x4, rope_ff, add_rms_norm, silu_mul_q8x4, add_sumsq, norm_q8x4, rms_norm, rope, kv_append, attn_scores, softmax, attn_values, silu_mul, matmul_f16, set_rows_f16 and fa_scores / fa_max / fa_exp / fa_values.
 // All but add_rms_norm, rope and kv_append opt into chunked launches.
-pcuda::Error registerKernels() noexcept;
+kc::Error registerKernels() noexcept;
 
 } // namespace llm

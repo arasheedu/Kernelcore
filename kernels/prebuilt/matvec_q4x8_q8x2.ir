@@ -1,6 +1,6 @@
 ; Booth IR
 
-func @pcuda_dp4a(i32 %0, i32 %1, i32 %2) __device__ {
+func @kc_dp4a(i32 %0, i32 %1, i32 %2) __device__ {
 entry:
     %3 = and i32 %0, 255  ; line 17
     %4 = shl i32 %1, 24  ; line 17
@@ -122,15 +122,15 @@ for.body:
     %79 = gep ptr<global, i32>, %1, %78  ; line 50
     %80 = load i32, %79  ; line 50
     %81 = and i32 %66, 252645135  ; line 51
-    %82 = call i32 @pcuda_dp4a(%81, %75, %51)  ; line 51
+    %82 = call i32 @kc_dp4a(%81, %75, %51)  ; line 51
     %83 = ashr i32 %66, 4  ; line 52
     %84 = and i32 %83, 252645135  ; line 52
-    %85 = call i32 @pcuda_dp4a(%84, %80, %52)  ; line 52
+    %85 = call i32 @kc_dp4a(%84, %80, %52)  ; line 52
     %86 = and i32 %71, 252645135  ; line 53
-    %87 = call i32 @pcuda_dp4a(%86, %75, %53)  ; line 53
+    %87 = call i32 @kc_dp4a(%86, %75, %53)  ; line 53
     %88 = ashr i32 %71, 4  ; line 54
     %89 = and i32 %88, 252645135  ; line 54
-    %90 = call i32 @pcuda_dp4a(%89, %80, %54)  ; line 54
+    %90 = call i32 @kc_dp4a(%89, %80, %54)  ; line 54
     br for.inc  ; line 54
 
 for.inc:

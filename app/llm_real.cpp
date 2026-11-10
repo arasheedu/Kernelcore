@@ -1,14 +1,14 @@
-// pcuda_llm_real: runs a real Llama GGUF model (e.g. Ollama's llama3.2, Q4_K_M) through pcuda's
+// kc_llm_real: runs a real Llama GGUF model (e.g. Ollama's llama3.2, Q4_K_M) through Kernelcore's
 // CUDA C kernels on the CPU, and compares it with llama.cpp on the same file.
 //
-//   pcuda_llm_real --gguf FILE --list
-//   pcuda_llm_real --gguf FILE --ref REF [--workers N] [--graphs on|off] [--mirror K]
+//   kc_llm_real --gguf FILE --list
+//   kc_llm_real --gguf FILE --ref REF [--workers N] [--graphs on|off] [--mirror K]
 //
 // REF (written by scripts/real_model_check.ps1 from llama-server):
 //   prompt <id> <id> ...
 //   gen <id> <logprob> <top id> <top logprob> ...      one line per generated token (greedy)
 // Checks:
-//   1. mirror: the first K prompt positions on pcuda and on the C++ mirror of the kernels give
+//   1. mirror: the first K prompt positions on Kernelcore and on the C++ mirror of the kernels give
 //      bit-identical logits;
 //   2. teacher forcing: fed llama.cpp's tokens, our top token and log-probabilities at each
 //      generated position against llama.cpp's;
@@ -18,8 +18,8 @@
 #include "llm_model.hpp"
 #include "llm_reference.hpp"
 
-#include <pcuda/api.hpp>
-#include <pcuda/kernels.hpp>
+#include <kernelcore/api.hpp>
+#include <kernelcore/kernels.hpp>
 
 #include <algorithm>
 #include <bit>
@@ -114,7 +114,7 @@ int benchMatvec(unsigned workers) {
     const K kernels[] = {{"matvec_q4x8_q8", 40, size_t(rows) * k * 5 / 8},
                          {"matvec_q4k_q8", 37, size_t(rows) * k / 256 * 144},
                          {"matvec_q6k_q8", 53, size_t(rows) * k / 256 * 210}};
-    llm::PcudaAllocator pa;
+    llm::KcAllocator pa;
     std::vector<int> xq(size_t(nb) * 8);
     std::vector<float> xd(size_t(nb) * 2);
     {
@@ -151,8 +151,8 @@ int benchMatvec(unsigned workers) {
         for (int r = 0; r < 6; ++r) {
             const auto t = Clock::now();
             for (int i = 0; i < 50; ++i)
-                if (pcudaLaunchKernelChunked(kn.name, &a, workers, 16) != pcuda::Error::Success)
-                    throw std::runtime_error(std::string(kn.name) + ": " + pcudaGetLastErrorDetail());
+                if (kcLaunchKernelChunked(kn.name, &a, workers, 16) != kc::Error::Success)
+                    throw std::runtime_error(std::string(kn.name) + ": " + kcGetLastErrorDetail());
             if (r) runs.push_back(std::chrono::duration<double>(Clock::now() - t).count() / 50);
         }
         std::sort(runs.begin(), runs.end());
@@ -166,26 +166,26 @@ int benchMatvec(unsigned workers) {
 // --bench-steps: cost of one graph step: graphs of 500 tiny launches (8-element vector_add), each its
 // own step, or 10 per concurrent step.
 int benchSteps() {
-    llm::PcudaAllocator pa;
+    llm::KcAllocator pa;
     auto* a = static_cast<float*>(pa.alloc(4096));
     auto* b = static_cast<float*>(pa.alloc(4096));
     auto* o = static_cast<float*>(pa.alloc(4096));
-    const pcuda::kernels::VectorAddArgs args{a, b, o, 8};
+    const kc::kernels::VectorAddArgs args{a, b, o, 8};
     for (int group : {1, 10}) {
         std::vector<double> runs;
         for (int r = 0; r < 7; ++r) {
-            if (pcudaStreamBeginCapture(nullptr) != pcuda::Error::Success) throw std::runtime_error("capture");
+            if (kcStreamBeginCapture(nullptr) != kc::Error::Success) throw std::runtime_error("capture");
             for (int i = 0; i < 500; i += group) {
-                if (group > 1) pcudaStreamConcurrentBegin(nullptr);
-                for (int j = 0; j < group; ++j) pcudaLaunchKernel("vector_add", &args);
-                if (group > 1) pcudaStreamConcurrentEnd(nullptr);
+                if (group > 1) kcStreamConcurrentBegin(nullptr);
+                for (int j = 0; j < group; ++j) kcLaunchKernel("vector_add", &args);
+                if (group > 1) kcStreamConcurrentEnd(nullptr);
             }
-            pcudaGraph_t g = nullptr;
-            pcudaStreamEndCapture(nullptr, &g);
+            kcGraph_t g = nullptr;
+            kcStreamEndCapture(nullptr, &g);
             const auto t = Clock::now();
-            if (pcudaGraphLaunch(g) != pcuda::Error::Success) throw std::runtime_error("graph launch");
+            if (kcGraphLaunch(g) != kc::Error::Success) throw std::runtime_error("graph launch");
             runs.push_back(std::chrono::duration<double, std::micro>(Clock::now() - t).count());
-            pcudaGraphDestroy(g);
+            kcGraphDestroy(g);
         }
         std::sort(runs.begin(), runs.end());
         const int steps = 500 / group;
@@ -193,7 +193,7 @@ int benchSteps() {
     }
     // the same launches without a graph (synchronous, each through the stream)
     const auto t = Clock::now();
-    for (int i = 0; i < 500; ++i) pcudaLaunchKernel("vector_add", &args);
+    for (int i = 0; i < 500; ++i) kcLaunchKernel("vector_add", &args);
     std::printf("  500 synchronous launches: %8.1f us, %6.2f us each\n",
                 std::chrono::duration<double, std::micro>(Clock::now() - t).count(),
                 std::chrono::duration<double, std::micro>(Clock::now() - t).count() / 500);
@@ -223,12 +223,12 @@ int run(int argc, char** argv) {
         else throw std::invalid_argument("unknown argument " + a);
     }
     if (bench_mv || bench_steps) {
-        if (pcudaInit() != pcuda::Error::Success || llm::registerKernels() != pcuda::Error::Success)
-            throw std::runtime_error("pcuda init");
-        pcuda::DeviceProperties pr{};
-        pcudaGetDeviceProperties(&pr, 0);
+        if (kcInit() != kc::Error::Success || llm::registerKernels() != kc::Error::Success)
+            throw std::runtime_error("Kernelcore init");
+        kc::DeviceProperties pr{};
+        kcGetDeviceProperties(&pr, 0);
         const int r = bench_steps ? benchSteps() : benchMatvec(workers ? workers : pr.performance_workers);
-        pcudaShutdown();
+        kcShutdown();
         return r;
     }
     if (path.empty()) throw std::invalid_argument("--gguf FILE is required");
@@ -247,16 +247,16 @@ int run(int argc, char** argv) {
     const Ref ref = readRef(ref_path);
     const int P = int(ref.prompt.size()), G = int(ref.gen.size());
 
-    if (pcudaInit() != pcuda::Error::Success) throw std::runtime_error("pcudaInit failed");
-    if (llm::registerKernels() != pcuda::Error::Success)
-        throw std::runtime_error(std::string("registering kernels: ") + pcudaGetLastErrorDetail());
-    pcuda::DeviceProperties props{};
-    pcudaGetDeviceProperties(&props, 0);
+    if (kcInit() != kc::Error::Success) throw std::runtime_error("kcInit failed");
+    if (llm::registerKernels() != kc::Error::Success)
+        throw std::runtime_error(std::string("registering kernels: ") + kcGetLastErrorDetail());
+    kc::DeviceProperties props{};
+    kcGetDeviceProperties(&props, 0);
     if (!workers) workers = props.performance_workers;  // decode: bound by memory bandwidth
 
     int rc = 0;
     {
-        llm::PcudaAllocator pa;
+        llm::KcAllocator pa;
         const auto t0 = Clock::now();
         const llm::Model m = llm::loadGguf(f, P + G + 1, pa);
         const llm::Config& c = m.cfg;
@@ -267,9 +267,9 @@ int run(int argc, char** argv) {
                     c.hidden, c.inter, c.heads, c.kv_heads, c.vocab);
         std::printf("Weights: %.2f GB of Q4_K/Q6_K read per token (as in the file); loaded and repacked in %.1f s\n",
                     double(c.weightBytes()) / 1e9, load_s);
-        std::printf("Run   : prompt %d tokens, %d generated by llama.cpp (greedy); pcuda pool %u threads + 1, graphs %s\n\n",
+        std::printf("Run   : prompt %d tokens, %d generated by llama.cpp (greedy); Kernelcore pool %u threads + 1, graphs %s\n\n",
                     P, G, props.worker_count, graphs ? "on" : "off");
-        auto pcu = llm::makePcudaBackend(m, workers, graphs);
+        auto pcu = llm::makeKcBackend(m, workers, graphs);
         auto cpp = llm::makeCppBackend(m);
         auto logits = [&] {
             std::vector<float> l(size_t(c.vocab));
@@ -277,7 +277,7 @@ int run(int argc, char** argv) {
             return l;
         };
 
-        // 1. pcuda against the C++ mirror of the kernels (same K/V cache slots, same values).
+        // 1. Kernelcore against the C++ mirror of the kernels (same K/V cache slots, same values).
         bool mirror_ok = true;
         for (int p = 0; p < std::min(mirror, P); ++p) {
             llm::decodeToken(*pcu, m, a, p, nullptr, ref.prompt[size_t(p)]);
@@ -286,7 +286,7 @@ int run(int argc, char** argv) {
             const auto lc = logits();
             if (lp != lc) mirror_ok = false;
         }
-        std::printf("1. pcuda vs C++ mirror, first %d positions: %s\n", std::min(mirror, P),
+        std::printf("1. Kernelcore vs C++ mirror, first %d positions: %s\n", std::min(mirror, P),
                     mirror_ok ? "bit-identical logits" : "DIFFERENT");
 
         // 2. Teacher forcing on llama.cpp's tokens.
@@ -334,15 +334,15 @@ int run(int argc, char** argv) {
         for (const RefToken& t : ref.gen) theirs.push_back(t.id);
         std::printf("3. free run, greedy: %d of %d tokens identical to llama.cpp before the first difference\n", same, G);
         std::printf("   llama.cpp: %s\n", text(vocab, theirs).c_str());
-        std::printf("   pcuda    : %s\n", text(vocab, ours).c_str());
-        std::printf("   pcuda decode: %.2f ms/token, %.2f tok/s, %.1f GB/s of weights\n\n", ms, 1000.0 / ms,
+        std::printf("   Kernelcore    : %s\n", text(vocab, ours).c_str());
+        std::printf("   Kernelcore decode: %.2f ms/token, %.2f tok/s, %.1f GB/s of weights\n\n", ms, 1000.0 / ms,
                     double(c.weightBytes()) / 1e9 / (ms / 1000.0));
         std::printf("RESULT_REAL,%d,%d,%d,%.5f,%.5f,%.2f,%d,%.4f,%.4f,%.4f\n", mirror_ok ? 1 : 0, agree, G, sum_abs / G,
                     max_abs, 100.0 * top5_hits / std::max(1, top5_total), same, ms, 1000.0 / ms,
                     double(c.weightBytes()) / 1e9);
         rc = mirror_ok && agree >= G * 9 / 10 ? 0 : 1;
     }
-    pcudaShutdown();
+    kcShutdown();
     std::printf("%s\n", rc == 0 ? "PASS" : "FAIL");
     return rc;
 }
@@ -353,7 +353,7 @@ int main(int argc, char** argv) {
     try {
         return run(argc, argv);
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "pcuda_llm_real: %s\n", e.what());
+        std::fprintf(stderr, "kc_llm_real: %s\n", e.what());
         return 1;
     }
 }

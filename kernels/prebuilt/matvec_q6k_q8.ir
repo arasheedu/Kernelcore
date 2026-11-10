@@ -1,6 +1,6 @@
 ; Booth IR
 
-func @pcuda_dp4a(i32 %0, i32 %1, i32 %2) __device__ {
+func @kc_dp4a(i32 %0, i32 %1, i32 %2) __device__ {
 entry:
     %3 = and i32 %0, 255  ; line 24
     %4 = shl i32 %1, 24  ; line 24
@@ -233,27 +233,27 @@ for.body:
     %182 = shl i32 %161, 4  ; line 70
     %183 = and i32 %182, 808464432  ; line 70
     %184 = or i32 %181, %183  ; line 70
-    %185 = call i32 @pcuda_dp4a(%184, %165, %121)  ; line 70
+    %185 = call i32 @kc_dp4a(%184, %165, %121)  ; line 70
     %186 = and i32 %153, 252645135  ; line 71
     %187 = shl i32 %161, 2  ; line 71
     %188 = and i32 %187, 808464432  ; line 71
     %189 = or i32 %186, %188  ; line 71
-    %190 = call i32 @pcuda_dp4a(%189, %170, %122)  ; line 71
+    %190 = call i32 @kc_dp4a(%189, %170, %122)  ; line 71
     %191 = ashr i32 %145, 4  ; line 72
     %192 = and i32 %191, 252645135  ; line 72
     %193 = and i32 %161, 808464432  ; line 72
     %194 = or i32 %192, %193  ; line 72
-    %195 = call i32 @pcuda_dp4a(%194, %175, %123)  ; line 72
+    %195 = call i32 @kc_dp4a(%194, %175, %123)  ; line 72
     %196 = ashr i32 %153, 4  ; line 73
     %197 = and i32 %196, 252645135  ; line 73
     %198 = ashr i32 %161, 2  ; line 73
     %199 = and i32 %198, 808464432  ; line 73
     %200 = or i32 %197, %199  ; line 73
-    %201 = call i32 @pcuda_dp4a(%200, %180, %124)  ; line 73
-    %202 = call i32 @pcuda_dp4a(16843009, %165, %125)  ; line 74
-    %203 = call i32 @pcuda_dp4a(16843009, %170, %126)  ; line 75
-    %204 = call i32 @pcuda_dp4a(16843009, %175, %127)  ; line 76
-    %205 = call i32 @pcuda_dp4a(16843009, %180, %128)  ; line 77
+    %201 = call i32 @kc_dp4a(%200, %180, %124)  ; line 73
+    %202 = call i32 @kc_dp4a(16843009, %165, %125)  ; line 74
+    %203 = call i32 @kc_dp4a(16843009, %170, %126)  ; line 75
+    %204 = call i32 @kc_dp4a(16843009, %175, %127)  ; line 76
+    %205 = call i32 @kc_dp4a(16843009, %180, %128)  ; line 77
     br for.inc  ; line 77
 
 for.inc:
@@ -307,7 +307,7 @@ for.body:
     %248 = add i32 %247, %214  ; line 83
     %249 = gep ptr<global, i32>, %1, %248  ; line 83
     %250 = load i32, %249  ; line 83
-    %251 = call i32 @pcuda_dp4a(%246, %250, %210)  ; line 83
+    %251 = call i32 @kc_dp4a(%246, %250, %210)  ; line 83
     %252 = and i32 %234, 252645135  ; line 84
     %253 = shl i32 %242, 2  ; line 84
     %254 = and i32 %253, 808464432  ; line 84
@@ -317,7 +317,7 @@ for.body:
     %258 = add i32 %257, %214  ; line 84
     %259 = gep ptr<global, i32>, %1, %258  ; line 84
     %260 = load i32, %259  ; line 84
-    %261 = call i32 @pcuda_dp4a(%255, %260, %211)  ; line 84
+    %261 = call i32 @kc_dp4a(%255, %260, %211)  ; line 84
     %262 = ashr i32 %226, 4  ; line 85
     %263 = and i32 %262, 252645135  ; line 85
     %264 = and i32 %242, 808464432  ; line 85
@@ -327,7 +327,7 @@ for.body:
     %268 = add i32 %267, %214  ; line 85
     %269 = gep ptr<global, i32>, %1, %268  ; line 85
     %270 = load i32, %269  ; line 85
-    %271 = call i32 @pcuda_dp4a(%265, %270, %212)  ; line 85
+    %271 = call i32 @kc_dp4a(%265, %270, %212)  ; line 85
     %272 = ashr i32 %234, 4  ; line 86
     %273 = and i32 %272, 252645135  ; line 86
     %274 = ashr i32 %242, 2  ; line 86
@@ -338,7 +338,7 @@ for.body:
     %279 = add i32 %278, %214  ; line 86
     %280 = gep ptr<global, i32>, %1, %279  ; line 86
     %281 = load i32, %280  ; line 86
-    %282 = call i32 @pcuda_dp4a(%276, %281, %213)  ; line 86
+    %282 = call i32 @kc_dp4a(%276, %281, %213)  ; line 86
     br for.inc  ; line 86
 
 for.inc:

@@ -7,11 +7,11 @@
 // Values round half away from zero, as quantize_q8x4 does, to -127..127.
 // One thread per (column, super-block). dims = {nsb, ncols}. base: first thread (chunking).
 
-#ifndef PCUDA_ALIGNED8_DEFINED
-#define PCUDA_ALIGNED8_DEFINED
-// Promise that x is a non-negative multiple of 8 (identity). pcuda_mslgen uses it to keep
+#ifndef KC_ALIGNED8_DEFINED
+#define KC_ALIGNED8_DEFINED
+// Promise that x is a non-negative multiple of 8 (identity). kc_mslgen uses it to keep
 // x-based divisions uniform across the 8 lanes of a group, and checks it at run time.
-__device__ int pcuda_aligned8(int x)
+__device__ int kc_aligned8(int x)
 {
     return x;
 }
@@ -19,7 +19,7 @@ __device__ int pcuda_aligned8(int x)
 
 extern "C" __global__ void quantize_cols_k(const float* x, int* q, const int* dims, int base)
 {
-    const int idx = pcuda_aligned8(base) + blockIdx.x * blockDim.x + threadIdx.x;
+    const int idx = kc_aligned8(base) + blockIdx.x * blockDim.x + threadIdx.x;
     const int nsb = dims[0];
     const int ncols = dims[1];
     if (idx < nsb * ncols) {

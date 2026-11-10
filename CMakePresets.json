@@ -26,19 +26,19 @@
       "name": "windows-msvc-asan",
       "displayName": "MSVC x64 Debug + AddressSanitizer",
       "inherits": "windows-msvc",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "PCUDA_ENABLE_ASAN": "ON" }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "KC_ENABLE_ASAN": "ON" }
     },
     {
       "name": "windows-msvc-prebuilt",
       "displayName": "MSVC x64, kernels from kernels/prebuilt only",
       "inherits": "windows-msvc",
-      "cacheVariables": { "PCUDA_KATH_MODE": "prebuilt" }
+      "cacheVariables": { "KC_KATH_MODE": "prebuilt" }
     },
     {
       "name": "windows-msvc-nvidia",
-      "displayName": "MSVC x64 + pcuda_vs_cuda (needs CUDA Toolkit and an NVIDIA GPU)",
+      "displayName": "MSVC x64 + kc_vs_cuda (needs CUDA Toolkit and an NVIDIA GPU)",
       "inherits": "windows-msvc",
-      "cacheVariables": { "PCUDA_ENABLE_NVIDIA": "ON" }
+      "cacheVariables": { "KC_ENABLE_NVIDIA": "ON" }
     },
     {
       "name": "windows-clangcl",

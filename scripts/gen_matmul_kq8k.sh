@@ -25,12 +25,12 @@ cat <<E
 
 E
 # the dp4a and aligned8 helpers, from the 4-column kernel
-sed -n '/^#ifndef PCUDA_DP4A_DEFINED/,/^extern "C"/p' "$here/kernels/llm/matmul_q4k_q8x4.cu" | sed '$d'
+sed -n '/^#ifndef KC_DP4A_DEFINED/,/^extern "C"/p' "$here/kernels/llm/matmul_q4k_q8x4.cu" | sed '$d'
 echo "extern \"C\" __global__ void matmul_${q}k_q8kx${T}(const int* qw, const int* xq, float* y, const int* dims, int base)"
 cat <<E
 {
-    const int idx = pcuda_aligned8(base) + blockIdx.x * blockDim.x + threadIdx.x;
-    const int rows = pcuda_aligned8(dims[0]);
+    const int idx = kc_aligned8(base) + blockIdx.x * blockDim.x + threadIdx.x;
+    const int rows = kc_aligned8(dims[0]);
     const int k = dims[1];
     const int ncols = dims[2];
     const int rb = dims[3];
@@ -89,7 +89,7 @@ cat <<'E'
                 for (int w = 0; w < 8; ++w) {
                     const int lo = qw[wb + (5 + j * 8 + w) * 8 + l] & 252645135;
 E
-for ((i=0;i<T;i++)); do echo "                    da$i = pcuda_dp4a(lo, x$i[b * 8 + w], da$i);"; done
+for ((i=0;i<T;i++)); do echo "                    da$i = kc_dp4a(lo, x$i[b * 8 + w], da$i);"; done
 echo "                }"
 rep '                is@ += sca * da@;'
 rep '                int db@ = 0;'
@@ -97,7 +97,7 @@ cat <<'E'
                 for (int w = 0; w < 8; ++w) {
                     const int hi = (qw[wb + (5 + j * 8 + w) * 8 + l] >> 4) & 252645135;
 E
-for ((i=0;i<T;i++)); do echo "                    db$i = pcuda_dp4a(hi, x$i[b * 8 + 8 + w], db$i);"; done
+for ((i=0;i<T;i++)); do echo "                    db$i = kc_dp4a(hi, x$i[b * 8 + 8 + w], db$i);"; done
 echo "                }"
 rep '                is@ += scb * db@;'
 echo "            }"
@@ -107,7 +107,7 @@ cat <<'E'
             // (B >> 6, then B & 63; quantize_cols_k.cu).
 E
 rep '            const int * pm@ = x@ + nsb * 81 + s * 4;'
-rep '            const int im@ = 64 * (pcuda_dp4a(mlo, pm@[0], 0) + pcuda_dp4a(mhi, pm@[1], 0)) + pcuda_dp4a(mlo, pm@[2], 0) + pcuda_dp4a(mhi, pm@[3], 0);'
+rep '            const int im@ = 64 * (kc_dp4a(mlo, pm@[0], 0) + kc_dp4a(mhi, pm@[1], 0)) + kc_dp4a(mlo, pm@[2], 0) + kc_dp4a(mhi, pm@[3], 0);'
 rep '            acc@ += (d * xd@[s]) * (float)is@ - (dmin * xd@[s]) * (float)im@;'
 echo "        }"
 else
@@ -138,7 +138,7 @@ cat <<'E'
                         const int hi = ((qw[wb + (32 + 8 * n + w) * 8 + l] >> hish) << 4) & 808464432;    // 0x30303030
                         const int q = lo | hi;
 E
-rep '                        da@ = pcuda_dp4a(q, x@[b * 8 + w], da@);'
+rep '                        da@ = kc_dp4a(q, x@[b * 8 + w], da@);'
 cat <<'E'
                     }
                     for (int w = 4; w < 8; ++w) {
@@ -146,7 +146,7 @@ cat <<'E'
                         const int hi = ((qw[wb + (32 + 8 * n + w) * 8 + l] >> hish) << 4) & 808464432;
                         const int q = lo | hi;
 E
-rep '                        db@ = pcuda_dp4a(q, x@[b * 8 + w], db@);'
+rep '                        db@ = kc_dp4a(q, x@[b * 8 + w], db@);'
 echo "                    }"
 echo "                    // weights are q - 32: subtract 32 x the activation sums"
 rep '                    is@ += sca * (da@ - 32 * bs@[o]) + scb * (db@ - 32 * bs@[o + 1]);'

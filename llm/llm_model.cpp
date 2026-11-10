@@ -2,7 +2,7 @@
 
 #include "llm_reference.hpp"
 
-#include <pcuda/kernels.hpp>
+#include <kernelcore/kernels.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -88,12 +88,12 @@ const char* opName(Op op) {
 
 namespace {
 
-[[noreturn]] void pcudaFail(const char* what, pcuda::Error e) {
-    throw std::runtime_error(std::string(what) + ": " + pcudaGetErrorString(e) + " (" + pcudaGetLastErrorDetail() + ")");
+[[noreturn]] void kcFail(const char* what, kc::Error e) {
+    throw std::runtime_error(std::string(what) + ": " + kcGetErrorString(e) + " (" + kcGetLastErrorDetail() + ")");
 }
 
-void pcudaCheck(pcuda::Error e, const char* what) {
-    if (e != pcuda::Error::Success) pcudaFail(what, e);
+void kcCheck(kc::Error e, const char* what) {
+    if (e != kc::Error::Success) kcFail(what, e);
 }
 
 } // namespace
@@ -112,23 +112,23 @@ void* HostAllocator::alloc(size_t bytes) {
 void HostAllocator::upload(void* dst, const void* src, size_t bytes) { std::memcpy(dst, src, bytes); }
 void HostAllocator::download(void* dst, const void* src, size_t bytes) { std::memcpy(dst, src, bytes); }
 
-PcudaAllocator::~PcudaAllocator() {
-    for (void* p : blocks_) pcudaFree(p);
+KcAllocator::~KcAllocator() {
+    for (void* p : blocks_) kcFree(p);
 }
 
-void* PcudaAllocator::alloc(size_t bytes) {
+void* KcAllocator::alloc(size_t bytes) {
     void* p = nullptr;
-    pcudaCheck(pcudaMalloc(&p, bytes ? bytes : 1), "pcudaMalloc");
+    kcCheck(kcMalloc(&p, bytes ? bytes : 1), "kcMalloc");
     blocks_.push_back(p);
     return p;
 }
 
-void PcudaAllocator::upload(void* dst, const void* src, size_t bytes) {
-    pcudaCheck(pcudaMemcpy(dst, src, bytes, pcuda::CopyKind::HostToDevice), "pcudaMemcpy H2D");
+void KcAllocator::upload(void* dst, const void* src, size_t bytes) {
+    kcCheck(kcMemcpy(dst, src, bytes, kc::CopyKind::HostToDevice), "kcMemcpy H2D");
 }
 
-void PcudaAllocator::download(void* dst, const void* src, size_t bytes) {
-    pcudaCheck(pcudaMemcpy(dst, src, bytes, pcuda::CopyKind::DeviceToHost), "pcudaMemcpy D2H");
+void KcAllocator::download(void* dst, const void* src, size_t bytes) {
+    kcCheck(kcMemcpy(dst, src, bytes, kc::CopyKind::DeviceToHost), "kcMemcpy D2H");
 }
 
 // ---- deterministic model data -------------------------------------------------
@@ -363,16 +363,16 @@ void decodeToken(Backend& b, const Model& m, const Acts& a, int pos, Profiler* p
 
 namespace {
 
-class PcudaBackend final : public Backend {
+class KcBackend final : public Backend {
 public:
-    PcudaBackend(const Model& m, unsigned workers, bool graphs, bool two_rows)
+    KcBackend(const Model& m, unsigned workers, bool graphs, bool two_rows)
         : m_(m), workers_(workers), graphs_(graphs), two_rows_(two_rows), ctx_(m.cfg.max_ctx) {}
-    ~PcudaBackend() override { abandonCapture(); }
+    ~KcBackend() override { abandonCapture(); }
     void abandonCapture() noexcept {
         if (!capturing_) return;
         capturing_ = false;
-        pcudaGraph_t g = nullptr;
-        if (pcudaStreamEndCapture(nullptr, &g) == pcuda::Error::Success) pcudaGraphDestroy(g);
+        kcGraph_t g = nullptr;
+        if (kcStreamEndCapture(nullptr, &g) == kc::Error::Success) kcGraphDestroy(g);
     }
 
     void setScratch(int* q) override { xq_ = q; }
@@ -380,7 +380,7 @@ public:
         ctx_ = ctx;
         const AttnDims d = m_.cfg.attnDims(ctx);
         const int dims[7] = {d.n_heads, d.ctx, d.head_dim, d.kv_stride, d.group, d.ctx_pad, d.k_stride};
-        pcudaCheck(pcudaMemcpy(m_.attn_dims, dims, sizeof dims, pcuda::CopyKind::HostToDevice), "pcudaMemcpy dims");
+        kcCheck(kcMemcpy(m_.attn_dims, dims, sizeof dims, kc::CopyKind::HostToDevice), "kcMemcpy dims");
     }
     void matvec(const Mat& w, const float* x, float* y) override {
         if (quantizedActs(w.format)) {
@@ -454,43 +454,43 @@ public:
         launch("silu_mul", &a, 1024);
     }
     void add(float* x, const float* t, int n) override {
-        const pcuda::kernels::VectorAddArgs a{x, t, x, n};
+        const kc::kernels::VectorAddArgs a{x, t, x, n};
         launch("vector_add", &a, 0);
     }
     void copy(float* dst, const float* src, int n) override {
-        pcudaCheck(pcudaMemcpy(dst, src, size_t(n) * sizeof(float), pcuda::CopyKind::DeviceToDevice), "pcudaMemcpy");
+        kcCheck(kcMemcpy(dst, src, size_t(n) * sizeof(float), kc::CopyKind::DeviceToDevice), "kcMemcpy");
     }
     void upload(float* dst, const float* host, int n) override {
-        pcudaCheck(pcudaMemcpy(dst, host, size_t(n) * sizeof(float), pcuda::CopyKind::HostToDevice), "pcudaMemcpy");
+        kcCheck(kcMemcpy(dst, host, size_t(n) * sizeof(float), kc::CopyKind::HostToDevice), "kcMemcpy");
     }
-    void finish() override { pcudaCheck(pcudaDeviceSynchronize(), "pcudaDeviceSynchronize"); }
+    void finish() override { kcCheck(kcDeviceSynchronize(), "kcDeviceSynchronize"); }
     void beginToken(bool profiling) override {
         abandonCapture();  // an earlier token threw before endToken
         if (!graphs_ || profiling) return;
-        pcudaCheck(pcudaStreamBeginCapture(nullptr), "pcudaStreamBeginCapture");
+        kcCheck(kcStreamBeginCapture(nullptr), "kcStreamBeginCapture");
         capturing_ = true;
     }
     void endToken() override {
         if (!capturing_) return;
         capturing_ = false;
-        pcudaGraph_t g = nullptr;
-        pcudaCheck(pcudaStreamEndCapture(nullptr, &g), "pcudaStreamEndCapture");
-        const pcuda::Error e = pcudaGraphLaunch(g, nullptr);  // synchronous: logits ready after
-        if (e != pcuda::Error::Success) {
-            const std::string why = std::string("pcudaGraphLaunch: ") + pcudaGetErrorString(e) + " (" +
-                                    pcudaGetLastErrorDetail() + ")";
-            pcudaGraphDestroy(g);
+        kcGraph_t g = nullptr;
+        kcCheck(kcStreamEndCapture(nullptr, &g), "kcStreamEndCapture");
+        const kc::Error e = kcGraphLaunch(g, nullptr);  // synchronous: logits ready after
+        if (e != kc::Error::Success) {
+            const std::string why = std::string("kcGraphLaunch: ") + kcGetErrorString(e) + " (" +
+                                    kcGetLastErrorDetail() + ")";
+            kcGraphDestroy(g);
             throw std::runtime_error(why);
         }
-        pcudaCheck(pcudaGraphDestroy(g), "pcudaGraphDestroy");
+        kcCheck(kcGraphDestroy(g), "kcGraphDestroy");
     }
 
 private:
     // min_chunk == 0: never chunked (too little work to share).
     void launch(const char* name, const void* args, int64_t min_chunk) {
-        const pcuda::Error e = (workers_ && min_chunk) ? pcudaLaunchKernelChunked(name, args, workers_, min_chunk)
-                                                        : pcudaLaunchKernel(name, args);
-        if (e != pcuda::Error::Success) pcudaFail(name, e);
+        const kc::Error e = (workers_ && min_chunk) ? kcLaunchKernelChunked(name, args, workers_, min_chunk)
+                                                        : kcLaunchKernel(name, args);
+        if (e != kc::Error::Success) kcFail(name, e);
     }
 
     const Model& m_;
@@ -565,8 +565,8 @@ private:
 
 } // namespace
 
-std::unique_ptr<Backend> makePcudaBackend(const Model& m, unsigned workers, bool graphs, bool two_rows) {
-    return std::make_unique<PcudaBackend>(m, workers, graphs, two_rows);
+std::unique_ptr<Backend> makeKcBackend(const Model& m, unsigned workers, bool graphs, bool two_rows) {
+    return std::make_unique<KcBackend>(m, workers, graphs, two_rows);
 }
 
 std::unique_ptr<Backend> makeCppBackend(const Model& m) { return std::make_unique<CppBackend>(m); }

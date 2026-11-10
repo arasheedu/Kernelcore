@@ -4,7 +4,7 @@
 // Tasks run in submission order. Async task errors are kept (first error wins)
 // until synchronize() returns them.
 
-#include <pcuda/error.hpp>
+#include <kernelcore/error.hpp>
 
 #include <atomic>
 #include <condition_variable>
@@ -18,7 +18,7 @@
 #include <string>
 #include <vector>
 
-namespace pcuda {
+namespace kc {
 
 // Creates a thread with an explicit stack reservation (Windows default is only 1 MB).
 // The thread sets a stack guarantee so the fault guard can run after a stack overflow.
@@ -129,4 +129,4 @@ std::vector<ChunkSpec> planChunksGuided(int64_t total, unsigned threads, int64_t
 // True if chunks are non-empty, sorted, disjoint and exactly cover [0, total).
 bool chunksCoverExactly(const std::vector<ChunkSpec>& chunks, int64_t total) noexcept;
 
-} // namespace pcuda
+} // namespace kc

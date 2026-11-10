@@ -8,16 +8,16 @@
 
 OPTION CASEMAP:NONE
 
-EXTERN pcuda_crt_sinf:PROC
-EXTERN pcuda_crt_cosf:PROC
-EXTERN pcuda_crt_exp2f:PROC
-EXTERN pcuda_crt_log2f:PROC
+EXTERN kc_crt_sinf:PROC
+EXTERN kc_crt_cosf:PROC
+EXTERN kc_crt_exp2f:PROC
+EXTERN kc_crt_log2f:PROC
 
-PUBLIC pcuda_sysv_sinf
-PUBLIC pcuda_sysv_cosf
-PUBLIC pcuda_sysv_exp2f
-PUBLIC pcuda_sysv_log2f
-PUBLIC pcuda_sysv_native_bridge
+PUBLIC kc_sysv_sinf
+PUBLIC kc_sysv_cosf
+PUBLIC kc_sysv_exp2f
+PUBLIC kc_sysv_log2f
+PUBLIC kc_sysv_native_bridge
 
 SYSV_SHIM MACRO shim_name, target
 shim_name PROC FRAME
@@ -33,17 +33,17 @@ ENDM
 
 _TEXT SEGMENT
 
-SYSV_SHIM pcuda_sysv_sinf,  pcuda_crt_sinf
-SYSV_SHIM pcuda_sysv_cosf,  pcuda_crt_cosf
-SYSV_SHIM pcuda_sysv_exp2f, pcuda_crt_exp2f
-SYSV_SHIM pcuda_sysv_log2f, pcuda_crt_log2f
+SYSV_SHIM kc_sysv_sinf,  kc_crt_sinf
+SYSV_SHIM kc_sysv_cosf,  kc_crt_cosf
+SYSV_SHIM kc_sysv_exp2f, kc_crt_exp2f
+SYSV_SHIM kc_sysv_log2f, kc_crt_log2f
 
-; Runs a native (Win64) kernel function under pcuda_sysv_invoke, so it gets the same fault
+; Runs a native (Win64) kernel function under kc_sysv_invoke, so it gets the same fault
 ; containment and register checks as Booth code. System V arguments: rdi = const LaunchArgs*,
 ; rsi = void (*)(const LaunchArgs*). Win64 callees preserve every register System V callers
 ; rely on (and rdi, rsi, xmm6-15 too); this frame supplies the 32-byte shadow space and keeps
 ; rsp 16-byte aligned at the call.
-pcuda_sysv_native_bridge PROC FRAME
+kc_sysv_native_bridge PROC FRAME
         sub     rsp, 40
         .allocstack 40
         .endprolog
@@ -52,7 +52,7 @@ pcuda_sysv_native_bridge PROC FRAME
         call    rsi
         add     rsp, 40
         ret
-pcuda_sysv_native_bridge ENDP
+kc_sysv_native_bridge ENDP
 
 _TEXT ENDS
 END

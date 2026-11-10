@@ -4,7 +4,7 @@
 
 #include "cpu/guarded_alloc.hpp"
 
-#include <pcuda/error.hpp>
+#include <kernelcore/error.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-namespace pcuda {
+namespace kc {
 
 class AllocationRegistry {
 public:
@@ -34,4 +34,4 @@ private:
     std::map<uintptr_t, Entry>    map_;
 };
 
-} // namespace pcuda
+} // namespace kc

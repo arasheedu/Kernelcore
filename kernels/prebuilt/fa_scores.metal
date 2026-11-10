@@ -6,18 +6,18 @@
 #include <metal_stdlib>
 using namespace metal;
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0);
-float pcuda_h2f(
+float kc_h2f(
     int p0);
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0)
 {
     return p0;
 }
 
-float pcuda_h2f(
+float kc_h2f(
     int p0)
 {
     int v3;
@@ -318,7 +318,7 @@ kernel void fa_scores(
     float v263;
     float v264;
     v59 = (int)(p6);
-    v60 = pcuda_aligned8(v59);
+    v60 = kc_aligned8(v59);
     v61 = bid.x;
     v62 = bdim.x;
     v63 = v61 * v62;
@@ -333,11 +333,11 @@ kernel void fa_scores(
     v72 = *(v71);
     v73 = p4 + (4);
     v74 = *(v73);
-    v75 = pcuda_aligned8(v74);
+    v75 = kc_aligned8(v74);
     v76 = p4 + (9);
     v77 = *(v76);
     v78 = v77 * v75;
-    v79 = pcuda_aligned8(v78);
+    v79 = kc_aligned8(v78);
     v80 = p4 + (14);
     v81 = *(v80);
     v82 = v81 * v79;
@@ -365,7 +365,7 @@ kernel void fa_scores(
             v105 = v104 * 16;
             v106 = v103 >> v105;
             v107 = v106 & 65535;
-            v108 = pcuda_h2f(v107);
+            v108 = kc_h2f(v107);
             v109 = (float)(v95);
             v110 = v108 * v109;
             v111 = p4 + (5);
@@ -426,10 +426,10 @@ kernel void fa_scores(
                             v170 = p1 + (v169);
                             v171 = *(v170);
                             v172 = v171 & 65535;
-                            v173 = pcuda_h2f(v172);
+                            v173 = kc_h2f(v172);
                             v174 = v171 >> 16;
                             v175 = v174 & 65535;
-                            v176 = pcuda_h2f(v175);
+                            v176 = kc_h2f(v175);
                             v177 = 2 * v160;
                             v178 = v136 + v177;
                             v179 = p0 + (v178);

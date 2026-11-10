@@ -6,10 +6,10 @@
 #include <metal_stdlib>
 using namespace metal;
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0);
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0)
 {
     return p0;
@@ -44,7 +44,7 @@ kernel void mul_rows(
     v9 = v7 * v8;
     v10 = tid.x;
     v11 = v9 + v10;
-    v12 = pcuda_aligned8(p3);
+    v12 = kc_aligned8(p3);
     v13 = v11 < p4;
     if (v13) {
         v15 = p2 + (v11);

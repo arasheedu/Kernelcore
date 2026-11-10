@@ -3,7 +3,7 @@
 #include <format>
 #include <mutex>
 
-namespace pcuda {
+namespace kc {
 
 Error AllocationRegistry::insert(const cpu::HostBlock& block, int device) {
     std::unique_lock lk(mutex_);
@@ -73,4 +73,4 @@ std::vector<cpu::HostBlock> AllocationRegistry::drain() {
     return v;
 }
 
-} // namespace pcuda
+} // namespace kc

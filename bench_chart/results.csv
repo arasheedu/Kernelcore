@@ -1,4 +1,4 @@
-﻿"test","CPU","pcuda","GPU","pcuda on GPU"
+﻿"test","CPU","Kernelcore","GPU","Kernelcore on GPU"
 "tg64","28.0","31.7","111.2",""
 "pp32","116.6","209.6","2331.2",""
 "pp128","124.6","237.0","4769.0",""

@@ -1,24 +1,24 @@
-// ggml backend for pcuda: MUL_MAT with Q4_K / Q6_K weights runs as CUDA C kernels on the CPU cores
-// (CudaOnCPUCores: kernels/llm/matvec_q4k_q8.cu, matvec_q6k_q8.cu through the pcuda runtime).
+// ggml backend for Kernelcore: MUL_MAT with Q4_K / Q6_K weights runs as CUDA C kernels on the CPU cores
+// (Kernelcore: kernels/llm/matvec_q4k_q8.cu, matvec_q6k_q8.cu through the Kernelcore runtime).
 //
 // - Device: an ACCEL device, so llama.cpp offers its buffer type first for every weight. Only
 //   MUL_MAT with a Q4_K / Q6_K weight (2-D, k % 256 == 0, rows % 8 == 0) is supported; every other
 //   weight and op stays with the CPU backend.
-// - Buffer type: pcuda memory (pcudaMalloc). set_tensor repacks Q4_K / Q6_K weights into the
+// - Buffer type: Kernelcore memory (kcMalloc). set_tensor repacks Q4_K / Q6_K weights into the
 //   kernels' 8-row interleaved stream (fp16 scales widened to f32: +3% / +1% bytes); get_tensor
 //   undoes it. It is not a host buffer type (its weights are not in ggml layout), so the CPU
 //   backend never reads them; outputs are copied to CPU memory by the scheduler.
 // - Compute: each activation column (f32, host memory) is quantized to 8-bit blocks of 32 on the
-//   host, then the matvec kernel runs chunked over pcuda's worker pool. All MUL_MATs of one
-//   graph_compute call are recorded as one pcuda graph and run as one job.
+//   host, then the matvec kernel runs chunked over Kernelcore's worker pool. All MUL_MATs of one
+//   graph_compute call are recorded as one Kernelcore graph and run as one job.
 
-#include "ggml-pcuda.h"
+#include "ggml-kernelcore.h"
 
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
 
-#include <pcuda/api.hpp>
-#include <pcuda/kernels.hpp>
+#include <kernelcore/api.hpp>
+#include <kernelcore/kernels.hpp>
 
 #include "llm_kernels.hpp"
 #include "llm_reference.hpp"
@@ -37,58 +37,58 @@
 
 namespace {
 
-// ---- pcuda runtime (process-wide) ----------------------------------------------
+// ---- Kernelcore runtime (process-wide) ----------------------------------------------
 
-struct PcudaRuntime {
+struct KcRuntime {
     bool     ok = false;
     unsigned workers = 1;          // pool threads + caller: compute-bound batched matmuls use them all
     unsigned fast_workers = 1;     // the fastest cores' logical processors: every other (bandwidth-bound) launch
     bool     graphs = true;
-    bool     disabled = false;     // GGML_PCUDA_DISABLE=1: claim nothing (CPU-only comparisons)
-    bool     matmul_only = false;  // GGML_PCUDA_MATMUL_ONLY=1: only MUL_MAT (the first prototype)
-    bool     matvec_cols = false;  // GGML_PCUDA_MATVEC_COLS=1: one matvec per column for batches (no matmul kernel)
-    int      row_block = 8;        // GGML_PCUDA_ROW_BLOCK: 8-row groups per matmul block (cache blocking)
-    int      tile = 8;             // GGML_PCUDA_TILE=4 or 8: columns per matmul thread (batches of <= 4 use 4)
-    bool     q8k = true;           // GGML_PCUDA_Q8K=0: batches use per-32 activation scales (bit-identical to the matvec)
-    int      matmul_chunks = 4;    // GGML_PCUDA_MATMUL_CHUNKS: chunk factor for batched matmuls (fast cores take more chunks)
-    bool     attn = true;          // GGML_PCUDA_ATTN=0: leave the KV cache and attention to the CPU backend
-    int      attn_tokens = 8;      // GGML_PCUDA_ATTN_TOKENS: largest batch whose attention pcuda runs (longer: the CPU backend)
-    bool     concurrent = true;    // GGML_PCUDA_CONCURRENT=0: matmuls of the same input one step each
+    bool     disabled = false;     // GGML_KERNELCORE_DISABLE=1: claim nothing (CPU-only comparisons)
+    bool     matmul_only = false;  // GGML_KERNELCORE_MATMUL_ONLY=1: only MUL_MAT (the first prototype)
+    bool     matvec_cols = false;  // GGML_KERNELCORE_MATVEC_COLS=1: one matvec per column for batches (no matmul kernel)
+    int      row_block = 8;        // GGML_KERNELCORE_ROW_BLOCK: 8-row groups per matmul block (cache blocking)
+    int      tile = 8;             // GGML_KERNELCORE_TILE=4 or 8: columns per matmul thread (batches of <= 4 use 4)
+    bool     q8k = true;           // GGML_KERNELCORE_Q8K=0: batches use per-32 activation scales (bit-identical to the matvec)
+    int      matmul_chunks = 4;    // GGML_KERNELCORE_MATMUL_CHUNKS: chunk factor for batched matmuls (fast cores take more chunks)
+    bool     attn = true;          // GGML_KERNELCORE_ATTN=0: leave the KV cache and attention to the CPU backend
+    int      attn_tokens = 8;      // GGML_KERNELCORE_ATTN_TOKENS: largest batch whose attention Kernelcore runs (longer: the CPU backend)
+    bool     concurrent = true;    // GGML_KERNELCORE_CONCURRENT=0: matmuls of the same input one step each
 };
 
-PcudaRuntime & runtime() {
-    static PcudaRuntime rt = [] {
-        PcudaRuntime r;
-        if (pcudaInit() != pcuda::Error::Success) {
-            GGML_LOG_ERROR("pcuda: pcudaInit failed: %s\n", pcudaGetLastErrorDetail());
+KcRuntime & runtime() {
+    static KcRuntime rt = [] {
+        KcRuntime r;
+        if (kcInit() != kc::Error::Success) {
+            GGML_LOG_ERROR("Kernelcore: kcInit failed: %s\n", kcGetLastErrorDetail());
             return r;
         }
-        if (llm::registerKernels() != pcuda::Error::Success) {
-            GGML_LOG_ERROR("pcuda: registering kernels failed: %s\n", pcudaGetLastErrorDetail());
+        if (llm::registerKernels() != kc::Error::Success) {
+            GGML_LOG_ERROR("Kernelcore: registering kernels failed: %s\n", kcGetLastErrorDetail());
             return r;
         }
-        pcuda::DeviceProperties p{};
-        pcudaGetDeviceProperties(&p, 0);
+        kc::DeviceProperties p{};
+        kcGetDeviceProperties(&p, 0);
         r.workers = p.worker_count + 1;
         r.fast_workers = std::max(1u, p.performance_workers);
-        if (const char * fw = std::getenv("GGML_PCUDA_FAST_WORKERS")) r.fast_workers = std::clamp(unsigned(std::atoi(fw)), 1u, r.workers);
-        const char * g = std::getenv("GGML_PCUDA_GRAPHS");
+        if (const char * fw = std::getenv("GGML_KERNELCORE_FAST_WORKERS")) r.fast_workers = std::clamp(unsigned(std::atoi(fw)), 1u, r.workers);
+        const char * g = std::getenv("GGML_KERNELCORE_GRAPHS");
         r.graphs = !(g && std::strcmp(g, "0") == 0);
-        const char * off = std::getenv("GGML_PCUDA_DISABLE");
+        const char * off = std::getenv("GGML_KERNELCORE_DISABLE");
         r.disabled = off && std::strcmp(off, "1") == 0;
-        const char * mm = std::getenv("GGML_PCUDA_MATMUL_ONLY");
+        const char * mm = std::getenv("GGML_KERNELCORE_MATMUL_ONLY");
         r.matmul_only = mm && std::strcmp(mm, "1") == 0;
-        const char * mc = std::getenv("GGML_PCUDA_MATVEC_COLS");
+        const char * mc = std::getenv("GGML_KERNELCORE_MATVEC_COLS");
         r.matvec_cols = mc && std::strcmp(mc, "1") == 0;
-        if (const char * rb = std::getenv("GGML_PCUDA_ROW_BLOCK")) r.row_block = std::max(1, std::atoi(rb));
-        if (const char * mc = std::getenv("GGML_PCUDA_MATMUL_CHUNKS")) r.matmul_chunks = std::clamp(std::atoi(mc), 1, 16);
-        if (const char * qk = std::getenv("GGML_PCUDA_Q8K")) r.q8k = std::strcmp(qk, "0") != 0;
-        if (const char * tl = std::getenv("GGML_PCUDA_TILE")) r.tile = std::atoi(tl) == 4 ? 4 : 8;
-        if (const char * at = std::getenv("GGML_PCUDA_ATTN")) r.attn = std::strcmp(at, "0") != 0;
-        if (const char * cc = std::getenv("GGML_PCUDA_CONCURRENT")) r.concurrent = std::strcmp(cc, "0") != 0;
-        if (const char * an = std::getenv("GGML_PCUDA_ATTN_TOKENS")) r.attn_tokens = std::max(0, std::atoi(an));
+        if (const char * rb = std::getenv("GGML_KERNELCORE_ROW_BLOCK")) r.row_block = std::max(1, std::atoi(rb));
+        if (const char * mc = std::getenv("GGML_KERNELCORE_MATMUL_CHUNKS")) r.matmul_chunks = std::clamp(std::atoi(mc), 1, 16);
+        if (const char * qk = std::getenv("GGML_KERNELCORE_Q8K")) r.q8k = std::strcmp(qk, "0") != 0;
+        if (const char * tl = std::getenv("GGML_KERNELCORE_TILE")) r.tile = std::atoi(tl) == 4 ? 4 : 8;
+        if (const char * at = std::getenv("GGML_KERNELCORE_ATTN")) r.attn = std::strcmp(at, "0") != 0;
+        if (const char * cc = std::getenv("GGML_KERNELCORE_CONCURRENT")) r.concurrent = std::strcmp(cc, "0") != 0;
+        if (const char * an = std::getenv("GGML_KERNELCORE_ATTN_TOKENS")) r.attn_tokens = std::max(0, std::atoi(an));
         r.ok = true;
-        GGML_LOG_INFO("pcuda: %s, pool of %u threads + caller (%u for bandwidth-bound launches), graphs %s\n", p.name,
+        GGML_LOG_INFO("Kernelcore: %s, pool of %u threads + caller (%u for bandwidth-bound launches), graphs %s\n", p.name,
                       p.worker_count, r.fast_workers, r.graphs ? "on" : "off");
         return r;
     }();
@@ -162,7 +162,7 @@ struct BufferCtx {
 
 void buffer_free(ggml_backend_buffer_t buffer) {
     auto * ctx = static_cast<BufferCtx *>(buffer->context);
-    pcudaFree(ctx->base);
+    kcFree(ctx->base);
     delete ctx;
 }
 
@@ -174,12 +174,12 @@ void buffer_memset_tensor(ggml_backend_buffer_t, ggml_tensor * tensor, uint8_t v
 
 void buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     if (is_f16_weight(buffer, tensor)) {
-        GGML_ASSERT(offset == 0 && size == ggml_nbytes(tensor) && "pcuda: fp16 weights are uploaded whole");
+        GGML_ASSERT(offset == 0 && size == ggml_nbytes(tensor) && "Kernelcore: fp16 weights are uploaded whole");
         llm::ref::repackF16(static_cast<const uint16_t *>(data), int(tensor->ne[1]), int(tensor->ne[0]), static_cast<int *>(tensor->data));
         return;
     }
     if (is_kquant(tensor->type) && weight_shape_ok(tensor)) {
-        GGML_ASSERT(offset == 0 && size == ggml_nbytes(tensor) && "pcuda: K-quant weights are uploaded whole");
+        GGML_ASSERT(offset == 0 && size == ggml_nbytes(tensor) && "Kernelcore: K-quant weights are uploaded whole");
         const auto * src = static_cast<const uint8_t *>(data);
         int * dst = static_cast<int *>(tensor->data);
         if (tensor->type == GGML_TYPE_Q4_K) llm::ref::repackQ4K(src, int(tensor->ne[1]), int(tensor->ne[0]), dst);
@@ -224,7 +224,7 @@ const ggml_backend_buffer_i buffer_i = {
     /* .reset         = */ nullptr,
 };
 
-// KV cache buffers (pcuda_host_buffer_type): pcuda memory in ggml layout, which the CPU backend reads too.
+// KV cache buffers (kc_host_buffer_type): Kernelcore memory in ggml layout, which the CPU backend reads too.
 void host_buffer_set_tensor(ggml_backend_buffer_t, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     std::memcpy(static_cast<char *>(tensor->data) + offset, data, size);
 }
@@ -247,14 +247,14 @@ const ggml_backend_buffer_i host_buffer_i = {
 
 // ---- buffer type ------------------------------------------------------------------------
 
-const char * buft_get_name(ggml_backend_buffer_type_t) { return "PCUDA"; }
+const char * buft_get_name(ggml_backend_buffer_type_t) { return "Kernelcore"; }
 
 ggml_backend_buffer_t buft_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
     if (!runtime().ok) return nullptr;
     void * p = nullptr;
     const size_t bytes = size ? size : 64;  // llama.cpp probes with empty buffers
-    if (pcudaMalloc(&p, bytes) != pcuda::Error::Success) {
-        GGML_LOG_ERROR("pcuda: allocating %zu bytes failed: %s\n", bytes, pcudaGetLastErrorDetail());
+    if (kcMalloc(&p, bytes) != kc::Error::Success) {
+        GGML_LOG_ERROR("Kernelcore: allocating %zu bytes failed: %s\n", bytes, kcGetLastErrorDetail());
         return nullptr;
     }
     return ggml_backend_buffer_init(buft, buffer_i, new BufferCtx{p, bytes}, size);
@@ -280,16 +280,16 @@ const ggml_backend_buffer_type_i buft_i = {
     /* .is_host          = */ buft_is_host,
 };
 
-ggml_backend_buffer_type_t pcuda_buffer_type();
+ggml_backend_buffer_type_t kc_buffer_type();
 
-const char * host_buft_get_name(ggml_backend_buffer_type_t) { return "PCUDA_Host"; }
+const char * host_buft_get_name(ggml_backend_buffer_type_t) { return "Kernelcore_Host"; }
 
 ggml_backend_buffer_t host_buft_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
     if (!runtime().ok) return nullptr;
     void * p = nullptr;
     const size_t bytes = size ? size : 64;
-    if (pcudaMalloc(&p, bytes) != pcuda::Error::Success) {
-        GGML_LOG_ERROR("pcuda: allocating %zu bytes failed: %s\n", bytes, pcudaGetLastErrorDetail());
+    if (kcMalloc(&p, bytes) != kc::Error::Success) {
+        GGML_LOG_ERROR("Kernelcore: allocating %zu bytes failed: %s\n", bytes, kcGetLastErrorDetail());
         return nullptr;
     }
     return ggml_backend_buffer_init(buft, host_buffer_i, new BufferCtx{p, bytes}, size);
@@ -309,7 +309,7 @@ const ggml_backend_buffer_type_i host_buft_i = {
     /* .is_host          = */ host_buft_is_host,
 };
 
-ggml_backend_buffer_type_t pcuda_host_buffer_type();
+ggml_backend_buffer_type_t kc_host_buffer_type();
 
 // ---- backend ------------------------------------------------------------------------------
 
@@ -328,9 +328,9 @@ struct BackendCtx {
         int *        q;
     };
     std::vector<Quantized>            quantized;
-    // GGML_PCUDA_PROFILE=1: time spent in graph_compute, recording and kernel runs
+    // GGML_KERNELCORE_PROFILE=1: time spent in graph_compute, recording and kernel runs
     bool                              profile = false;
-    bool                              profile_shapes = false;  // GGML_PCUDA_PROFILE=2: matmuls timed per weight shape
+    bool                              profile_shapes = false;  // GGML_KERNELCORE_PROFILE=2: matmuls timed per weight shape
     std::string                       tag;                     // the shape of the matmul being launched
     double                            t_compute = 0, t_record = 0, t_run = 0;
     long long                         calls = 0, launches = 0;
@@ -338,22 +338,22 @@ struct BackendCtx {
 
     ~BackendCtx() {
         if (profile && calls)
-            std::fprintf(stderr, "pcuda profile: %lld graph_compute calls, %lld launches; compute %.1f ms, recording %.1f ms, "
+            std::fprintf(stderr, "Kernelcore profile: %lld graph_compute calls, %lld launches; compute %.1f ms, recording %.1f ms, "
                           "kernel runs %.1f ms\n", calls, launches, t_compute * 1e3, t_record * 1e3, t_run * 1e3);
         if (profile)
             for (const auto & [name, tc] : per_kernel)
                 std::fprintf(stderr, "  %-28s %8lld launches %9.1f ms %7.1f us each\n", name.c_str(), tc.second, tc.first * 1e3,
                              tc.first * 1e6 / double(tc.second));
-        if (scratch) pcudaFree(scratch);
-        for (auto & [k, p] : consts) pcudaFree(p);
-        for (auto & [k, p] : ones) pcudaFree(p);
+        if (scratch) kcFree(scratch);
+        for (auto & [k, p] : consts) kcFree(p);
+        for (auto & [k, p] : ones) kcFree(p);
     }
     const int * ints(const std::vector<int> & v) {
         auto & p = consts[v];
         if (!p) {
             void * m = nullptr;
-            if (pcudaMalloc(&m, v.size() * sizeof(int)) != pcuda::Error::Success) return nullptr;
-            std::memcpy(m, v.data(), v.size() * sizeof(int));  // pcuda memory is host memory (and copies are refused while recording)
+            if (kcMalloc(&m, v.size() * sizeof(int)) != kc::Error::Success) return nullptr;
+            std::memcpy(m, v.data(), v.size() * sizeof(int));  // Kernelcore memory is host memory (and copies are refused while recording)
             p = static_cast<int *>(m);
         }
         return p;
@@ -362,7 +362,7 @@ struct BackendCtx {
         auto & p = ones[n];
         if (!p) {
             void * m = nullptr;
-            if (pcudaMalloc(&m, size_t(n) * sizeof(float)) != pcuda::Error::Success) return nullptr;
+            if (kcMalloc(&m, size_t(n) * sizeof(float)) != kc::Error::Success) return nullptr;
             const std::vector<float> v(size_t(n), 1.0f);
             std::memcpy(m, v.data(), v.size() * sizeof(float));
             p = static_cast<float *>(m);
@@ -376,14 +376,14 @@ double now() { return std::chrono::duration<double>(std::chrono::steady_clock::n
 bool flush(BackendCtx & ctx) {  // run the recorded launches
     if (!ctx.capturing) return true;
     ctx.capturing = false;
-    pcudaGraph_t g = nullptr;
-    if (pcudaStreamEndCapture(nullptr, &g) != pcuda::Error::Success) return false;
+    kcGraph_t g = nullptr;
+    if (kcStreamEndCapture(nullptr, &g) != kc::Error::Success) return false;
     const double t0 = ctx.profile ? now() : 0;
-    const pcuda::Error e = pcudaGraphLaunch(g, nullptr);
+    const kc::Error e = kcGraphLaunch(g, nullptr);
     if (ctx.profile) ctx.t_run += now() - t0;
-    if (e != pcuda::Error::Success) GGML_LOG_ERROR("pcuda: graph launch failed: %s\n", pcudaGetLastErrorDetail());
-    pcudaGraphDestroy(g);
-    return e == pcuda::Error::Success;
+    if (e != kc::Error::Success) GGML_LOG_ERROR("Kernelcore: graph launch failed: %s\n", kcGetLastErrorDetail());
+    kcGraphDestroy(g);
+    return e == kc::Error::Success;
 }
 
 bool begin(BackendCtx & ctx) {  // start recording (graphs on) with an empty scratch
@@ -391,7 +391,7 @@ bool begin(BackendCtx & ctx) {  // start recording (graphs on) with an empty scr
     ctx.scratch_used = 0;
     ctx.quantized.clear();
     if (!runtime().graphs) return true;
-    if (pcudaStreamBeginCapture(nullptr) != pcuda::Error::Success) return false;
+    if (kcStreamBeginCapture(nullptr) != kc::Error::Success) return false;
     ctx.capturing = true;
     return true;
 }
@@ -399,10 +399,10 @@ bool begin(BackendCtx & ctx) {  // start recording (graphs on) with an empty scr
 template <class Args>
 bool launch(BackendCtx & ctx, const char * kernel, const Args & a, int64_t min_chunk, unsigned workers = 0) {
     const double t0 = ctx.profile && !ctx.capturing ? now() : 0;
-    const pcuda::Error e = min_chunk ? pcudaLaunchKernelChunked(kernel, &a, workers ? workers : runtime().fast_workers, min_chunk)
-                                     : pcudaLaunchKernel(kernel, &a);
-    if (e != pcuda::Error::Success) {
-        GGML_LOG_ERROR("pcuda: %s failed: %s\n", kernel, pcudaGetLastErrorDetail());
+    const kc::Error e = min_chunk ? kcLaunchKernelChunked(kernel, &a, workers ? workers : runtime().fast_workers, min_chunk)
+                                     : kcLaunchKernel(kernel, &a);
+    if (e != kc::Error::Success) {
+        GGML_LOG_ERROR("Kernelcore: %s failed: %s\n", kernel, kcGetLastErrorDetail());
         return false;
     }
     if (ctx.profile) ++ctx.launches;
@@ -415,7 +415,7 @@ bool launch(BackendCtx & ctx, const char * kernel, const Args & a, int64_t min_c
 }
 
 // The input's columns as 8-bit activations in the scratch (quantize_q8x4 runs in the recorded
-// graph, reading the input in pcuda memory). Matrices that share an input (q, k, v; gate, up)
+// graph, reading the input in Kernelcore memory). Matrices that share an input (q, k, v; gate, up)
 // quantize it once per recording.
 float op_param_f32(const ggml_tensor * t, int i);
 bool  is_row_vector_of(const ggml_tensor * v, const ggml_tensor * x);
@@ -432,10 +432,10 @@ int * scratch_take(BackendCtx & ctx, size_t total) {
     if (ctx.scratch_used + total > ctx.scratch_ints) {
         if (!flush(ctx)) return nullptr;
         const size_t need = std::max(total * 4, ctx.scratch_ints * 2);
-        if (ctx.scratch) pcudaFree(ctx.scratch);
+        if (ctx.scratch) kcFree(ctx.scratch);
         ctx.scratch = nullptr;
         void * p = nullptr;
-        if (pcudaMalloc(&p, need * sizeof(int)) != pcuda::Error::Success) return nullptr;
+        if (kcMalloc(&p, need * sizeof(int)) != kc::Error::Success) return nullptr;
         ctx.scratch = static_cast<int *>(p);
         ctx.scratch_ints = need;
         ctx.scratch_used = 0;
@@ -453,10 +453,10 @@ int * quantized_slots(BackendCtx & ctx, const ggml_tensor * x, int k, int64_t nc
     if (ctx.scratch_used + total > ctx.scratch_ints) {  // grow: run what is recorded first
         if (!flush(ctx)) return nullptr;
         const size_t need = std::max(total * 4, ctx.scratch_ints * 2);
-        if (ctx.scratch) pcudaFree(ctx.scratch);
+        if (ctx.scratch) kcFree(ctx.scratch);
         ctx.scratch = nullptr;
         void * p = nullptr;
-        if (pcudaMalloc(&p, need * sizeof(int)) != pcuda::Error::Success) return nullptr;
+        if (kcMalloc(&p, need * sizeof(int)) != kc::Error::Success) return nullptr;
         ctx.scratch = static_cast<int *>(p);
         ctx.scratch_ints = need;
         if (!begin(ctx)) return nullptr;
@@ -619,7 +619,7 @@ bool mul(BackendCtx & ctx, ggml_tensor * dst) {
 }
 
 bool add(BackendCtx & ctx, ggml_tensor * dst) {
-    const pcuda::kernels::VectorAddArgs a{static_cast<const float *>(dst->src[0]->data),
+    const kc::kernels::VectorAddArgs a{static_cast<const float *>(dst->src[0]->data),
                                           static_cast<const float *>(dst->src[1]->data),
                                           static_cast<float *>(dst->data), int(ggml_nelements(dst))};
     return launch(ctx, "vector_add", a, a.count > 4096 ? 1024 : 0);
@@ -644,7 +644,7 @@ bool swiglu(BackendCtx & ctx, ggml_tensor * dst) {
     return launch(ctx, "silu_mul", a, 1024);
 }
 
-// ---- KV cache: SET_ROWS into it, FLASH_ATTN_EXT over it (fp16, in pcuda_host_buffer_type) ----
+// ---- KV cache: SET_ROWS into it, FLASH_ATTN_EXT over it (fp16, in kc_host_buffer_type) ----
 
 // SET_ROWS: dst rows src1[r] (int64) = fp16(src0 row r).
 bool set_rows(BackendCtx & ctx, ggml_tensor * dst) {
@@ -696,7 +696,7 @@ bool flash_attn(BackendCtx & ctx, ggml_tensor * dst) {
            launch(ctx, "fa_values", llm::FaValuesArgs{s, static_cast<const int *>(v->data), static_cast<float *>(dst->data), dims, d}, 16);
 }
 
-const char * backend_get_name(ggml_backend_t) { return "PCUDA"; }
+const char * backend_get_name(ggml_backend_t) { return "Kernelcore"; }
 
 void backend_free(ggml_backend_t backend) {
     delete static_cast<BackendCtx *>(backend->context);
@@ -733,9 +733,9 @@ ggml_status backend_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) 
                     break;
                 }
                 ok = mul_mat_input(ctx, node);  // quantize the shared input first (its own step)
-                ok = ok && pcudaStreamConcurrentBegin(nullptr) == pcuda::Error::Success;
+                ok = ok && kcStreamConcurrentBegin(nullptr) == kc::Error::Success;
                 for (int j = 0; ok && j < n; ++j) ok = mul_mat(ctx, cgraph->nodes[i + j]);
-                ok = pcudaStreamConcurrentEnd(nullptr) == pcuda::Error::Success && ok;
+                ok = kcStreamConcurrentEnd(nullptr) == kc::Error::Success && ok;
                 i += n - 1;
                 break;
             }
@@ -817,8 +817,8 @@ ggml_guid_t backend_guid() {
 
 // ---- device ---------------------------------------------------------------------------------
 
-const char * dev_get_name(ggml_backend_dev_t) { return "PCUDA"; }
-const char * dev_get_description(ggml_backend_dev_t) { return "pcuda: CUDA C kernels on CPU cores (Q4_K/Q6_K matmul)"; }
+const char * dev_get_name(ggml_backend_dev_t) { return "Kernelcore"; }
+const char * dev_get_description(ggml_backend_dev_t) { return "Kernelcore: CUDA C kernels on CPU cores (Q4_K/Q6_K matmul)"; }
 
 void dev_get_memory(ggml_backend_dev_t, size_t * free, size_t * total) {
     *free = 0;
@@ -832,10 +832,10 @@ void dev_get_props(ggml_backend_dev_t dev, ggml_backend_dev_props * props) {
     props->description = dev_get_description(dev);
     props->type = dev_get_type(dev);
     dev_get_memory(dev, &props->memory_free, &props->memory_total);
-    // Weights are copied into pcuda's own allocations, so a memory-mapped model file would stay
+    // Weights are copied into Kernelcore's own allocations, so a memory-mapped model file would stay
     // resident as a second copy: ask llama.cpp's auto load mode to read the file instead. Not when
-    // pcuda claims nothing (disabled): the CPU backend then works from the mapped file.
-    const PcudaRuntime & rt = runtime();
+    // Kernelcore claims nothing (disabled): the CPU backend then works from the mapped file.
+    const KcRuntime & rt = runtime();
     const bool claims_weights = rt.ok && !rt.disabled;
     props->caps = {
         /* .async                = */ false,
@@ -846,25 +846,25 @@ void dev_get_props(ggml_backend_dev_t dev, ggml_backend_dev_props * props) {
     };
 }
 
-ggml_backend_t dev_init_backend(ggml_backend_dev_t, const char *) { return ggml_backend_pcuda_init(); }
+ggml_backend_t dev_init_backend(ggml_backend_dev_t, const char *) { return ggml_backend_kernelcore_init(); }
 
-ggml_backend_buffer_type_t dev_get_buffer_type(ggml_backend_dev_t) { return pcuda_buffer_type(); }
+ggml_backend_buffer_type_t dev_get_buffer_type(ggml_backend_dev_t) { return kc_buffer_type(); }
 
-// llama.cpp puts the KV caches of CPU layers here (a hook in llama-kv-cache.cpp), so that pcuda can
+// llama.cpp puts the KV caches of CPU layers here (a hook in llama-kv-cache.cpp), so that Kernelcore can
 // run attention.
 ggml_backend_buffer_type_t dev_get_host_buffer_type(ggml_backend_dev_t) {
-    const PcudaRuntime & rt = runtime();
-    return rt.ok && !rt.disabled && !rt.matmul_only && rt.attn ? pcuda_host_buffer_type() : nullptr;
+    const KcRuntime & rt = runtime();
+    return rt.ok && !rt.disabled && !rt.matmul_only && rt.attn ? kc_host_buffer_type() : nullptr;
 }
 
 bool f32c(const ggml_tensor * t) { return t && t->type == GGML_TYPE_F32 && ggml_is_contiguous(t); }
 
 bool dev_supports_op_impl(ggml_backend_dev_t, const ggml_tensor * op);
 
-// The tensor (or what it views) is in a KV cache buffer (pcuda memory the kernels may read).
+// The tensor (or what it views) is in a KV cache buffer (Kernelcore memory the kernels may read).
 bool in_kv_buffer(const ggml_tensor * t) {
     const ggml_backend_buffer_t b = t->view_src ? t->view_src->buffer : t->buffer;
-    return b && ggml_backend_buffer_get_type(b) == pcuda_host_buffer_type();
+    return b && ggml_backend_buffer_get_type(b) == kc_host_buffer_type();
 }
 bool f16_rows(const ggml_tensor * t) {  // fp16, rows and heads at 32-bit word strides
     return t->type == GGML_TYPE_F16 && t->nb[0] == 2 && t->nb[1] % 4 == 0 && t->nb[2] % 4 == 0 && t->ne[3] == 1 &&
@@ -892,15 +892,15 @@ bool flash_attn_ok(const ggml_tensor * op, int max_tokens) {
 
 bool dev_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     const bool r = dev_supports_op_impl(dev, op);
-    static const bool dbg = std::getenv("GGML_PCUDA_DEBUG") != nullptr;
+    static const bool dbg = std::getenv("GGML_KERNELCORE_DEBUG") != nullptr;
     if (dbg && op->op != GGML_OP_NONE && op->op != GGML_OP_VIEW && op->op != GGML_OP_RESHAPE && op->op != GGML_OP_PERMUTE)
-        std::fprintf(stderr, "pcuda supports_op %s %s: %d (src0 %s %s)\n", ggml_op_desc(op), op->name, r ? 1 : 0,
+        std::fprintf(stderr, "Kernelcore supports_op %s %s: %d (src0 %s %s)\n", ggml_op_desc(op), op->name, r ? 1 : 0,
                      op->src[0] ? ggml_type_name(op->src[0]->type) : "-", op->src[0] && ggml_is_contiguous(op->src[0]) ? "contig" : "strided");
     return r;
 }
 
 bool dev_supports_op_impl(ggml_backend_dev_t, const ggml_tensor * op) {
-    const PcudaRuntime & rt = runtime();
+    const KcRuntime & rt = runtime();
     if (!rt.ok || rt.disabled) return false;
     const ggml_tensor * s0 = op->src[0];
     const ggml_tensor * s1 = op->src[1];
@@ -913,7 +913,7 @@ bool dev_supports_op_impl(ggml_backend_dev_t, const ggml_tensor * op) {
             return true;
         case GGML_OP_MUL_MAT:
             // The weight must live in this backend's buffers (repacked), any batch size.
-            return s0->buffer && ggml_backend_buffer_get_type(s0->buffer) == pcuda_buffer_type() && weight_shape_ok(s0) &&
+            return s0->buffer && ggml_backend_buffer_get_type(s0->buffer) == kc_buffer_type() && weight_shape_ok(s0) &&
                    f32c(s1) && s1->ne[0] == s0->ne[0] && f32c(op) && op->ne[0] == s0->ne[1] &&
                    ggml_nrows(op) == ggml_nrows(s1);
         default:
@@ -953,11 +953,11 @@ bool dev_supports_op_impl(ggml_backend_dev_t, const ggml_tensor * op) {
     }
 }
 
-// Host buffers are not readable by the kernels (pcuda validates every pointer against its own
+// Host buffers are not readable by the kernels (Kernelcore validates every pointer against its own
 // allocations), so the scheduler copies such inputs (positions, the first embedding, the
 // attention output) into this backend's buffers.
 bool dev_supports_buft(ggml_backend_dev_t, ggml_backend_buffer_type_t buft) {
-    return buft == pcuda_buffer_type() || buft == pcuda_host_buffer_type();
+    return buft == kc_buffer_type() || buft == kc_host_buffer_type();
 }
 
 const ggml_backend_device_i device_i = {
@@ -980,7 +980,7 @@ const ggml_backend_device_i device_i = {
 
 // ---- registry ------------------------------------------------------------------------------
 
-const char * reg_get_name(ggml_backend_reg_t) { return "PCUDA"; }
+const char * reg_get_name(ggml_backend_reg_t) { return "Kernelcore"; }
 size_t       reg_get_device_count(ggml_backend_reg_t) { return 1; }
 
 ggml_backend_dev_t reg_get_device(ggml_backend_reg_t reg, size_t index) {
@@ -1002,19 +1002,19 @@ const ggml_backend_reg_i reg_i = {
     /* .get_proc_address = */ reg_get_proc_address,
 };
 
-ggml_backend_buffer_type_t pcuda_buffer_type() {
+ggml_backend_buffer_type_t kc_buffer_type() {
     static ggml_backend_buffer_type buft = {
         /* .iface   = */ buft_i,
-        /* .device  = */ reg_get_device(ggml_backend_pcuda_reg(), 0),
+        /* .device  = */ reg_get_device(ggml_backend_kernelcore_reg(), 0),
         /* .context = */ nullptr,
     };
     return &buft;
 }
 
-ggml_backend_buffer_type_t pcuda_host_buffer_type() {
+ggml_backend_buffer_type_t kc_host_buffer_type() {
     static ggml_backend_buffer_type buft = {
         /* .iface   = */ host_buft_i,
-        /* .device  = */ reg_get_device(ggml_backend_pcuda_reg(), 0),
+        /* .device  = */ reg_get_device(ggml_backend_kernelcore_reg(), 0),
         /* .context = */ nullptr,
     };
     return &buft;
@@ -1022,15 +1022,15 @@ ggml_backend_buffer_type_t pcuda_host_buffer_type() {
 
 } // namespace
 
-ggml_backend_t ggml_backend_pcuda_init(void) {
+ggml_backend_t ggml_backend_kernelcore_init(void) {
     if (!runtime().ok) return nullptr;
     return new ggml_backend{
         /* .guid    = */ backend_guid(),
         /* .iface   = */ backend_i,
-        /* .device  = */ reg_get_device(ggml_backend_pcuda_reg(), 0),
+        /* .device  = */ reg_get_device(ggml_backend_kernelcore_reg(), 0),
         /* .context = */ [] {
             auto * c = new BackendCtx;
-            const char * p = std::getenv("GGML_PCUDA_PROFILE");
+            const char * p = std::getenv("GGML_KERNELCORE_PROFILE");
             c->profile = p && (std::strcmp(p, "1") == 0 || std::strcmp(p, "2") == 0);
             c->profile_shapes = p && std::strcmp(p, "2") == 0;
             return c;
@@ -1038,11 +1038,11 @@ ggml_backend_t ggml_backend_pcuda_init(void) {
     };
 }
 
-bool ggml_backend_is_pcuda(ggml_backend_t backend) {
+bool ggml_backend_is_kc(ggml_backend_t backend) {
     return backend != nullptr && ggml_guid_matches(backend->guid, backend_guid());
 }
 
-ggml_backend_reg_t ggml_backend_pcuda_reg(void) {
+ggml_backend_reg_t ggml_backend_kernelcore_reg(void) {
     static ggml_backend_reg reg = {
         /* .api_version = */ GGML_BACKEND_API_VERSION,
         /* .iface       = */ reg_i,
@@ -1051,4 +1051,4 @@ ggml_backend_reg_t ggml_backend_pcuda_reg(void) {
     return &reg;
 }
 
-GGML_BACKEND_DL_IMPL(ggml_backend_pcuda_reg)
+GGML_BACKEND_DL_IMPL(ggml_backend_kernelcore_reg)

@@ -1,4 +1,4 @@
-// The LLM decode kernels that Booth compiles for pcuda, compiled here by nvcc, unchanged.
+// The LLM decode kernels that Booth compiles for Kernelcore, compiled here by nvcc, unchanged.
 
 #include "cuda_llm.hpp"
 

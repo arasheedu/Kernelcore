@@ -1,6 +1,6 @@
 ; Booth IR
 
-func @pcuda_aligned8(i32 %0) __device__ {
+func @kc_aligned8(i32 %0) __device__ {
 entry:
     ret i32 %0  ; line 14
 }
@@ -8,7 +8,7 @@ entry:
 func @norm_mul_q8k_f(ptr<global, f32> %0, ptr<global, f32> %1, ptr<global, f32> %2, ptr<global, i32> %3, ptr<global, i32> %4, f32 %5, f32 %6) __global__ {
 entry:
     %7 = fptosi f32 %6 to i32  ; line 21
-    %8 = call i32 @pcuda_aligned8(%7)  ; line 21
+    %8 = call i32 @kc_aligned8(%7)  ; line 21
     %9 = block_id.x  ; line 21
     %10 = block_dim.x  ; line 21
     %11 = mul i32 %9, %10  ; line 21

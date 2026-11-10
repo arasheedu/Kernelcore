@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Checks the Windows toolchain for pcuda and prints a pass/fail table.
+  Checks the Windows toolchain for Kernelcore and prints a pass/fail table.
   Never installs anything unless -FetchKath is given.
 
 .PARAMETER FetchKath
@@ -33,7 +33,7 @@ if ($FetchKath) {
     $url = "https://github.com/Zaneham/Booth/releases/download/$($pin['BOOTH_TAG'])/booth-$ver-windows-x86_64.zip"
     if (-not (Test-Path $zip) -or (Get-FileHash $zip).Hash.ToLower() -ne $pin['BOOTH_WIN_ZIP_SHA256']) {
         Write-Host "downloading $url"
-        Invoke-WebRequest $url -OutFile $zip -UserAgent 'pcuda-bootstrap'
+        Invoke-WebRequest $url -OutFile $zip -UserAgent 'kernelcore-bootstrap'
     }
     $h = (Get-FileHash $zip).Hash.ToLower()
     if ($h -ne $pin['BOOTH_WIN_ZIP_SHA256']) {

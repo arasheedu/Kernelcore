@@ -6,14 +6,14 @@
 #include <metal_stdlib>
 using namespace metal;
 
-int pcuda_dp4a(
+int kc_dp4a(
     int p0,
     int p1,
     int p2);
-int pcuda_aligned8(
+int kc_aligned8(
     int p0);
 
-int pcuda_dp4a(
+int kc_dp4a(
     int p0,
     int p1,
     int p2)
@@ -65,7 +65,7 @@ int pcuda_dp4a(
     return v24;
 }
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0)
 {
     return p0;
@@ -502,7 +502,7 @@ kernel void matmul_q6k_q8kx4(
     int v493;
     int v494;
     device float * v495;
-    v33 = pcuda_aligned8(p4);
+    v33 = kc_aligned8(p4);
     v34 = bid.x;
     v35 = bdim.x;
     v36 = v34 * v35;
@@ -511,7 +511,7 @@ kernel void matmul_q6k_q8kx4(
     v39 = v37 + v38;
     v40 = p3 + (0);
     v41 = *(v40);
-    v42 = pcuda_aligned8(v41);
+    v42 = kc_aligned8(v41);
     v43 = p3 + (1);
     v44 = *(v43);
     v45 = p3 + (2);
@@ -781,22 +781,22 @@ kernel void matmul_q6k_q8kx4(
                                         v345 = v344 + v318;
                                         v346 = v102 + (v345);
                                         v347 = *(v346);
-                                        v348 = pcuda_dp4a(v343, v347, v314);
+                                        v348 = kc_dp4a(v343, v347, v314);
                                         v349 = v280 * 8;
                                         v350 = v349 + v318;
                                         v351 = v105 + (v350);
                                         v352 = *(v351);
-                                        v353 = pcuda_dp4a(v343, v352, v315);
+                                        v353 = kc_dp4a(v343, v352, v315);
                                         v354 = v280 * 8;
                                         v355 = v354 + v318;
                                         v356 = v108 + (v355);
                                         v357 = *(v356);
-                                        v358 = pcuda_dp4a(v343, v357, v316);
+                                        v358 = kc_dp4a(v343, v357, v316);
                                         v359 = v280 * 8;
                                         v360 = v359 + v318;
                                         v361 = v111 + (v360);
                                         v362 = *(v361);
-                                        v363 = pcuda_dp4a(v343, v362, v317);
+                                        v363 = kc_dp4a(v343, v362, v317);
                                         v365 = v318 + 1;
                                         v314 = v348;
                                         v315 = v353;
@@ -846,22 +846,22 @@ kernel void matmul_q6k_q8kx4(
                                         v399 = v398 + v372;
                                         v400 = v102 + (v399);
                                         v401 = *(v400);
-                                        v402 = pcuda_dp4a(v397, v401, v368);
+                                        v402 = kc_dp4a(v397, v401, v368);
                                         v403 = v280 * 8;
                                         v404 = v403 + v372;
                                         v405 = v105 + (v404);
                                         v406 = *(v405);
-                                        v407 = pcuda_dp4a(v397, v406, v369);
+                                        v407 = kc_dp4a(v397, v406, v369);
                                         v408 = v280 * 8;
                                         v409 = v408 + v372;
                                         v410 = v108 + (v409);
                                         v411 = *(v410);
-                                        v412 = pcuda_dp4a(v397, v411, v370);
+                                        v412 = kc_dp4a(v397, v411, v370);
                                         v413 = v280 * 8;
                                         v414 = v413 + v372;
                                         v415 = v111 + (v414);
                                         v416 = *(v415);
-                                        v417 = pcuda_dp4a(v397, v416, v371);
+                                        v417 = kc_dp4a(v397, v416, v371);
                                         v419 = v372 + 1;
                                         v368 = v402;
                                         v369 = v407;

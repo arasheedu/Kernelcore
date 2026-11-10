@@ -6,7 +6,7 @@
                    "graphics":  "NVIDIA GeForce RTX 4060, 8 GB, driver 610.88",
                    "os":  "Windows 11 Home (build 26300)",
                    "computer":  "ASRock B760M-C R2.0",
-                   "pcuda":  "944a356",
+                   "Kernelcore":  "944a356",
                    "date":  "2026-11-09 08:24"
                },
     "settings":  {
@@ -16,8 +16,8 @@
                      "reps":  3,
                      "rounds":  2,
                      "cpu_threads":  6,
-                     "pcuda_threads":  4,
-                     "pcuda_batch_threads":  4
+                     "kc_threads":  4,
+                     "kc_batch_threads":  4
                  },
     "backends":  [
                      {
@@ -26,8 +26,8 @@
                          "detail":  "llama.cpp CPU backend, 6 threads"
                      },
                      {
-                         "key":  "pcuda",
-                         "label":  "pcuda",
+                         "key":  "Kernelcore",
+                         "label":  "Kernelcore",
                          "detail":  "CUDA C kernels on the CPU cores"
                      },
                      {
@@ -36,8 +36,8 @@
                          "detail":  "llama.cpp CUDA backend, all layers on the GPU"
                      },
                      {
-                         "key":  "pcudagpu",
-                         "label":  "pcuda on GPU",
+                         "key":  "kcgpu",
+                         "label":  "Kernelcore on GPU",
                          "detail":  "the same .cu kernels, nvcc (matmuls only)"
                      }
                  ],
@@ -54,15 +54,15 @@
                              "model_size":  2011539712,
                              "model_type":  "llama 3B Q4_K - Medium",
                              "build_commit":  "c2eb060b2",
-                             "cpu_info":  "pcuda: CUDA C kernels on CPU cores (Q4_K/Q6_K matmul), 13th Gen Intel(R) Core(TM) i5-13400F",
+                             "cpu_info":  "Kernelcore: CUDA C kernels on CPU cores (Q4_K/Q6_K matmul), 13th Gen Intel(R) Core(TM) i5-13400F",
                              "model_n_params":  3212749888,
                              "gpu_info":  ""
                          },
-                 "pcuda":  {
+                 "Kernelcore":  {
                                "model_size":  2011539712,
                                "model_type":  "llama 3B Q4_K - Medium",
                                "build_commit":  "c2eb060b2",
-                               "cpu_info":  "pcuda: CUDA C kernels on CPU cores (Q4_K/Q6_K matmul), 13th Gen Intel(R) Core(TM) i5-13400F",
+                               "cpu_info":  "Kernelcore: CUDA C kernels on CPU cores (Q4_K/Q6_K matmul), 13th Gen Intel(R) Core(TM) i5-13400F",
                                "model_n_params":  3212749888,
                                "gpu_info":  ""
                            }
@@ -84,11 +84,11 @@
                            ],
                  "replies":  {
                                  "cpu":  "The sky appears blue due to a phenomenon called **Rayleigh scattering**, which is a type of light scattering that occurs when light interacts with particles much smaller than the wavelength of the light itself.\n\nHere\u0027s a simplified explanation:\n\n1. **Sunlight and the Atmosphere**: Sunlight, which appears white, is actually a mixture of all the colors of the visible spectrum (red, orange, yellow, green, blue, indigo, violet). When sunlight enters Earth\u0027s atmosphere, it interacts with molecules and small particles in the air, such as nitrogen and oxygen.\n\n2. **Scattering of Light**: Light waves scatter when they collide with particles in the atmosphere. However, the amount of scattering depends on the **wavelength** of the light. Shorter wavelengths (like blue and violet) scatter more easily than longer wavelengths (like red and yellow).\n\n3. **Blue Light Dominance**: Blue light (with a wavelength of about 400–450 nm) scatters more than red light (about 620–750 nm). This scattered blue light comes from all directions in the atmosphere, making the sky appear blue to our eyes.\n\n4. **Why Not Violet?**: Although violet light scatters even more than blue",
-                                 "pcuda":  "The sky appears blue due to a phenomenon called **Rayleigh scattering**. Here\u0027s a simple explanation:\n\n### 1. **Sunlight and the Atmosphere**  \nSunlight, or white light, is made up of many colors, each with different wavelengths. When sunlight enters Earth\u0027s atmosphere, it interacts with gas molecules and small particles in the air.\n\n### 2. **Scattering of Light**  \nThe molecules in the atmosphere (like nitrogen and oxygen) scatter light in all directions. However, **shorter wavelengths** (like blue and violet) are scattered much more than longer wavelengths (like red or yellow). This is called **Rayleigh scattering**.\n\n### 3. **Why Blue, Not Violet?**  \nAlthough violet light has an even shorter wavelength than blue and is scattered more, our eyes are **more sensitive to blue light** and the **sun emits more blue light** than violet. Also, some of the violet light is absorbed by the upper atmosphere. So, we perceive the sky as **blue** rather than violet.\n\n### 4. **During Sunrise or Sunset**  \nAt sunrise or sunset, the sunlight has to pass through more of the atmosphere. This scatters out most of the blue light, leaving the longer"
+                                 "Kernelcore":  "The sky appears blue due to a phenomenon called **Rayleigh scattering**. Here\u0027s a simple explanation:\n\n### 1. **Sunlight and the Atmosphere**  \nSunlight, or white light, is made up of many colors, each with different wavelengths. When sunlight enters Earth\u0027s atmosphere, it interacts with gas molecules and small particles in the air.\n\n### 2. **Scattering of Light**  \nThe molecules in the atmosphere (like nitrogen and oxygen) scatter light in all directions. However, **shorter wavelengths** (like blue and violet) are scattered much more than longer wavelengths (like red or yellow). This is called **Rayleigh scattering**.\n\n### 3. **Why Blue, Not Violet?**  \nAlthough violet light has an even shorter wavelength than blue and is scattered more, our eyes are **more sensitive to blue light** and the **sun emits more blue light** than violet. Also, some of the violet light is absorbed by the upper atmosphere. So, we perceive the sky as **blue** rather than violet.\n\n### 4. **During Sunrise or Sunset**  \nAt sunrise or sunset, the sunlight has to pass through more of the atmosphere. This scatters out most of the blue light, leaving the longer"
                              }
              },
     "kernels":  {
-                    "app":  "C:\\BitsPlus\\CudaOnCPUCores\\build\\windows-msvc-nvidia\\pcuda_kquant_vs_cuda.exe",
+                    "app":  "C:\\BitsPlus\\CudaOnCPUCores\\build\\windows-msvc-nvidia\\kc_kquant_vs_cuda.exe",
                     "results_match":  true
                 },
     "records":  [
@@ -121,28 +121,28 @@
                         "stddev_ts":  0.073576
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  1,
                         "test":  "pp32",
                         "avg_ts":  209.615037,
                         "stddev_ts":  0.236739
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  1,
                         "test":  "pp128",
                         "avg_ts":  236.788879,
                         "stddev_ts":  0.717215
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  1,
                         "test":  "pp512",
                         "avg_ts":  229.10152,
                         "stddev_ts":  1.246214
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  1,
                         "test":  "tg64",
                         "avg_ts":  31.658697,
@@ -177,56 +177,56 @@
                         "stddev_ts":  0.064978
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  1,
                         "test":  "kern tg1",
                         "avg_ts":  36.8,
                         "stddev_ts":  0
                     },
                     {
-                        "backend":  "pcudagpu",
+                        "backend":  "kcgpu",
                         "round":  1,
                         "test":  "kern tg1",
                         "avg_ts":  54.5,
                         "stddev_ts":  0
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  1,
                         "test":  "kern pp32",
                         "avg_ts":  223.8,
                         "stddev_ts":  0
                     },
                     {
-                        "backend":  "pcudagpu",
+                        "backend":  "kcgpu",
                         "round":  1,
                         "test":  "kern pp32",
                         "avg_ts":  720.5,
                         "stddev_ts":  0
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  1,
                         "test":  "kern pp128",
                         "avg_ts":  257.1,
                         "stddev_ts":  0
                     },
                     {
-                        "backend":  "pcudagpu",
+                        "backend":  "kcgpu",
                         "round":  1,
                         "test":  "kern pp128",
                         "avg_ts":  931.4,
                         "stddev_ts":  0
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  1,
                         "test":  "kern pp512",
                         "avg_ts":  276.7,
                         "stddev_ts":  0
                     },
                     {
-                        "backend":  "pcudagpu",
+                        "backend":  "kcgpu",
                         "round":  1,
                         "test":  "kern pp512",
                         "avg_ts":  1000.4,
@@ -293,7 +293,7 @@
                         "seconds":  22.589725299999998
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  1,
                         "test":  "chat reply",
                         "avg_ts":  13.871556243367154,
@@ -303,7 +303,7 @@
                         "seconds":  18.5732325
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  1,
                         "test":  "chat prompt",
                         "avg_ts":  74.276073554534563,
@@ -313,7 +313,7 @@
                         "seconds":  18.5732325
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  1,
                         "test":  "chat reply",
                         "avg_ts":  13.752550626239922,
@@ -323,7 +323,7 @@
                         "seconds":  18.7455846
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  1,
                         "test":  "chat prompt",
                         "avg_ts":  72.8957850615709,
@@ -333,7 +333,7 @@
                         "seconds":  18.7455846
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  1,
                         "test":  "chat reply",
                         "avg_ts":  13.659786883754784,
@@ -343,7 +343,7 @@
                         "seconds":  18.8872571
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  1,
                         "test":  "chat prompt",
                         "avg_ts":  64.419647992637749,
@@ -381,28 +381,28 @@
                         "stddev_ts":  0.093991
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  2,
                         "test":  "pp32",
                         "avg_ts":  207.832854,
                         "stddev_ts":  1.626914
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  2,
                         "test":  "pp128",
                         "avg_ts":  236.989473,
                         "stddev_ts":  1.339587
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  2,
                         "test":  "pp512",
                         "avg_ts":  229.124543,
                         "stddev_ts":  1.278163
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  2,
                         "test":  "tg64",
                         "avg_ts":  31.370836,
@@ -437,56 +437,56 @@
                         "stddev_ts":  0.368066
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  2,
                         "test":  "kern tg1",
                         "avg_ts":  29.8,
                         "stddev_ts":  0
                     },
                     {
-                        "backend":  "pcudagpu",
+                        "backend":  "kcgpu",
                         "round":  2,
                         "test":  "kern tg1",
                         "avg_ts":  54.9,
                         "stddev_ts":  0
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  2,
                         "test":  "kern pp32",
                         "avg_ts":  225.5,
                         "stddev_ts":  0
                     },
                     {
-                        "backend":  "pcudagpu",
+                        "backend":  "kcgpu",
                         "round":  2,
                         "test":  "kern pp32",
                         "avg_ts":  719.7,
                         "stddev_ts":  0
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  2,
                         "test":  "kern pp128",
                         "avg_ts":  263.5,
                         "stddev_ts":  0
                     },
                     {
-                        "backend":  "pcudagpu",
+                        "backend":  "kcgpu",
                         "round":  2,
                         "test":  "kern pp128",
                         "avg_ts":  929.4,
                         "stddev_ts":  0
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  2,
                         "test":  "kern pp512",
                         "avg_ts":  275.8,
                         "stddev_ts":  0
                     },
                     {
-                        "backend":  "pcudagpu",
+                        "backend":  "kcgpu",
                         "round":  2,
                         "test":  "kern pp512",
                         "avg_ts":  1002.2,
@@ -553,7 +553,7 @@
                         "seconds":  22.3616729
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  2,
                         "test":  "chat reply",
                         "avg_ts":  13.902201230928156,
@@ -563,7 +563,7 @@
                         "seconds":  18.5360411
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  2,
                         "test":  "chat prompt",
                         "avg_ts":  73.007926574885275,
@@ -573,7 +573,7 @@
                         "seconds":  18.5360411
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  2,
                         "test":  "chat reply",
                         "avg_ts":  13.7913764956545,
@@ -583,7 +583,7 @@
                         "seconds":  18.6907416
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  2,
                         "test":  "chat prompt",
                         "avg_ts":  74.202062817346317,
@@ -593,7 +593,7 @@
                         "seconds":  18.6907416
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  2,
                         "test":  "chat reply",
                         "avg_ts":  13.660324722525322,
@@ -603,7 +603,7 @@
                         "seconds":  18.886029
                     },
                     {
-                        "backend":  "pcuda",
+                        "backend":  "Kernelcore",
                         "round":  2,
                         "test":  "chat prompt",
                         "avg_ts":  64.545873674504378,

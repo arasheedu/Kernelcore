@@ -3,16 +3,16 @@
 // Contains hardware exceptions raised inside Booth kernel code.
 //
 // A vectored exception handler acts only while the current thread is inside a
-// KernelScope. It records FaultInfo and resumes at pcuda_sysv_recover with rsp set
+// KernelScope. It records FaultInfo and resumes at kc_sysv_recover with rsp set
 // to the thunk's saved anchor, so the thunk restores every non-volatile register and
 // returns 1. No heap allocation, locks or I/O happen in the handler.
 
-#include <pcuda/error.hpp>
-#include <pcuda/kernel_registry.hpp>
+#include <kernelcore/error.hpp>
+#include <kernelcore/kernel_registry.hpp>
 
 #include <cstddef>
 
-namespace pcuda::cpu {
+namespace kc::cpu {
 
 // Reference-counted installation of the vectored handler.
 void acquireFaultGuard();
@@ -41,9 +41,9 @@ struct InvokeResult {
 InvokeResult invokeSysV(const void* entry, const LaunchArgs& args, const char* kernel_name,
                         const void* image_base, size_t image_size) noexcept;
 
-} // namespace pcuda::cpu
+} // namespace kc::cpu
 
-extern "C" int pcuda_sysv_invoke(const void* entry, const uint64_t* gpr6, const uint64_t* xmm8,
+extern "C" int kc_sysv_invoke(const void* entry, const uint64_t* gpr6, const uint64_t* xmm8,
                                  void** anchor_slot);
-extern "C" void pcuda_sysv_recover();
-extern "C" void pcuda_sysv_native_bridge();  // src/cpu/sysv_shims.asm
+extern "C" void kc_sysv_recover();
+extern "C" void kc_sysv_native_bridge();  // src/cpu/sysv_shims.asm

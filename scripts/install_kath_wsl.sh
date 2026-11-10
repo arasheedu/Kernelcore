@@ -1,6 +1,6 @@
 #!/bin/sh
-# Installs the pinned Booth kath (Linux build) for pcuda's WSL fallback mode.
-# Destination: ~/.local/share/pcuda/booth-<version>/kath  (user-local, nothing system-wide)
+# Installs the pinned Booth kath (Linux build) for Kernelcore's WSL fallback mode.
+# Destination: ~/.local/share/kernelcore/booth-<version>/kath  (user-local, nothing system-wide)
 #
 #   sh scripts/install_kath_wsl.sh                # download the release tarball, verify SHA-256
 #   sh scripts/install_kath_wsl.sh --from-source  # build the pinned commit with make instead
@@ -12,7 +12,7 @@ VERSION=0.6.1
 COMMIT=fc128cb50234a9975858ad17c056e30ca4111441
 TGZ_SHA256=526dbccc3d0e05a110a0555ea6cf2d5cef54fd22c68bdfb0ef03d606e3c24fa9
 URL="https://github.com/Zaneham/Booth/releases/download/v${VERSION}/booth-${VERSION}-linux-x86_64.tar.gz"
-DEST="$HOME/.local/share/pcuda/booth-${VERSION}"
+DEST="$HOME/.local/share/kernelcore/booth-${VERSION}"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

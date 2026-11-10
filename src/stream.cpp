@@ -12,7 +12,7 @@
 #include <format>
 #include <stdexcept>
 
-namespace pcuda {
+namespace kc {
 namespace {
 
 struct ThreadStart {
@@ -238,7 +238,7 @@ WorkerPool::WorkerPool(unsigned threads, size_t stack_bytes, unsigned spin_us) :
     threads = std::max(1u, threads);
     try {
         for (unsigned i = 0; i < threads; ++i)
-            threads_.push_back(startThread(stack_bytes, L"pcuda pool worker", [this, i] { loop(i + 1); }));
+            threads_.push_back(startThread(stack_bytes, L"Kernelcore pool worker", [this, i] { loop(i + 1); }));
     } catch (...) {
         stop();
         throw;
@@ -411,4 +411,4 @@ bool chunksCoverExactly(const std::vector<ChunkSpec>& chunks, int64_t total) noe
     return next == total;
 }
 
-} // namespace pcuda
+} // namespace kc

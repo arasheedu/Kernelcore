@@ -8,7 +8,7 @@
 #include <mutex>
 #include <stdexcept>
 
-namespace pcuda::cpu {
+namespace kc::cpu {
 namespace {
 
 struct ThreadKernelState {
@@ -79,7 +79,7 @@ LONG CALLBACK vehHandler(PEXCEPTION_POINTERS ep) {
     s.faulted = true;
     s.in_kernel = false;
     ep->ContextRecord->Rsp = reinterpret_cast<DWORD64>(s.anchor);
-    ep->ContextRecord->Rip = reinterpret_cast<DWORD64>(&pcuda_sysv_recover);
+    ep->ContextRecord->Rip = reinterpret_cast<DWORD64>(&kc_sysv_recover);
     s.anchor = nullptr;
     return EXCEPTION_CONTINUE_EXECUTION;
 }
@@ -129,7 +129,7 @@ InvokeResult invokeSysV(const void* entry, const LaunchArgs& args, const char* k
     InvokeResult r;
     {
         KernelScope scope(kernel_name, image_base, image_size);
-        const int rc = pcuda_sysv_invoke(entry, args.gpr, args.xmm, scope.anchorSlot());
+        const int rc = kc_sysv_invoke(entry, args.gpr, args.xmm, scope.anchorSlot());
         if (rc != 0 || scope.faulted()) {
             r.faulted = true;
             r.fault = scope.fault();
@@ -141,4 +141,4 @@ InvokeResult invokeSysV(const void* entry, const LaunchArgs& args, const char* k
     return r;
 }
 
-} // namespace pcuda::cpu
+} // namespace kc::cpu

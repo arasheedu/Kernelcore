@@ -6,10 +6,10 @@
 #include <metal_stdlib>
 using namespace metal;
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0);
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0)
 {
     return p0;
@@ -219,7 +219,7 @@ kernel void silu_mul_q8kf(
     device float * v239;
     device float * v240;
     v8 = (int)(p5);
-    v9 = pcuda_aligned8(v8);
+    v9 = kc_aligned8(v8);
     v10 = bid.x;
     v11 = bdim.x;
     v12 = v10 * v11;

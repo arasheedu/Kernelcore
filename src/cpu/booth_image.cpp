@@ -8,13 +8,13 @@
 
 extern "C" {
 // System V -> Win64 shims (sysv_shims.asm)
-void pcuda_sysv_sinf();
-void pcuda_sysv_cosf();
-void pcuda_sysv_exp2f();
-void pcuda_sysv_log2f();
+void kc_sysv_sinf();
+void kc_sysv_cosf();
+void kc_sysv_exp2f();
+void kc_sysv_log2f();
 }
 
-namespace pcuda::cpu {
+namespace kc::cpu {
 namespace {
 
 constexpr size_t kStubSize = 16;  // FF 25 00000000 <abs64> + 2 x int3
@@ -30,10 +30,10 @@ size_t pageSize() noexcept {
 } // namespace
 
 const void* sysvShimFor(std::string_view n) noexcept {
-    if (n == "sinf") return reinterpret_cast<const void*>(&pcuda_sysv_sinf);
-    if (n == "cosf") return reinterpret_cast<const void*>(&pcuda_sysv_cosf);
-    if (n == "exp2f") return reinterpret_cast<const void*>(&pcuda_sysv_exp2f);
-    if (n == "log2f") return reinterpret_cast<const void*>(&pcuda_sysv_log2f);
+    if (n == "sinf") return reinterpret_cast<const void*>(&kc_sysv_sinf);
+    if (n == "cosf") return reinterpret_cast<const void*>(&kc_sysv_cosf);
+    if (n == "exp2f") return reinterpret_cast<const void*>(&kc_sysv_exp2f);
+    if (n == "log2f") return reinterpret_cast<const void*>(&kc_sysv_log2f);
     return nullptr;
 }
 
@@ -134,4 +134,4 @@ Error BoothImage::load(std::span<const unsigned char> bytes, std::string_view ke
     return Error::Success;
 }
 
-} // namespace pcuda::cpu
+} // namespace kc::cpu

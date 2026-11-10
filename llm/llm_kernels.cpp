@@ -1,66 +1,66 @@
-// pcuda adapters for kernels/llm/*.cu. Each validates every buffer against live pcuda
+// Kernelcore adapters for kernels/llm/*.cu. Each validates every buffer against live Kernelcore
 // allocations before the Booth code runs, and packs System V arguments in declaration order.
 // Kernel indices are 32-bit ints, so every element count must fit in int32.
 
 #include "llm_kernels.hpp"
 
-#include <pcuda/kernel_registry.hpp>
+#include <kernelcore/kernel_registry.hpp>
 
 #include <algorithm>
 #include <limits>
 
-PCUDA_DECLARE_KERNEL_IMAGE(matvec_q8);
-PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4);
-PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8);
-PCUDA_DECLARE_KERNEL_IMAGE(quantize_q8x4);
-PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8_q8);
-PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4x8_q8x2);
-PCUDA_DECLARE_KERNEL_IMAGE(matvec_q4k_q8);
-PCUDA_DECLARE_KERNEL_IMAGE(matvec_q6k_q8);
-PCUDA_DECLARE_KERNEL_IMAGE(matmul_q4k_q8x4);
-PCUDA_DECLARE_KERNEL_IMAGE(matmul_q6k_q8x4);
-PCUDA_DECLARE_KERNEL_IMAGE(matmul_q4k_q8x8);
-PCUDA_DECLARE_KERNEL_IMAGE(matmul_q6k_q8x8);
-PCUDA_DECLARE_KERNEL_IMAGE(quantize_cols);
-PCUDA_DECLARE_KERNEL_IMAGE(quantize_cols_k);
-PCUDA_DECLARE_KERNEL_IMAGE(matmul_q4k_q8kx4);
-PCUDA_DECLARE_KERNEL_IMAGE(matmul_q6k_q8kx4);
-PCUDA_DECLARE_KERNEL_IMAGE(matmul_q4k_q8kx8);
-PCUDA_DECLARE_KERNEL_IMAGE(matmul_q6k_q8kx8);
-PCUDA_DECLARE_KERNEL_IMAGE(rope_ff);
-PCUDA_DECLARE_KERNEL_IMAGE(mul_rows);
-PCUDA_DECLARE_KERNEL_IMAGE(rope_ggml);
-PCUDA_DECLARE_KERNEL_IMAGE(add_sumsq_f);
-PCUDA_DECLARE_KERNEL_IMAGE(sumsq_part);
-PCUDA_DECLARE_KERNEL_IMAGE(norm_mul_q8_f);
-PCUDA_DECLARE_KERNEL_IMAGE(silu_mul_q8x4f);
-PCUDA_DECLARE_KERNEL_IMAGE(norm_mul_q8k_f);
-PCUDA_DECLARE_KERNEL_IMAGE(silu_mul_q8kf);
-PCUDA_DECLARE_KERNEL_IMAGE(add_rms_norm);
-PCUDA_DECLARE_KERNEL_IMAGE(silu_mul_q8x4);
-PCUDA_DECLARE_KERNEL_IMAGE(add_sumsq);
-PCUDA_DECLARE_KERNEL_IMAGE(norm_q8x4);
-PCUDA_DECLARE_KERNEL_IMAGE(rms_norm);
-PCUDA_DECLARE_KERNEL_IMAGE(rope);
-PCUDA_DECLARE_KERNEL_IMAGE(kv_append);
-PCUDA_DECLARE_KERNEL_IMAGE(attn_scores);
-PCUDA_DECLARE_KERNEL_IMAGE(softmax);
-PCUDA_DECLARE_KERNEL_IMAGE(attn_values);
-PCUDA_DECLARE_KERNEL_IMAGE(silu_mul);
-PCUDA_DECLARE_KERNEL_IMAGE(matmul_f16);
-PCUDA_DECLARE_KERNEL_IMAGE(set_rows_f16);
-PCUDA_DECLARE_KERNEL_IMAGE(fa_scores);
-PCUDA_DECLARE_KERNEL_IMAGE(fa_max);
-PCUDA_DECLARE_KERNEL_IMAGE(fa_exp);
-PCUDA_DECLARE_KERNEL_IMAGE(fa_values);
+KC_DECLARE_KERNEL_IMAGE(matvec_q8);
+KC_DECLARE_KERNEL_IMAGE(matvec_q4);
+KC_DECLARE_KERNEL_IMAGE(matvec_q4x8);
+KC_DECLARE_KERNEL_IMAGE(quantize_q8x4);
+KC_DECLARE_KERNEL_IMAGE(matvec_q4x8_q8);
+KC_DECLARE_KERNEL_IMAGE(matvec_q4x8_q8x2);
+KC_DECLARE_KERNEL_IMAGE(matvec_q4k_q8);
+KC_DECLARE_KERNEL_IMAGE(matvec_q6k_q8);
+KC_DECLARE_KERNEL_IMAGE(matmul_q4k_q8x4);
+KC_DECLARE_KERNEL_IMAGE(matmul_q6k_q8x4);
+KC_DECLARE_KERNEL_IMAGE(matmul_q4k_q8x8);
+KC_DECLARE_KERNEL_IMAGE(matmul_q6k_q8x8);
+KC_DECLARE_KERNEL_IMAGE(quantize_cols);
+KC_DECLARE_KERNEL_IMAGE(quantize_cols_k);
+KC_DECLARE_KERNEL_IMAGE(matmul_q4k_q8kx4);
+KC_DECLARE_KERNEL_IMAGE(matmul_q6k_q8kx4);
+KC_DECLARE_KERNEL_IMAGE(matmul_q4k_q8kx8);
+KC_DECLARE_KERNEL_IMAGE(matmul_q6k_q8kx8);
+KC_DECLARE_KERNEL_IMAGE(rope_ff);
+KC_DECLARE_KERNEL_IMAGE(mul_rows);
+KC_DECLARE_KERNEL_IMAGE(rope_ggml);
+KC_DECLARE_KERNEL_IMAGE(add_sumsq_f);
+KC_DECLARE_KERNEL_IMAGE(sumsq_part);
+KC_DECLARE_KERNEL_IMAGE(norm_mul_q8_f);
+KC_DECLARE_KERNEL_IMAGE(silu_mul_q8x4f);
+KC_DECLARE_KERNEL_IMAGE(norm_mul_q8k_f);
+KC_DECLARE_KERNEL_IMAGE(silu_mul_q8kf);
+KC_DECLARE_KERNEL_IMAGE(add_rms_norm);
+KC_DECLARE_KERNEL_IMAGE(silu_mul_q8x4);
+KC_DECLARE_KERNEL_IMAGE(add_sumsq);
+KC_DECLARE_KERNEL_IMAGE(norm_q8x4);
+KC_DECLARE_KERNEL_IMAGE(rms_norm);
+KC_DECLARE_KERNEL_IMAGE(rope);
+KC_DECLARE_KERNEL_IMAGE(kv_append);
+KC_DECLARE_KERNEL_IMAGE(attn_scores);
+KC_DECLARE_KERNEL_IMAGE(softmax);
+KC_DECLARE_KERNEL_IMAGE(attn_values);
+KC_DECLARE_KERNEL_IMAGE(silu_mul);
+KC_DECLARE_KERNEL_IMAGE(matmul_f16);
+KC_DECLARE_KERNEL_IMAGE(set_rows_f16);
+KC_DECLARE_KERNEL_IMAGE(fa_scores);
+KC_DECLARE_KERNEL_IMAGE(fa_max);
+KC_DECLARE_KERNEL_IMAGE(fa_exp);
+KC_DECLARE_KERNEL_IMAGE(fa_values);
 
 namespace llm {
 namespace {
 
-using pcuda::ArgPacker;
-using pcuda::Error;
-using pcuda::LaunchArgs;
-using pcuda::LaunchContext;
+using kc::ArgPacker;
+using kc::Error;
+using kc::LaunchArgs;
+using kc::LaunchContext;
 
 constexpr int64_t kMaxIndex = std::numeric_limits<int32_t>::max();
 
@@ -82,7 +82,7 @@ bool chunkOk(int64_t total, int64_t begin, int64_t length) {
     return begin >= 0 && length > 0 && begin + length <= total && length <= kMaxIndex;
 }
 
-// pcuda device memory is host memory, so the adapter can confirm that the device-side dims
+// Kernelcore device memory is host memory, so the adapter can confirm that the device-side dims
 // array agrees with the sizes it validated. A mismatch would let the kernel index past a buffer.
 bool dimsMatch(const int* dims, const AttnDims& d) {
     return dims[0] == d.n_heads && dims[1] == d.ctx && dims[2] == d.head_dim && dims[3] == d.kv_stride &&
@@ -95,7 +95,7 @@ Error checkAttnShape(const AttnDims& d) {
     if (!fitsIndex(d.n_heads, d.ctx) || !fitsIndex(d.n_heads, d.head_dim) || !fitsIndex(d.ctx, d.kv_stride))
         return Error::InvalidValue;
     if (static_cast<int64_t>(d.n_heads / d.group) * d.head_dim > d.kv_stride) return Error::InvalidValue;
-    // The kernels promise pcuda_aligned8() for head_dim and ctx_pad.
+    // The kernels promise kc_aligned8() for head_dim and ctx_pad.
     if (d.head_dim % 8 || d.ctx_pad % 8 || d.ctx_pad < d.ctx || d.k_stride < d.ctx) return Error::InvalidValue;
     if (!fitsIndex(d.n_heads, d.ctx_pad) || !fitsIndex(d.kv_stride, d.k_stride)) return Error::InvalidValue;
     return Error::Success;
@@ -376,7 +376,7 @@ Error ropeFFMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) no
 
 Error mulRowsMarshal(const void* p, const LaunchContext& ctx, LaunchArgs* out) noexcept {
     const auto& a = *static_cast<const MulRowsArgs*>(p);
-    if (a.n <= 0 || a.n % 8 || a.count < 0 || a.count % a.n) return Error::InvalidValue;  // pcuda_aligned8(n)
+    if (a.n <= 0 || a.n % 8 || a.count < 0 || a.count % a.n) return Error::InvalidValue;  // kc_aligned8(n)
     LLM_TRY(check(ctx, a.x, f32Bytes(a.count), "x"));
     LLM_TRY(check(ctx, a.w, f32Bytes(a.n), "w"));
     LLM_TRY(check(ctx, a.y, f32Bytes(a.count), "y"));
@@ -674,7 +674,7 @@ Error scoresExtent(const void* p, int64_t* total) noexcept {
 }
 
 // Thread index -> (head, position) is not a pointer offset, so the chunk start goes in `base`
-// (a multiple of 8: the kernel promises pcuda_aligned8(base)).
+// (a multiple of 8: the kernel promises kc_aligned8(base)).
 Error scoresChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* out) noexcept {
     const auto& a = *static_cast<const AttnScoresArgs*>(p);
     if (!chunkOk(int64_t(a.d.n_heads) * a.d.ctx_pad, begin, length) || begin % 8) return Error::InvalidValue;
@@ -1014,59 +1014,59 @@ Error faValuesChunk(const void* p, int64_t begin, int64_t length, LaunchArgs* ou
 
 #undef LLM_TRY
 
-const pcuda::KernelEntry kEntries[] = {
-    {"matvec_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q8), &matvecMarshal, &matvecExtent, &matvecChunk},
-    {"matvec_q4", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4), &matvecQ4Marshal, &matvecQ4Extent, &matvecQ4Chunk},
-    {"matvec_q4x8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8), &matvecQ4x8Marshal, &matvecQ4Extent, &matvecQ4x8Chunk},
-    {"quantize_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(quantize_q8x4), &quantMarshal, &quantExtent, &quantChunk},
-    {"matvec_q4x8_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8_q8), &q4q8Marshal, &q4q8Extent, &q4q8Chunk},
-    {"matvec_q4x8_q8x2", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4x8_q8x2), &q4q8x2Marshal, &q4q8x2Extent, &q4q8x2Chunk},
-    {"matvec_q4k_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q4k_q8), &kquantMarshal<37>, &q4q8Extent, &kquantChunk<37>},
-    {"matvec_q6k_q8", PCUDA_KERNEL_IMAGE_FIELDS(matvec_q6k_q8), &kquantMarshal<53>, &q4q8Extent, &kquantChunk<53>},
-    {"matmul_q4k_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q4k_q8x4), &matmulKMarshal<37, 4>, &matmulKExtent<4>, &matmulKChunk<4>},
-    {"matmul_q6k_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q6k_q8x4), &matmulKMarshal<53, 4>, &matmulKExtent<4>, &matmulKChunk<4>},
-    {"matmul_q4k_q8x8", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q4k_q8x8), &matmulKMarshal<37, 8>, &matmulKExtent<8>, &matmulKChunk<8>},
-    {"matmul_q6k_q8x8", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q6k_q8x8), &matmulKMarshal<53, 8>, &matmulKExtent<8>, &matmulKChunk<8>},
-    {"quantize_cols", PCUDA_KERNEL_IMAGE_FIELDS(quantize_cols), &quantColsMarshal<32>, &quantColsExtent<32>, &quantColsChunk<32>},
-    {"quantize_cols_k", PCUDA_KERNEL_IMAGE_FIELDS(quantize_cols_k), &quantColsMarshal<256>, &quantColsExtent<256>, &quantColsChunk<256>},
-    {"matmul_q4k_q8kx4", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q4k_q8kx4), &matmulKMarshal<37, 4, true>, &matmulKExtent<4>, &matmulKChunk<4>},
-    {"matmul_q6k_q8kx4", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q6k_q8kx4), &matmulKMarshal<53, 4, true>, &matmulKExtent<4>, &matmulKChunk<4>},
-    {"matmul_q4k_q8kx8", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q4k_q8kx8), &matmulKMarshal<37, 8, true>, &matmulKExtent<8>, &matmulKChunk<8>},
-    {"matmul_q6k_q8kx8", PCUDA_KERNEL_IMAGE_FIELDS(matmul_q6k_q8kx8), &matmulKMarshal<53, 8, true>, &matmulKExtent<8>, &matmulKChunk<8>},
-    {"rope_ff", PCUDA_KERNEL_IMAGE_FIELDS(rope_ff), &ropeFFMarshal},
-    {"mul_rows", PCUDA_KERNEL_IMAGE_FIELDS(mul_rows), &mulRowsMarshal},
-    {"rope_ggml", PCUDA_KERNEL_IMAGE_FIELDS(rope_ggml), &ropeGgmlMarshal},
-    {"add_sumsq_f", PCUDA_KERNEL_IMAGE_FIELDS(add_sumsq_f), &addSumsqFMarshal, &addSumsqFExtent, &addSumsqFChunk},
-    {"sumsq_part", PCUDA_KERNEL_IMAGE_FIELDS(sumsq_part), &sumsqPartMarshal, &sumsqPartExtent, &sumsqPartChunk},
-    {"norm_mul_q8_f", PCUDA_KERNEL_IMAGE_FIELDS(norm_mul_q8_f), &normMulQ8Marshal, &normMulQ8Extent, &normMulQ8Chunk},
-    {"silu_mul_q8x4f", PCUDA_KERNEL_IMAGE_FIELDS(silu_mul_q8x4f), &siluQ8FMarshal, &siluQ8FExtent, &siluQ8FChunk},
-    {"norm_mul_q8k_f", PCUDA_KERNEL_IMAGE_FIELDS(norm_mul_q8k_f), &normMulQ8KMarshal, &normMulQ8KExtent, &normMulQ8KChunk},
-    {"silu_mul_q8kf", PCUDA_KERNEL_IMAGE_FIELDS(silu_mul_q8kf), &siluQ8KMarshal, &siluQ8KExtent, &siluQ8KChunk},
-    {"add_rms_norm", PCUDA_KERNEL_IMAGE_FIELDS(add_rms_norm), &addRmsMarshal},
-    {"silu_mul_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(silu_mul_q8x4), &siluQMarshal, &siluQExtent, &siluQChunk},
-    {"add_sumsq", PCUDA_KERNEL_IMAGE_FIELDS(add_sumsq), &sumsqMarshal, &sumsqExtent, &sumsqChunk},
-    {"norm_q8x4", PCUDA_KERNEL_IMAGE_FIELDS(norm_q8x4), &normQMarshal, &normQExtent, &normQChunk},
-    {"rms_norm", PCUDA_KERNEL_IMAGE_FIELDS(rms_norm), &rmsMarshal, &rmsExtent, &rmsChunk},
-    {"rope", PCUDA_KERNEL_IMAGE_FIELDS(rope), &ropeMarshal},
-    {"kv_append", PCUDA_KERNEL_IMAGE_FIELDS(kv_append), &kvMarshal},
-    {"attn_scores", PCUDA_KERNEL_IMAGE_FIELDS(attn_scores), &scoresMarshal, &scoresExtent, &scoresChunk},
-    {"softmax", PCUDA_KERNEL_IMAGE_FIELDS(softmax), &softmaxMarshal, &softmaxExtent, &softmaxChunk},
-    {"attn_values", PCUDA_KERNEL_IMAGE_FIELDS(attn_values), &valuesMarshal, &valuesExtent, &valuesChunk},
-    {"silu_mul", PCUDA_KERNEL_IMAGE_FIELDS(silu_mul), &siluMarshal, &siluExtent, &siluChunk},
-    {"matmul_f16", PCUDA_KERNEL_IMAGE_FIELDS(matmul_f16), &matmulF16Marshal, &matmulF16Extent, &matmulF16Chunk},
-    {"set_rows_f16", PCUDA_KERNEL_IMAGE_FIELDS(set_rows_f16), &setRowsMarshal, &setRowsExtent, &setRowsChunk},
-    {"fa_scores", PCUDA_KERNEL_IMAGE_FIELDS(fa_scores), &faScoresMarshal, &faScoresExtent, &faScoresChunk},
-    {"fa_max", PCUDA_KERNEL_IMAGE_FIELDS(fa_max), &faMaxMarshal, &faMaxExtent, &faMaxChunk},
-    {"fa_exp", PCUDA_KERNEL_IMAGE_FIELDS(fa_exp), &faExpMarshal, &faExpExtent, &faExpChunk},
-    {"fa_values", PCUDA_KERNEL_IMAGE_FIELDS(fa_values), &faValuesMarshal, &faValuesExtent, &faValuesChunk},
+const kc::KernelEntry kEntries[] = {
+    {"matvec_q8", KC_KERNEL_IMAGE_FIELDS(matvec_q8), &matvecMarshal, &matvecExtent, &matvecChunk},
+    {"matvec_q4", KC_KERNEL_IMAGE_FIELDS(matvec_q4), &matvecQ4Marshal, &matvecQ4Extent, &matvecQ4Chunk},
+    {"matvec_q4x8", KC_KERNEL_IMAGE_FIELDS(matvec_q4x8), &matvecQ4x8Marshal, &matvecQ4Extent, &matvecQ4x8Chunk},
+    {"quantize_q8x4", KC_KERNEL_IMAGE_FIELDS(quantize_q8x4), &quantMarshal, &quantExtent, &quantChunk},
+    {"matvec_q4x8_q8", KC_KERNEL_IMAGE_FIELDS(matvec_q4x8_q8), &q4q8Marshal, &q4q8Extent, &q4q8Chunk},
+    {"matvec_q4x8_q8x2", KC_KERNEL_IMAGE_FIELDS(matvec_q4x8_q8x2), &q4q8x2Marshal, &q4q8x2Extent, &q4q8x2Chunk},
+    {"matvec_q4k_q8", KC_KERNEL_IMAGE_FIELDS(matvec_q4k_q8), &kquantMarshal<37>, &q4q8Extent, &kquantChunk<37>},
+    {"matvec_q6k_q8", KC_KERNEL_IMAGE_FIELDS(matvec_q6k_q8), &kquantMarshal<53>, &q4q8Extent, &kquantChunk<53>},
+    {"matmul_q4k_q8x4", KC_KERNEL_IMAGE_FIELDS(matmul_q4k_q8x4), &matmulKMarshal<37, 4>, &matmulKExtent<4>, &matmulKChunk<4>},
+    {"matmul_q6k_q8x4", KC_KERNEL_IMAGE_FIELDS(matmul_q6k_q8x4), &matmulKMarshal<53, 4>, &matmulKExtent<4>, &matmulKChunk<4>},
+    {"matmul_q4k_q8x8", KC_KERNEL_IMAGE_FIELDS(matmul_q4k_q8x8), &matmulKMarshal<37, 8>, &matmulKExtent<8>, &matmulKChunk<8>},
+    {"matmul_q6k_q8x8", KC_KERNEL_IMAGE_FIELDS(matmul_q6k_q8x8), &matmulKMarshal<53, 8>, &matmulKExtent<8>, &matmulKChunk<8>},
+    {"quantize_cols", KC_KERNEL_IMAGE_FIELDS(quantize_cols), &quantColsMarshal<32>, &quantColsExtent<32>, &quantColsChunk<32>},
+    {"quantize_cols_k", KC_KERNEL_IMAGE_FIELDS(quantize_cols_k), &quantColsMarshal<256>, &quantColsExtent<256>, &quantColsChunk<256>},
+    {"matmul_q4k_q8kx4", KC_KERNEL_IMAGE_FIELDS(matmul_q4k_q8kx4), &matmulKMarshal<37, 4, true>, &matmulKExtent<4>, &matmulKChunk<4>},
+    {"matmul_q6k_q8kx4", KC_KERNEL_IMAGE_FIELDS(matmul_q6k_q8kx4), &matmulKMarshal<53, 4, true>, &matmulKExtent<4>, &matmulKChunk<4>},
+    {"matmul_q4k_q8kx8", KC_KERNEL_IMAGE_FIELDS(matmul_q4k_q8kx8), &matmulKMarshal<37, 8, true>, &matmulKExtent<8>, &matmulKChunk<8>},
+    {"matmul_q6k_q8kx8", KC_KERNEL_IMAGE_FIELDS(matmul_q6k_q8kx8), &matmulKMarshal<53, 8, true>, &matmulKExtent<8>, &matmulKChunk<8>},
+    {"rope_ff", KC_KERNEL_IMAGE_FIELDS(rope_ff), &ropeFFMarshal},
+    {"mul_rows", KC_KERNEL_IMAGE_FIELDS(mul_rows), &mulRowsMarshal},
+    {"rope_ggml", KC_KERNEL_IMAGE_FIELDS(rope_ggml), &ropeGgmlMarshal},
+    {"add_sumsq_f", KC_KERNEL_IMAGE_FIELDS(add_sumsq_f), &addSumsqFMarshal, &addSumsqFExtent, &addSumsqFChunk},
+    {"sumsq_part", KC_KERNEL_IMAGE_FIELDS(sumsq_part), &sumsqPartMarshal, &sumsqPartExtent, &sumsqPartChunk},
+    {"norm_mul_q8_f", KC_KERNEL_IMAGE_FIELDS(norm_mul_q8_f), &normMulQ8Marshal, &normMulQ8Extent, &normMulQ8Chunk},
+    {"silu_mul_q8x4f", KC_KERNEL_IMAGE_FIELDS(silu_mul_q8x4f), &siluQ8FMarshal, &siluQ8FExtent, &siluQ8FChunk},
+    {"norm_mul_q8k_f", KC_KERNEL_IMAGE_FIELDS(norm_mul_q8k_f), &normMulQ8KMarshal, &normMulQ8KExtent, &normMulQ8KChunk},
+    {"silu_mul_q8kf", KC_KERNEL_IMAGE_FIELDS(silu_mul_q8kf), &siluQ8KMarshal, &siluQ8KExtent, &siluQ8KChunk},
+    {"add_rms_norm", KC_KERNEL_IMAGE_FIELDS(add_rms_norm), &addRmsMarshal},
+    {"silu_mul_q8x4", KC_KERNEL_IMAGE_FIELDS(silu_mul_q8x4), &siluQMarshal, &siluQExtent, &siluQChunk},
+    {"add_sumsq", KC_KERNEL_IMAGE_FIELDS(add_sumsq), &sumsqMarshal, &sumsqExtent, &sumsqChunk},
+    {"norm_q8x4", KC_KERNEL_IMAGE_FIELDS(norm_q8x4), &normQMarshal, &normQExtent, &normQChunk},
+    {"rms_norm", KC_KERNEL_IMAGE_FIELDS(rms_norm), &rmsMarshal, &rmsExtent, &rmsChunk},
+    {"rope", KC_KERNEL_IMAGE_FIELDS(rope), &ropeMarshal},
+    {"kv_append", KC_KERNEL_IMAGE_FIELDS(kv_append), &kvMarshal},
+    {"attn_scores", KC_KERNEL_IMAGE_FIELDS(attn_scores), &scoresMarshal, &scoresExtent, &scoresChunk},
+    {"softmax", KC_KERNEL_IMAGE_FIELDS(softmax), &softmaxMarshal, &softmaxExtent, &softmaxChunk},
+    {"attn_values", KC_KERNEL_IMAGE_FIELDS(attn_values), &valuesMarshal, &valuesExtent, &valuesChunk},
+    {"silu_mul", KC_KERNEL_IMAGE_FIELDS(silu_mul), &siluMarshal, &siluExtent, &siluChunk},
+    {"matmul_f16", KC_KERNEL_IMAGE_FIELDS(matmul_f16), &matmulF16Marshal, &matmulF16Extent, &matmulF16Chunk},
+    {"set_rows_f16", KC_KERNEL_IMAGE_FIELDS(set_rows_f16), &setRowsMarshal, &setRowsExtent, &setRowsChunk},
+    {"fa_scores", KC_KERNEL_IMAGE_FIELDS(fa_scores), &faScoresMarshal, &faScoresExtent, &faScoresChunk},
+    {"fa_max", KC_KERNEL_IMAGE_FIELDS(fa_max), &faMaxMarshal, &faMaxExtent, &faMaxChunk},
+    {"fa_exp", KC_KERNEL_IMAGE_FIELDS(fa_exp), &faExpMarshal, &faExpExtent, &faExpChunk},
+    {"fa_values", KC_KERNEL_IMAGE_FIELDS(fa_values), &faValuesMarshal, &faValuesExtent, &faValuesChunk},
 };
 
 } // namespace
 
-pcuda::Error registerKernels() noexcept {
+kc::Error registerKernels() noexcept {
     for (const auto& e : kEntries)
-        if (pcuda::Error r = pcudaRegisterKernel(&e); r != pcuda::Error::Success) return r;
-    return pcuda::Error::Success;
+        if (kc::Error r = kcRegisterKernel(&e); r != kc::Error::Success) return r;
+    return kc::Error::Success;
 }
 
 } // namespace llm

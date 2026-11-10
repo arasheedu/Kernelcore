@@ -1,13 +1,13 @@
 ; Booth IR
 
-func @pcuda_aligned8(i32 %0) __device__ {
+func @kc_aligned8(i32 %0) __device__ {
 entry:
     ret i32 %0  ; line 12
 }
 
 func @quantize_cols(ptr<global, f32> %0, ptr<global, i32> %1, ptr<global, i32> %2, i32 %3) __global__ {
 entry:
-    %4 = call i32 @pcuda_aligned8(%3)  ; line 18
+    %4 = call i32 @kc_aligned8(%3)  ; line 18
     %5 = block_id.x  ; line 18
     %6 = block_dim.x  ; line 18
     %7 = mul i32 %5, %6  ; line 18
@@ -16,7 +16,7 @@ entry:
     %10 = add i32 %8, %9  ; line 18
     %11 = gep ptr<global, i32>, %2, 0  ; line 19
     %12 = load i32, %11  ; line 19
-    %13 = call i32 @pcuda_aligned8(%12)  ; line 19
+    %13 = call i32 @kc_aligned8(%12)  ; line 19
     %14 = gep ptr<global, i32>, %2, 1  ; line 20
     %15 = load i32, %14  ; line 20
     %16 = mul i32 %13, %15  ; line 21

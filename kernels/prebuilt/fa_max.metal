@@ -6,10 +6,10 @@
 #include <metal_stdlib>
 using namespace metal;
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0);
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0)
 {
     return p0;
@@ -55,7 +55,7 @@ kernel void fa_max(
     int v39;
     device float * v41;
     v6 = (int)(p3);
-    v7 = pcuda_aligned8(v6);
+    v7 = kc_aligned8(v6);
     v8 = bid.x;
     v9 = bdim.x;
     v10 = v8 * v9;

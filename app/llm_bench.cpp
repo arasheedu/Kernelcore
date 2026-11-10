@@ -1,7 +1,7 @@
-// pcuda_llm_bench: token generation (decode) built from the same .cu kernels on every path:
-//   booth   pcuda running Booth's own x86 code         (all CPU threads, chunked launches)
-//   native  pcuda running Booth's IR compiled by MSVC  (Metal route, one thread per lane)
-//   simd    pcuda, 8 CUDA threads per AVX2 register    (Metal route, warp-style)
+// kc_llm_bench: token generation (decode) built from the same .cu kernels on every path:
+//   booth   Kernelcore running Booth's own x86 code         (all CPU threads, chunked launches)
+//   native  Kernelcore running Booth's IR compiled by MSVC  (Metal route, one thread per lane)
+//   simd    Kernelcore, 8 CUDA threads per AVX2 register    (Metal route, warp-style)
 //   cuda    the RTX GPU, kernels compiled by nvcc
 //   c++     plain C++ reference, one thread (also the correctness oracle)
 //
@@ -10,9 +10,9 @@
 //   Q4_K_M file: 2.02 GB), same prompt length (KV cache already filled), same number of
 //   generated tokens, each attending over every position so far, logits back on the host.
 //
-//   pcuda_llm_bench [--model 3b|1b] [--weights q4x8q8|q4x8|q4|q8] [--prompt P] [--tokens T] [--budget S]
+//   kc_llm_bench [--model 3b|1b] [--weights q4x8q8|q4x8|q4|q8] [--prompt P] [--tokens T] [--budget S]
 //                   [--workers N] [--paths booth,native,simd,cuda,cpp] [--graphs on|off] [--check]
-// --graphs on (default): each token runs as one pcuda graph and one CUDA graph (launches recorded
+// --graphs on (default): each token runs as one Kernelcore graph and one CUDA graph (launches recorded
 //   and run as one batch). The per-op breakdown always runs launches one by one.
 //
 // Slow paths (booth, c++) time an evenly spaced subset of the T positions so a run stays within
@@ -23,7 +23,7 @@
 #include "cuda_llm.hpp"
 #include "llm_model.hpp"
 
-#include <pcuda/api.hpp>
+#include <kernelcore/api.hpp>
 
 #include <cuda_runtime_api.h>
 
@@ -353,7 +353,7 @@ int run(int argc, char** argv) {
             graphs = v == "on";
         }
         else {
-            std::fprintf(stderr, "usage: pcuda_llm_bench [--model 3b|1b] [--weights q4x8q8|q4x8|q4|q8] [--prompt P] "
+            std::fprintf(stderr, "usage: kc_llm_bench [--model 3b|1b] [--weights q4x8q8|q4x8|q4|q8] [--prompt P] "
                                  "[--tokens T] [--budget S] [--workers N] [--paths booth,native,simd,cuda,cpp] "
                                  "[--graphs on|off] [--rows-per-thread 1|2] [--check]\n");
             return 2;
@@ -361,23 +361,23 @@ int run(int argc, char** argv) {
     }
     if ((model != "3b" && model != "1b") || (weights != "q4" && weights != "q4x8" && weights != "q4x8q8" && weights != "q8") || prompt < 0 || tokens < 1 ||
         prompt + tokens > 32768 || budget <= 0) {
-        std::fprintf(stderr, "pcuda_llm_bench: bad arguments\n");
+        std::fprintf(stderr, "kc_llm_bench: bad arguments\n");
         return 2;
     }
 
     int devices = 0;
     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) {
-        std::printf("pcuda_llm_bench: no usable CUDA device; skipping\n");
+        std::printf("kc_llm_bench: no usable CUDA device; skipping\n");
         return 77;
     }
     ck(cudaSetDevice(0), "cudaSetDevice");
     cudaDeviceProp prop{};
     ck(cudaGetDeviceProperties(&prop, 0), "cudaGetDeviceProperties");
-    if (pcudaInit() != pcuda::Error::Success) throw std::runtime_error("pcudaInit failed");
-    if (llm::registerKernels() != pcuda::Error::Success)
-        throw std::runtime_error(std::string("registering LLM kernels: ") + pcudaGetLastErrorDetail());
-    pcuda::DeviceProperties pprops{};
-    if (pcudaGetDeviceProperties(&pprops, 0) != pcuda::Error::Success) throw std::runtime_error("pcuda device properties");
+    if (kcInit() != kc::Error::Success) throw std::runtime_error("kcInit failed");
+    if (llm::registerKernels() != kc::Error::Success)
+        throw std::runtime_error(std::string("registering LLM kernels: ") + kcGetLastErrorDetail());
+    kc::DeviceProperties pprops{};
+    if (kcGetDeviceProperties(&pprops, 0) != kc::Error::Success) throw std::runtime_error("Kernelcore device properties");
     // Default: the fastest cores (decode is bound by memory bandwidth).
     const unsigned workers = workers_opt ? workers_opt : pprops.performance_workers;
 
@@ -396,21 +396,21 @@ int run(int argc, char** argv) {
     std::printf("Decode: prompt of %d tokens already in the KV cache, then %d generated tokens (positions %d..%d)\n",
                 prompt, tokens, prompt, prompt + tokens - 1);
     std::printf("GPU   : %s, %zu MiB\n", prop.name, prop.totalGlobalMem >> 20);
-    std::printf("CPU   : %u logical processors; pcuda pool of %u threads + the launching thread; workers = %u\n",
+    std::printf("CPU   : %u logical processors; Kernelcore pool of %u threads + the launching thread; workers = %u\n",
                 std::thread::hardware_concurrency(), pprops.worker_count, workers);
-    std::printf("Graphs: %s (each token as one pcuda graph and one CUDA graph)\n", graphs ? "on" : "off");
+    std::printf("Graphs: %s (each token as one Kernelcore graph and one CUDA graph)\n", graphs ? "on" : "off");
     std::printf("Matvec: %d row%s per thread (matvec_q4x8_q8%s)\n", rows_per_thread, rows_per_thread == 2 ? "s" : "",
                 rows_per_thread == 2 ? "x2" : "");
-    std::printf("Memory: pcuda large pages %s\n",
+    std::printf("Memory: Kernelcore large pages %s\n",
                 pprops.large_pages ? "on (allocations of 2 MB or more)"
-                                   : "off (PCUDA_LARGE_PAGES=1 plus scripts\\grant_lock_pages.ps1 turn them on)");
+                                   : "off (KC_LARGE_PAGES=1 plus scripts\\grant_lock_pages.ps1 turn them on)");
     std::fflush(stdout);
 
     cudaStream_t stream{};
     ck(cudaStreamCreate(&stream), "cudaStreamCreate");
     int rc = 0;
     {
-        llm::PcudaAllocator pa;
+        llm::KcAllocator pa;
         CudaAllocator ca;
         llm::HostAllocator ha;
         std::vector<llm::Model> models;
@@ -423,10 +423,10 @@ int run(int argc, char** argv) {
         const llm::Acts hacts = llm::allocActs(cfg, ha, 99);
         float* host_logits = nullptr;
         ck(cudaMallocHost(reinterpret_cast<void**>(&host_logits), size_t(cfg.vocab) * sizeof(float)), "cudaMallocHost");
-        std::printf("Built identical random weights for pcuda and the GPU in %.1f s\n\n", msSince(t0) / 1000.0);
+        std::printf("Built identical random weights for Kernelcore and the GPU in %.1f s\n\n", msSince(t0) / 1000.0);
 
         auto cpp = llm::makeCppBackend(pm);
-        auto pcu = llm::makePcudaBackend(pm, workers, graphs, rows_per_thread == 2);
+        auto pcu = llm::makeKcBackend(pm, workers, graphs, rows_per_thread == 2);
         CudaBackend cuda(cm, stream);
         cuda.useGraphs(graphs);
         cuda.useTwoRows(rows_per_thread == 2);
@@ -435,10 +435,10 @@ int run(int argc, char** argv) {
         // ---- correctness: every path at the first generated position ----
         llm::decodeToken(*cpp, pm, hacts, first);
         const std::vector<float> ref(hacts.logits, hacts.logits + cfg.vocab);
-        const pcuda::Codegen paths[] = {pcuda::Codegen::Booth, pcuda::Codegen::Native, pcuda::Codegen::Simd};
+        const kc::Codegen paths[] = {kc::Codegen::Booth, kc::Codegen::Native, kc::Codegen::Simd};
         std::vector<std::vector<float>> plog;
-        for (pcuda::Codegen c : paths) {
-            if (pcudaSetKernelCodegen(c) != pcuda::Error::Success) throw std::runtime_error("set codegen");
+        for (kc::Codegen c : paths) {
+            if (kcSetKernelCodegen(c) != kc::Error::Success) throw std::runtime_error("set codegen");
             llm::decodeToken(*pcu, pm, pacts, first);
             std::vector<float> l(size_t(cfg.vocab));
             pa.download(l.data(), pacts.logits, l.size() * sizeof(float));
@@ -448,22 +448,22 @@ int run(int argc, char** argv) {
         cuda.finish();
         std::vector<float> glog(size_t(cfg.vocab));
         ca.download(glog.data(), cacts.logits, glog.size() * sizeof(float));
-        pcuda::Codegen mv{};
-        pcudaGetKernelCodegenFor(wf == llm::Weights::Q4     ? "matvec_q4"
+        kc::Codegen mv{};
+        kcGetKernelCodegenFor(wf == llm::Weights::Q4     ? "matvec_q4"
                                  : wf == llm::Weights::Q4X8 ? "matvec_q4x8"
                                  : wf == llm::Weights::Q4X8Q8 ? "matvec_q4x8_q8"
                                                               : "matvec_q8",
                                  &mv);
 
-        const bool pcuda_same = plog[0] == plog[1] && plog[1] == plog[2];
+        const bool kc_same = plog[0] == plog[1] && plog[1] == plog[2];
         const Agreement ap = compare(plog[0], ref), ag = compare(glog, ref);
         std::printf("Correctness at position %d, logits vs the C++ reference (max |diff| / max |logit|):\n", first);
-        std::printf("  pcuda booth / native / simd: %s; vs C++ %.2e, same argmax %s, top-5 %d/5\n",
-                    pcuda_same ? "bit-identical to each other" : "DIFFER from each other", ap.rel,
+        std::printf("  Kernelcore booth / native / simd: %s; vs C++ %.2e, same argmax %s, top-5 %d/5\n",
+                    kc_same ? "bit-identical to each other" : "DIFFER from each other", ap.rel,
                     ap.argmax ? "yes" : "NO", ap.top5);
         std::printf("  CUDA: %.2e, same argmax %s, top-5 %d/5 (nvcc contracts multiply-adds into FMA)\n\n", ag.rel,
                     ag.argmax ? "yes" : "NO", ag.top5);
-        const bool ok = pcuda_same && ap.rel < 1e-4 && ap.argmax && ag.rel < 1e-2;
+        const bool ok = kc_same && ap.rel < 1e-4 && ap.argmax && ag.rel < 1e-2;
 
         if (!check) {
             // --paths: time only these. Each path heats the CPU and slows the paths timed after it.
@@ -471,8 +471,8 @@ int run(int argc, char** argv) {
                 return ("," + paths_opt + ",").find(std::string(",") + n + ",") != std::string::npos;
             };
             std::vector<Column> cols;
-            auto timePcuda = [&](pcuda::Codegen c, const char* name) {
-                pcudaSetKernelCodegen(c);
+            auto timeKc = [&](kc::Codegen c, const char* name) {
+                kcSetKernelCodegen(c);
                 Column col{name};
                 llm::decodeToken(*pcu, pm, pacts, first);  // warm-up (pool, image load, caches)
                 HostProfiler prof;
@@ -488,10 +488,10 @@ int run(int argc, char** argv) {
                 cols.push_back(col);
             };
             std::printf("Timing (slow paths sample evenly spaced positions within a %.0f s budget):\n", budget);
-            if (want("booth")) timePcuda(pcuda::Codegen::Booth, "pcuda booth");
-            if (want("native")) timePcuda(pcuda::Codegen::Native, "pcuda native");
-            if (want("simd")) timePcuda(pcuda::Codegen::Simd, "pcuda simd");
-            pcudaSetKernelCodegen(pcuda::Codegen::Auto);
+            if (want("booth")) timeKc(kc::Codegen::Booth, "KC booth");
+            if (want("native")) timeKc(kc::Codegen::Native, "KC native");
+            if (want("simd")) timeKc(kc::Codegen::Simd, "KC simd");
+            kcSetKernelCodegen(kc::Codegen::Auto);
 
             if (want("cuda")) {  // CUDA: warm to working clocks, profile one token, then all positions back to back
                 const auto s = Clock::now();
@@ -556,7 +556,7 @@ int run(int argc, char** argv) {
                 return std::string(b);
             });
             row("tokens timed", [&](const Column& c) { return std::to_string(c.timed) + "/" + std::to_string(tokens); });
-            std::printf("\n  matvec kernels ran on the '%s' path under auto.\n", pcudaCodegenName(mv));
+            std::printf("\n  matvec kernels ran on the '%s' path under auto.\n", kcCodegenName(mv));
             for (const Column& c : cols)
                 std::printf("RESULT,%s,%.4f,%.4f,%.3f,%d\n", c.name.c_str(), c.token_ms, 1000.0 / c.token_ms,
                             gb / (c.token_ms / 1000.0), c.timed);
@@ -567,7 +567,7 @@ int run(int argc, char** argv) {
         rc = ok ? 0 : 1;
     }
     cudaStreamDestroy(stream);
-    pcudaShutdown();
+    kcShutdown();
     return rc;
 }
 
@@ -577,7 +577,7 @@ int main(int argc, char** argv) {
     try {
         return run(argc, argv);
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "pcuda_llm_bench: %s\n", e.what());
+        std::fprintf(stderr, "kc_llm_bench: %s\n", e.what());
         return 1;
     }
 }

@@ -1,6 +1,6 @@
 ; Booth IR
 
-func @pcuda_aligned8(i32 %0) __device__ {
+func @kc_aligned8(i32 %0) __device__ {
 entry:
     ret i32 %0  ; line 17
 }
@@ -14,7 +14,7 @@ entry:
     %10 = add i32 %8, %9  ; line 24
     %11 = gep ptr<global, i32>, %4, 0  ; line 25
     %12 = load i32, %11  ; line 25
-    %13 = call i32 @pcuda_aligned8(%12)  ; line 25
+    %13 = call i32 @kc_aligned8(%12)  ; line 25
     %14 = gep ptr<global, i32>, %4, 1  ; line 26
     %15 = load i32, %14  ; line 26
     %16 = gep ptr<global, i32>, %4, 2  ; line 27

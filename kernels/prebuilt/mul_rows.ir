@@ -1,6 +1,6 @@
 ; Booth IR
 
-func @pcuda_aligned8(i32 %0) __device__ {
+func @kc_aligned8(i32 %0) __device__ {
 entry:
     ret i32 %0  ; line 10
 }
@@ -12,7 +12,7 @@ entry:
     %7 = mul i32 %5, %6  ; line 16
     %8 = thread_id.x  ; line 16
     %9 = add i32 %7, %8  ; line 16
-    %10 = call i32 @pcuda_aligned8(%3)  ; line 17
+    %10 = call i32 @kc_aligned8(%3)  ; line 17
     %11 = icmp slt i32 %9, %4  ; line 18
     br_cond %11, if.then, if.end merge if.end  ; line 18
 

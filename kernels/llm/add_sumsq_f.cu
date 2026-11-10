@@ -5,11 +5,11 @@
 // dims = {nb, n, rows}; n % 256 == 0. base: index of the first thread, as a float (exact below
 // 2^24) because Booth takes at most 5 integer/pointer parameters; 0 when not chunked.
 
-#ifndef PCUDA_ALIGNED8_DEFINED
-#define PCUDA_ALIGNED8_DEFINED
-// Promise that x is a non-negative multiple of 8 (identity). pcuda_mslgen uses it to keep
+#ifndef KC_ALIGNED8_DEFINED
+#define KC_ALIGNED8_DEFINED
+// Promise that x is a non-negative multiple of 8 (identity). kc_mslgen uses it to keep
 // x-based divisions uniform across the 8 lanes of a group, and checks it at run time.
-__device__ int pcuda_aligned8(int x)
+__device__ int kc_aligned8(int x)
 {
     return x;
 }
@@ -17,8 +17,8 @@ __device__ int pcuda_aligned8(int x)
 
 extern "C" __global__ void add_sumsq_f(const float* a, const float* b, float* out, int* q, const int* dims, float base)
 {
-    const int idx = pcuda_aligned8((int)base) + blockIdx.x * blockDim.x + threadIdx.x;
-    const int nb = pcuda_aligned8(dims[0]);
+    const int idx = kc_aligned8((int)base) + blockIdx.x * blockDim.x + threadIdx.x;
+    const int nb = kc_aligned8(dims[0]);
     const int n = dims[1];
     const int rows = dims[2];
     if (idx < nb * rows) {

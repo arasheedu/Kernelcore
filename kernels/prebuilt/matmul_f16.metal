@@ -6,18 +6,18 @@
 #include <metal_stdlib>
 using namespace metal;
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0);
-float pcuda_h2f(
+float kc_h2f(
     int p0);
 
-int pcuda_aligned8(
+int kc_aligned8(
     int p0)
 {
     return p0;
 }
 
-float pcuda_h2f(
+float kc_h2f(
     int p0)
 {
     int v3;
@@ -262,7 +262,7 @@ kernel void matmul_f16(
     int v201;
     device float * v202;
     v57 = (int)(p4);
-    v58 = pcuda_aligned8(v57);
+    v58 = kc_aligned8(v57);
     v59 = bid.x;
     v60 = bdim.x;
     v61 = v59 * v60;
@@ -271,7 +271,7 @@ kernel void matmul_f16(
     v64 = v62 + v63;
     v65 = p3 + (0);
     v66 = *(v65);
-    v67 = pcuda_aligned8(v66);
+    v67 = kc_aligned8(v66);
     v68 = p3 + (1);
     v69 = *(v68);
     v70 = p3 + (2);
@@ -321,10 +321,10 @@ kernel void matmul_f16(
                 v115 = p0 + (v114);
                 v116 = *(v115);
                 v117 = v116 & 65535;
-                v118 = pcuda_h2f(v117);
+                v118 = kc_h2f(v117);
                 v119 = v116 >> 16;
                 v120 = v119 & 65535;
-                v121 = pcuda_h2f(v120);
+                v121 = kc_h2f(v120);
                 v122 = 2 * v110;
                 v123 = v100 + v122;
                 v124 = p1 + (v123);

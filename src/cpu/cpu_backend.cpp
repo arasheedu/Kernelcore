@@ -11,7 +11,7 @@
 #include <cstring>
 #include <format>
 
-namespace pcuda::cpu {
+namespace kc::cpu {
 
 // Kept free of C++ objects with destructors so __try is allowed.
 bool protectedMove(void* dst, const void* src, size_t bytes) noexcept {
@@ -172,7 +172,7 @@ Error CpuBackend::launch(const KernelEntry& entry, const LaunchArgs& args) noexc
             bridge.gpr[0] = reinterpret_cast<uint64_t>(&args);
             bridge.gpr[1] = reinterpret_cast<uint64_t>(path == Codegen::Simd ? entry.native->simd : entry.native->scalar);
             bridge.n_gpr = 2;
-            r = invokeSysV(reinterpret_cast<const void*>(&pcuda_sysv_native_bridge), bridge, entry.name, nullptr, 0);
+            r = invokeSysV(reinterpret_cast<const void*>(&kc_sysv_native_bridge), bridge, entry.name, nullptr, 0);
         }
         if (r.faulted) {
             {
@@ -192,4 +192,4 @@ Error CpuBackend::launch(const KernelEntry& entry, const LaunchArgs& args) noexc
     }
 }
 
-} // namespace pcuda::cpu
+} // namespace kc::cpu

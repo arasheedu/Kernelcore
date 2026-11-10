@@ -2,7 +2,7 @@
 //   x[i] = x[i] + t[i];  ss[b] = sum of x[i]^2 over the block (in order)
 // q is the 8-bit activation scratch of nb blocks: nb*8 packed words, nb*2 floats {scale, sum},
 // then nb floats of partial sums ss (read by norm_q8x4).
-// base: index of the first block (0 on the GPU; the chunk start under pcuda chunking).
+// base: index of the first block (0 on the GPU; the chunk start under Kernelcore chunking).
 extern "C" __global__ void add_sumsq(float* x, const float* t, int* q, int nb, int base)
 {
     const int b = base + blockIdx.x * blockDim.x + threadIdx.x;
